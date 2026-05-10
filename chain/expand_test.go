@@ -70,7 +70,7 @@ message ContextKey {
 }
 `
 
-func compileChainSpec(t *testing.T) protoreflect.MessageDescriptor {
+func compileChainSpec(t testing.TB) protoreflect.MessageDescriptor {
 	t.Helper()
 	sources := map[string]string{"chain.proto": chainSpecProtoSrc}
 	comp := protocompile.Compiler{
@@ -88,7 +88,7 @@ func compileChainSpec(t *testing.T) protoreflect.MessageDescriptor {
 // parseSpec compiles a PXF chain spec literal into a dynamic ChainSpec
 // message. Tests use this to build up specs as PXF text rather than
 // hand-constructing protoreflect graphs.
-func parseSpec(t *testing.T, desc protoreflect.MessageDescriptor, input string) proto.Message {
+func parseSpec(t testing.TB, desc protoreflect.MessageDescriptor, input string) proto.Message {
 	t.Helper()
 	msg := dynamicpb.NewMessage(desc)
 	require.NoError(t, pxf.Unmarshal([]byte(input), msg))

@@ -1,8 +1,11 @@
 # Compiled binaries
-# protoc-gen-chameleon-go can land at the repo root (default `go build`
-# output for cmd/<name>) or in-package if built from inside cmd/...
+# Go-build output for cmd/<name>/ packages: by default lands at the
+# repo root with the package name, OR in-package if built from inside
+# cmd/...
 /protoc-gen-chameleon-go
 /cmd/protoc-gen-chameleon-go/protoc-gen-chameleon-go
+/chameleon
+/cmd/chameleon/chameleon
 /bin/
 *.exe
 *.dll

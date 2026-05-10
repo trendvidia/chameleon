@@ -5,6 +5,7 @@ package chameleon_test
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"testing/fstest"
 
@@ -116,3 +117,53 @@ base_url = "dev.mybigproject.com"
 // keep proto import live (used by upstream resolver but unreferenced
 // directly in this test).
 var _ = proto.Marshal
+
+// TestLoad_NoGoroutineLeak runs Load+Destroy in a tight loop and
+// checks the goroutine count doesn't grow. Memguard's own goroutines
+// (the interrupt handler, the secret-scrambler) are spawned once at
+// init and counted in the baseline; this test only catches NEW
+// leaks introduced by the resolver's own paths.
+func TestLoad_NoGoroutineLeak(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+
+	spec := dynamicpb.NewMessage(chainDesc)
+	require.NoError(t, pxf.Unmarshal([]byte(`
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [
+  { id = "base" path = "base.pxf" for_each = ONCE required = true }
+]
+`), spec))
+
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`
+base_url = "x"
+api_url = "api.${base_url}"
+`)},
+	}
+
+	// Warm-up: one resolve to settle any first-call init.
+	res, err := chameleon.Load[*dynamicpb.Message](
+		dynamicpb.NewMessage(appDesc), spec, fs, "prod")
+	require.NoError(t, err)
+	res.Destroy()
+
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+
+	const iterations = 500
+	for i := 0; i < iterations; i++ {
+		res, err := chameleon.Load[*dynamicpb.Message](
+			dynamicpb.NewMessage(appDesc), spec, fs, "prod")
+		require.NoError(t, err)
+		res.Destroy()
+	}
+	runtime.GC()
+
+	// Allow a few-goroutine drift from runtime housekeeping. A real
+	// leak would scale with iterations.
+	final := runtime.NumGoroutine()
+	assert.LessOrEqual(t, final-baseline, 5,
+		"goroutine count grew by %d after %d Resolve+Destroy iterations (baseline=%d, final=%d) — likely a leak",
+		final-baseline, iterations, baseline, final)
+}

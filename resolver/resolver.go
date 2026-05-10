@@ -44,6 +44,9 @@ import (
 	"io"
 	"sort"
 	"sync"
+	"time"
+
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/trendvidia/chameleon/chain"
 	"github.com/trendvidia/chameleon/defaults"
@@ -83,6 +86,7 @@ type Resolver[T proto.Message] struct {
 	sources map[string]source.Source
 	dec     sops.Decrypter
 	trace   bool
+	metrics *instruments
 }
 
 // Option configures a Resolver at construction.
@@ -92,6 +96,7 @@ type config struct {
 	sources map[string]source.Source
 	dec     sops.Decrypter
 	trace   bool
+	mp      metric.MeterProvider
 }
 
 // WithSource registers a Source under a logical name. The name must
@@ -120,6 +125,26 @@ func WithDecrypter(d sops.Decrypter) Option {
 // default.
 func WithTrace() Option {
 	return func(c *config) { c.trace = true }
+}
+
+// WithMeterProvider installs an OpenTelemetry [metric.MeterProvider]
+// for resolver metrics. The resolver records on every Resolve call:
+//
+//   - chameleon.resolve.duration (histogram, seconds)
+//   - chameleon.resolve.errors (counter)
+//   - chameleon.resolve.layers (histogram)
+//   - chameleon.resolve.secrets (histogram)
+//
+// Each instrument carries a `chameleon.env` attribute. With no
+// MeterProvider passed, instruments come from the noop provider and
+// every record is a cheap no-op.
+//
+// The same metrics could be obtained globally by setting OTel's
+// global meter provider and calling [WithMeterProvider] with
+// [otel.GetMeterProvider]; this option is here so callers don't have
+// to reach for global state.
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(c *config) { c.mp = mp }
 }
 
 // New constructs a Resolver. `sample` is a fresh empty instance of the
@@ -158,6 +183,7 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 		sources: cfg.sources,
 		dec:     cfg.dec,
 		trace:   cfg.trace,
+		metrics: newInstruments(cfg.mp),
 	}, nil
 }
 
@@ -278,12 +304,28 @@ type TraceEntry struct {
 
 // Resolve materializes a typed config for the given request. Safe for
 // concurrent use; each call produces an independent Resolution.
-func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (*Resolution[T], error) {
+//
+// Records OTel metrics if a [WithMeterProvider] was passed:
+//   - chameleon.resolve.duration (always)
+//   - chameleon.resolve.errors (when err != nil)
+//   - chameleon.resolve.layers (after chain expansion)
+//   - chameleon.resolve.secrets (after Move)
+func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution[T], err error) {
+	start := time.Now()
+	envAttrs := metric.WithAttributes(envAttr(req.Environment))
+	defer func() {
+		r.metrics.resolveDuration.Record(ctx, time.Since(start).Seconds(), envAttrs)
+		if err != nil {
+			r.metrics.resolveErrors.Add(ctx, 1, envAttrs)
+		}
+	}()
+
 	refs, err := chain.Options{AllowUnknownContextKeys: req.AllowUnknownContext}.
 		Expand(r.spec, req.Environment, req.Context)
 	if err != nil {
 		return nil, err
 	}
+	r.metrics.layerCount.Record(ctx, int64(len(refs)), envAttrs)
 
 	dst := r.fresh()
 	// presenceUnion accumulates every field path any layer mentioned
@@ -375,6 +417,7 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (*Resolution[T],
 	if err != nil {
 		return nil, fmt.Errorf("resolver: extract secrets: %w", err)
 	}
+	r.metrics.secretCount.Record(ctx, int64(secrets.Len()), envAttrs)
 
 	if trace != nil {
 		// Mark sensitive paths after Move so the Trace reflects exactly

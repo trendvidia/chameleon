@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-10
+
+Observability + tooling release. OTel metrics, the `chameleon explain`
+CLI, runtime ChainSpec loaders, fuzz harnesses, leak guard.
+
+### Added
+
+- **OpenTelemetry metrics** via `resolver.WithMeterProvider(mp)`:
+  `chameleon.resolve.duration` (histogram, seconds),
+  `chameleon.resolve.errors` (counter), `chameleon.resolve.layers`
+  (histogram), `chameleon.resolve.secrets` (histogram). All carry a
+  `chameleon.env` attribute. Without the option, instruments use the
+  noop provider.
+- **`chameleon explain` CLI** under `cmd/chameleon`. Resolves a
+  config against a chain spec + layer dir and prints per-field
+  provenance (which layer set the value, whether it came from a
+  default, whether interpolation rewrote it, whether it's
+  sensitive). Schema compiled at runtime via `bufbuild/protocompile`
+  — no codegen step required.
+- **`chain.LoadSpec(path)` / `chain.ParseSpec(data)`** — runtime
+  helpers that compile the canonical `chameleon.v1.ChainSpec`
+  descriptor inline and parse a `chain.pxf` file or bytes. Means
+  consumers don't need to figure out how to materialize a ChainSpec
+  themselves.
+- **Fuzz harnesses** for the two parsers chameleon owns:
+  `interpolate.FuzzApply` (template expansion) and
+  `chain.FuzzExpand` (path templating + context). Property: never
+  panic. Seed corpus exercises malformed templates, invalid UTF-8,
+  deep paths.
+- **Goroutine-leak guard test** — runs Load+Destroy in a 500-iter
+  loop and verifies the goroutine count doesn't grow.
+- **`ROADMAP.md`** — explicit deferred items (typed ChainSpec
+  bindings, plugin field-replacement variant) and out-of-scope
+  non-goals.
+
+### Removed
+
+- Proto2 `GroupKind` branches throughout the pipeline. PXF is
+  proto3-only by spec; the codec never produces a `GroupKind`
+  field. The defensive `case MessageKind, GroupKind:` clauses just
+  made the supported surface ambiguous to readers.
+
 ## [0.2.0] — 2026-05-10
 
 Documentation + ergonomics release. Top-level README, simple-case API

@@ -46,6 +46,18 @@ buf, _ := pw.Open(); defer buf.Destroy()
 useDBPassword(buf.Bytes())
 ```
 
+### Loading the chain spec
+
+The CLI tool below uses `chain.LoadSpec(path)` — the same helper is available to library consumers if you don't want to compile the ChainSpec descriptor yourself:
+
+```go
+spec, err := chain.LoadSpec("config/chain.pxf")
+```
+
+`chain.ParseSpec(data)` does the same against in-memory bytes (handy for `embed.FS`).
+
+### Complex setups
+
 For complex setups (multiple sources, sops-encrypted layers, request context) use the full `resolver.New(...)` API:
 
 ```go
@@ -147,6 +159,80 @@ pw := res.Secrets.Get("db_password")
 
 `Resolution.Destroy()` wipes every Enclave. Idempotent and concurrent-safe.
 
+## Observability
+
+### Metrics (OpenTelemetry)
+
+Pass `resolver.WithMeterProvider(mp)` to record OTel metrics on every `Resolve` call:
+
+| Instrument | Type | Attributes |
+|---|---|---|
+| `chameleon.resolve.duration` | Histogram (seconds) | `chameleon.env` |
+| `chameleon.resolve.errors` | Counter | `chameleon.env` |
+| `chameleon.resolve.layers` | Histogram | `chameleon.env` |
+| `chameleon.resolve.secrets` | Histogram | `chameleon.env` |
+
+```go
+r, _ := resolver.New[*AppConfig](sample, spec,
+    resolver.WithSource("default", source.FS(layersFS)),
+    resolver.WithMeterProvider(otel.GetMeterProvider()),
+)
+```
+
+Without `WithMeterProvider`, instruments use the noop provider — every record is a cheap no-op.
+
+### Trace (per-field provenance)
+
+`resolver.WithTrace()` populates `Resolution.Trace` with one entry per dotted field path: which layer set it, whether a default applied, whether interpolation rewrote it, whether it's sensitive. Used by the `chameleon explain` CLI (below) and powerful for debugging "why does this field have this value?"
+
+### `chameleon explain` CLI
+
+Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/chameleon@latest`:
+
+```sh
+chameleon explain \
+    --schema=app.proto \
+    --message=myapp.v1.AppConfig \
+    --chain=chain.pxf \
+    --layers=./layers \
+    --env=dev
+```
+
+Output:
+
+```
+api_url        = "api.dev.mybigproject.com"  [base | interpolated]
+base_url       = "dev.mybigproject.com"      [env]
+db_password    = <sensitive>                  [secrets]
+region         = "us"                         [default]
+```
+
+Each field shows its final value (or `<sensitive>` for `pxf.Secret` fields) and tags identifying the layer that set it, whether the value came from a `(pxf.default)`, and whether interpolation rewrote it.
+
+`--field=<dotted.path>` prints provenance for one field. `--ctx=region=eu,tenant=acme` supplies context for chain expansion.
+
+## Custom decryption (programmatic key injection)
+
+`sops.Default()` sources keys from the ambient environment (`SOPS_AGE_KEY`, etc.). For programmatic key injection — say, fetching keys from a secret manager at runtime — implement the `sops.Decrypter` interface yourself:
+
+```go
+type myDecrypter struct{ ageKey string }
+
+func (d *myDecrypter) Decrypt(ctx context.Context, ciphertext []byte, format sops.Format) (*memguard.LockedBuffer, error) {
+    // Set SOPS_AGE_KEY for this call's duration, or pre-decrypt with
+    // the age library + wrap in a memguard buffer manually.
+    // Then call back into sops's decrypt.Data, OR roll your own.
+    ...
+}
+
+r, _ := resolver.New[*AppConfig](sample, spec,
+    resolver.WithSource("default", source.FS(layersFS)),
+    resolver.WithDecrypter(&myDecrypter{ageKey: fetchFromVault()}),
+)
+```
+
+The `Decrypter` interface is one method (`Decrypt`) — straightforward to wrap any encryption backend.
+
 ## Codegen
 
 The included `protoc-gen-chameleon-go` plugin emits a sidecar `*.chameleon.go` per `.proto` with one accessor per `pxf.Secret` field — including those reached through `repeated` and `map<*, V>` containers.
@@ -228,22 +314,33 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 ## Test status
 
-13 packages, ~140 tests, all green under `go test ./... -race`.
+15 packages, ~150 tests, all green under `go test ./... -race`. Plus fuzz harnesses for the two parsers chameleon owns:
+
+```sh
+go test ./interpolate/ -fuzz=FuzzApply -fuzztime=30s
+go test ./chain/ -fuzz=FuzzExpand -fuzztime=30s
+```
+
+Both seed with deliberately ugly inputs (malformed templates, invalid UTF-8, deep paths). Property: `Apply` / `Expand` must never panic; errors are fine.
+
+A goroutine-leak guard test runs Load+Destroy in a tight 500-iteration loop and verifies the goroutine count doesn't grow.
 
 ## Repo layout
 
 ```
-chain/                  ChainSpec expansion (env ancestry + layer template materialization)
+chain/                  ChainSpec expansion + LoadSpec/ParseSpec runtime helpers
+cmd/chameleon/          CLI: `chameleon explain` for per-field provenance
 cmd/protoc-gen-chameleon-go/   protoc plugin emitting typed Secret accessors
 defaults/               (pxf.default) post-merge pass
 examples/buf/           working buf.gen.yaml + sample schema
 examples/simple/        chain.pxf + base/dev layers (no Go code)
 interpolate/            ${field.path} post-merge expansion
+internal/pathfmt/       single source of truth for dotted-path format
 internal/upstream/      cross-repo contract with protowire-go (not built)
 merge/                  presence-aware proto-message overlay
 parse/                  Move(): pxf.Secret values -> memguard Enclaves
 proto/chameleon/v1/     ChainSpec / LayerHeader proto definitions
-resolver/               public Resolver[T] + Resolution[T]
+resolver/               public Resolver[T] + Resolution[T] + OTel metrics
 secret/                 Secret + thread-safe Map runtime
 sops/                   sops/v3 wrapper with memguard streaming
 source/                 Source interface + fs.FS impl
