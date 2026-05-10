@@ -90,7 +90,7 @@ func mergeField(dst, src protoreflect.Message, fd protoreflect.FieldDescriptor, 
 	case fd.IsList():
 		// Replace whole list, same reasoning.
 		dst.Set(fd, src.Get(fd))
-	case fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind:
+	case fd.Kind() == protoreflect.MessageKind:
 		if wkt.Atomic(fd.Message()) {
 			// WKTs are atomic values. Replace whole — same rule as
 			// list/map, for the same reason: merging at sub-field

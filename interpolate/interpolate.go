@@ -138,7 +138,7 @@ func (w *walker) field(parent protoreflect.Message, fd protoreflect.FieldDescrip
 		return w.mapField(parent, fd, path)
 	case fd.IsList():
 		return w.listField(parent, fd, path)
-	case fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind:
+	case fd.Kind() == protoreflect.MessageKind:
 		return w.message(parent.Mutable(fd).Message(), path)
 	case fd.Kind() == protoreflect.StringKind:
 		v := parent.Get(fd).String()
@@ -161,7 +161,7 @@ func (w *walker) field(parent protoreflect.Message, fd protoreflect.FieldDescrip
 func (w *walker) listField(parent protoreflect.Message, fd protoreflect.FieldDescriptor, path string) error {
 	list := parent.Mutable(fd).List()
 	switch fd.Kind() {
-	case protoreflect.MessageKind, protoreflect.GroupKind:
+	case protoreflect.MessageKind:
 		for i, n := 0, list.Len(); i < n; i++ {
 			if err := w.message(list.Get(i).Message(), fmt.Sprintf("%s[%d]", path, i)); err != nil {
 				return err
@@ -190,7 +190,7 @@ func (w *walker) mapField(parent protoreflect.Message, fd protoreflect.FieldDesc
 	m := parent.Mutable(fd).Map()
 	valFd := fd.MapValue()
 	switch valFd.Kind() {
-	case protoreflect.MessageKind, protoreflect.GroupKind:
+	case protoreflect.MessageKind:
 		var rangeErr error
 		m.Range(func(k protoreflect.MapKey, v protoreflect.Value) bool {
 			if err := w.message(v.Message(), fmt.Sprintf("%s[%s]", path, pathfmt.MapKey(k))); err != nil {
@@ -293,7 +293,7 @@ func (w *walker) lookup(path string) (string, error) {
 			}
 			return cur.Get(fd).String(), nil
 		}
-		if fd.Kind() != protoreflect.MessageKind && fd.Kind() != protoreflect.GroupKind {
+		if fd.Kind() != protoreflect.MessageKind {
 			return "", fmt.Errorf("%w: cannot descend through non-message field %q in %q", ErrInvalidReference, name, path)
 		}
 		md := fd.Message()

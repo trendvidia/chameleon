@@ -99,7 +99,7 @@ func (w *walker) field(parent protoreflect.Message, fd protoreflect.FieldDescrip
 		return w.mapField(parent, fd, name)
 	case fd.IsList():
 		return w.listField(parent, fd, name)
-	case fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind:
+	case fd.Kind() == protoreflect.MessageKind:
 		return w.messageField(parent, fd, name)
 	default:
 		return nil // scalar — uninteresting
@@ -119,7 +119,7 @@ func (w *walker) messageField(parent protoreflect.Message, fd protoreflect.Field
 }
 
 func (w *walker) listField(parent protoreflect.Message, fd protoreflect.FieldDescriptor, path string) error {
-	if fd.Kind() != protoreflect.MessageKind && fd.Kind() != protoreflect.GroupKind {
+	if fd.Kind() != protoreflect.MessageKind {
 		return nil
 	}
 	mdesc := fd.Message()
@@ -146,7 +146,7 @@ func (w *walker) listField(parent protoreflect.Message, fd protoreflect.FieldDes
 
 func (w *walker) mapField(parent protoreflect.Message, fd protoreflect.FieldDescriptor, path string) error {
 	valFd := fd.MapValue()
-	if valFd.Kind() != protoreflect.MessageKind && valFd.Kind() != protoreflect.GroupKind {
+	if valFd.Kind() != protoreflect.MessageKind {
 		return nil
 	}
 	mdesc := valFd.Message()

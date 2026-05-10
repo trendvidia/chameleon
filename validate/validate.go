@@ -75,7 +75,7 @@ func walk(m protoreflect.Message, present map[string]struct{}, prefix string, mi
 		if fd.IsList() || fd.IsMap() {
 			continue
 		}
-		if fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind {
+		if fd.Kind() == protoreflect.MessageKind {
 			md := fd.Message()
 			if md == nil || wkt.Atomic(md) {
 				continue
