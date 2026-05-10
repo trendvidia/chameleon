@@ -198,8 +198,14 @@ type Resolution[T proto.Message] struct {
 	destroy     func()
 }
 
-// Destroy wipes every Enclave in Secrets. Idempotent and safe to call
-// from any goroutine.
+// Destroy wipes every Enclave in [Resolution.Secrets]. Idempotent and
+// safe to call from any goroutine.
+//
+// Note: by the time Destroy runs, the proto-generated `*pxfv1.Secret`
+// fields on Config already have their `Value` cleared — that happens
+// during [parse.Move] inside Resolve, before Destroy is reachable.
+// What Destroy wipes is the memguard Enclaves the Map holds, which
+// are the live plaintext storage post-merge.
 func (r *Resolution[T]) Destroy() {
 	r.destroyOnce.Do(func() {
 		if r.destroy != nil {

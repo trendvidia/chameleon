@@ -61,7 +61,10 @@ func FS(fsys fs.FS) Source {
 
 type fsSource struct{ fsys fs.FS }
 
-func (s *fsSource) Open(_ context.Context, ref string) (io.ReadCloser, error) {
+func (s *fsSource) Open(ctx context.Context, ref string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f, err := s.fsys.Open(ref)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -72,7 +75,10 @@ func (s *fsSource) Open(_ context.Context, ref string) (io.ReadCloser, error) {
 	return f, nil
 }
 
-func (s *fsSource) Stat(_ context.Context, ref string) (Info, error) {
+func (s *fsSource) Stat(ctx context.Context, ref string) (Info, error) {
+	if err := ctx.Err(); err != nil {
+		return Info{}, err
+	}
 	fi, err := fs.Stat(s.fsys, ref)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

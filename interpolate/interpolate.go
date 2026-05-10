@@ -47,9 +47,9 @@ package interpolate
 import (
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 
+	"github.com/trendvidia/chameleon/internal/pathfmt"
 	"github.com/trendvidia/chameleon/wkt"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -193,7 +193,7 @@ func (w *walker) mapField(parent protoreflect.Message, fd protoreflect.FieldDesc
 	case protoreflect.MessageKind, protoreflect.GroupKind:
 		var rangeErr error
 		m.Range(func(k protoreflect.MapKey, v protoreflect.Value) bool {
-			if err := w.message(v.Message(), fmt.Sprintf("%s[%s]", path, formatMapKey(k))); err != nil {
+			if err := w.message(v.Message(), fmt.Sprintf("%s[%s]", path, pathfmt.MapKey(k))); err != nil {
 				rangeErr = err
 				return false
 			}
@@ -221,7 +221,7 @@ func (w *walker) mapField(parent protoreflect.Message, fd protoreflect.FieldDesc
 			}
 			m.Set(p.k, protoreflect.ValueOfString(resolved))
 			if w.onApplied != nil {
-				w.onApplied(fmt.Sprintf("%s[%s]", path, formatMapKey(p.k)))
+				w.onApplied(fmt.Sprintf("%s[%s]", path, pathfmt.MapKey(p.k)))
 			}
 		}
 	}
@@ -320,24 +320,4 @@ func joinFieldPath(parent, name string) string {
 	return parent + "." + name
 }
 
-// formatMapKey mirrors parse.formatMapKey so trace paths match what
-// secret.Map keys against. Quote strings; emit numerics/bools bare.
-func formatMapKey(k protoreflect.MapKey) string {
-	switch v := k.Interface().(type) {
-	case string:
-		return strconv.Quote(v)
-	case int32:
-		return strconv.FormatInt(int64(v), 10)
-	case int64:
-		return strconv.FormatInt(v, 10)
-	case uint32:
-		return strconv.FormatUint(uint64(v), 10)
-	case uint64:
-		return strconv.FormatUint(v, 10)
-	case bool:
-		return strconv.FormatBool(v)
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
 

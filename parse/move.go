@@ -16,8 +16,8 @@ package parse
 import (
 	"errors"
 	"fmt"
-	"strconv"
 
+	"github.com/trendvidia/chameleon/internal/pathfmt"
 	"github.com/trendvidia/chameleon/secret"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -157,7 +157,7 @@ func (w *walker) mapField(parent protoreflect.Message, fd protoreflect.FieldDesc
 	m := parent.Mutable(fd).Map()
 	var rangeErr error
 	m.Range(func(k protoreflect.MapKey, v protoreflect.Value) bool {
-		keyPath := fmt.Sprintf("%s[%s]", path, formatMapKey(k))
+		keyPath := fmt.Sprintf("%s[%s]", path, pathfmt.MapKey(k))
 		sub := v.Message()
 		if isSecret {
 			if err := w.takeSecret(sub, keyPath); err != nil {
@@ -206,23 +206,3 @@ func joinPath(parent, name string) string {
 	return parent + "." + name
 }
 
-// formatMapKey renders a protoreflect.MapKey for inclusion in a path.
-// String keys are quoted; numeric and bool keys appear bare.
-func formatMapKey(k protoreflect.MapKey) string {
-	switch v := k.Interface().(type) {
-	case string:
-		return strconv.Quote(v)
-	case int32:
-		return strconv.FormatInt(int64(v), 10)
-	case int64:
-		return strconv.FormatInt(v, 10)
-	case uint32:
-		return strconv.FormatUint(uint64(v), 10)
-	case uint64:
-		return strconv.FormatUint(v, 10)
-	case bool:
-		return strconv.FormatBool(v)
-	default:
-		return fmt.Sprintf("%v", v)
-	}
-}
