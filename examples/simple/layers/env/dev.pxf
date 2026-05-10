@@ -1,0 +1,15 @@
+@header chameleon.v1.LayerHeader
+{
+  id = "env"
+  environment = "dev"
+}
+
+# Tweak rather than override: prepend "dev." to the inherited base_url.
+# After this layer merges, base_url = "dev.mybigproject.com" and api_url
+# (still the template "api.${base_url}") resolves to
+# "api.dev.mybigproject.com" at the interpolation pass.
+base_url = "dev.${base_url}"
+
+feature_flags = {
+  "new_dashboard": true
+}

@@ -1,0 +1,79 @@
+@type chameleon.v1.ChainSpec
+
+# Example chain spec for a service that runs in prod / sandbox / uat /
+# dev, optionally with regional and tenant overrides. Read top-to-bottom
+# is also the merge order: each entry overrides the ones above it.
+
+version = "1.0.0"
+
+default_environment = "dev"
+
+# Single-parent ancestry. Resolution chain for `uat` is:
+#   base → prod → sandbox → uat
+environments = [
+  { name = "prod" }
+  { name = "sandbox", extends = "prod" }
+  { name = "uat",     extends = "sandbox" }
+  { name = "dev",     extends = "sandbox" }
+]
+
+context_keys = [
+  {
+    name = "region"
+    description = "Geographic deployment region. Optional."
+    allowed_values = ["us", "eu", "ap"]
+  }
+  {
+    name = "tenant"
+    description = "Tenant slug for per-customer overrides. Optional."
+  }
+]
+
+sources = {
+  "default": { kind = "fs", options = { "root": "./layers" } }
+  "secrets": { kind = "fs", options = { "root": "./layers/secrets" } }
+}
+
+layers = [
+  # 1. Always-loaded base.
+  {
+    id = "base"
+    path = "base.pxf"
+    for_each = ONCE
+    required = true
+  }
+
+  # 2. One file per env in the ancestry, root → leaf. For env=uat this
+  #    expands to env/prod.pxf, env/sandbox.pxf, env/uat.pxf. Missing
+  #    files for any ancestor are skipped silently — only the leaf is
+  #    required to exist.
+  {
+    id = "env"
+    path = "env/${env}.pxf"
+    for_each = PER_ENV
+  }
+
+  # 3. Optional regional overlay. Skipped entirely if ctx.region absent.
+  {
+    id = "region"
+    path = "region/${ctx.region}.pxf"
+    for_each = ONCE
+  }
+
+  # 4. Tenant overlay. Skipped if ctx.tenant absent.
+  {
+    id = "tenant"
+    path = "tenant/${ctx.tenant}/overrides.pxf"
+    for_each = ONCE
+  }
+
+  # 5. Per-env secrets, sops-encrypted. Loaded last so they can override
+  #    placeholder credentials from earlier layers.
+  {
+    id = "secrets"
+    path = "${env}.sops.pxf"
+    for_each = ONCE
+    encrypted = true
+    source = "secrets"
+  }
+]

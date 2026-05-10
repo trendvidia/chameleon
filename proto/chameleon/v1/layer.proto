@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
+syntax = "proto3";
+
+package chameleon.v1;
+
+import "pxf/annotations.proto";
+
+option go_package = "github.com/trendvidia/chameleon/proto/chameleon/v1;chameleonv1";
+
+// LayerHeader is OPTIONAL metadata that may appear at the top of a
+// user-authored layer file (before the schema-typed body). The resolver
+// uses it for sanity checks and diagnostics — never for resolution
+// semantics.
+//
+// Layer file *content* is whatever the consumer's config schema defines;
+// chameleon does not wrap it in a Layer message. The header is parsed
+// from a leading PXF block keyed `chameleon.v1.LayerHeader` if present,
+// otherwise treated as empty. Example:
+//
+//   @header chameleon.v1.LayerHeader
+//   {
+//     id = "env-prod"
+//     environment = "prod"
+//     encrypted = true
+//   }
+//
+//   # the rest is the consumer's schema
+//   base_url = "mybigproject.com"
+message LayerHeader {
+  // Stable id. If set, must match the LayerEntry.id that loaded this file
+  // (mismatch → error). Catches the "wrong file ended up at this path"
+  // class of mistake.
+  string id = 1;
+
+  // Environment this file is intended for. If set, must equal the env
+  // currently being expanded (mismatch → error).
+  string environment = 2;
+
+  // If set, must equal LayerEntry.encrypted. Refuses to load a plaintext
+  // file at a slot the chain spec marked encrypted (or vice-versa).
+  bool encrypted = 3;
+
+  // Author/operator notes. Ignored by the resolver, surfaced by
+  // `chameleon explain`.
+  string notes = 4;
+
+  // SHA-256 of the file contents at write time. Optional integrity
+  // signal; resolver logs a warning if set and mismatched, but does not
+  // reject (sops already guarantees integrity for encrypted files).
+  string content_sha256 = 5;
+}

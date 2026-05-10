@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
+// Package secret is chameleon's runtime home for [Secret], the in-
+// memory representation of a `pxf.Secret` well-known type field.
+// Generated config types reference *Secret (via protoc-gen-chameleon-
+// go) instead of a raw proto-generated message, so the plaintext never
+// appears as a Go string on the public API.
+//
+// The canonical descriptor for `pxf.Secret` lives in the protowire
+// spec (`proto/pxf/secret.proto`). The PXF codec in protowire-go
+// recognizes that FullName and routes the inner `value` string; this
+// package owns everything *after* parse: moving the bytes into a
+// memguard Enclave, exposing Open()/Destroy(), and wiping on
+// resolution shutdown.
+//
+// Memory model:
+//   - On parse, the chameleon PXF extension routes value bytes from the
+//     layer-level memguard.LockedBuffer directly into a per-field
+//     memguard.Enclave via NewBufferFromBytes (which copies + wipes the
+//     source slice). No transient *string is ever created for the
+//     plaintext.
+//   - On read, [Secret.Open] returns a *memguard.LockedBuffer that the
+//     caller MUST Destroy when done. The buffer is mlocked and
+//     scrambled-on-destroy.
+//   - On resolution destroy, [Secret.Destroy] zeroes the underlying
+//     enclave; further Open calls return ErrDestroyed.
+//
+// Threat model: Secret protects the in-process memory representation
+// against swap, core dumps, and process-memory inspection. Encryption at
+// rest is handled by sops at the layer-file level.
+package secret
+
+import (
+	"errors"
+
+	"github.com/awnumar/memguard"
+)
+
+// ErrDestroyed is returned by [Secret.Open] after the secret has been
+// destroyed (typically by Resolution.Destroy).
+var ErrDestroyed = errors.New("secret: destroyed")
+
+// ErrUnset is returned by [Secret.Open] when the secret was never
+// populated (e.g. an absent optional field). Callers should branch on
+// [Secret.IsSet] before opening to distinguish "unset" from "destroyed".
+var ErrUnset = errors.New("secret: unset")
+
+// Secret is a memguard-backed sensitive value. The zero value is an
+// unset Secret; populate it via [FromLockedBytes] (used by the chameleon
+// PXF decoder) or [FromString] (used by tests and one-off construction).
+//
+// Secret is NOT goroutine-safe for mutation (Destroy is racy with
+// concurrent Open). Concurrent Open calls are safe.
+type Secret struct {
+	// enclave holds the encrypted plaintext. nil when unset or destroyed.
+	enclave *memguard.Enclave
+
+	// destroyed is set after Destroy; distinguishes "never set" from
+	// "wiped" so Open can return a meaningful error.
+	destroyed bool
+
+	hint        string
+	fingerprint string
+}
+
+// FromLockedBytes constructs a Secret by sealing the supplied
+// LockedBuffer into an Enclave. The input buffer is consumed (destroyed)
+// by this call — the caller must not access it afterwards.
+//
+// This is the canonical entry point used by the chameleon PXF decoder:
+// it slices the value out of the layer-level locked region into a fresh
+// LockedBuffer, then hands ownership here.
+func FromLockedBytes(buf *memguard.LockedBuffer, hint, fingerprint string) *Secret {
+	return &Secret{
+		enclave:     buf.Seal(), // Seal destroys buf and returns a new Enclave.
+		hint:        hint,
+		fingerprint: fingerprint,
+	}
+}
+
+// FromString is a convenience constructor for tests and programmatic
+// construction. Avoid in production code paths that handle real
+// secrets: the input string lives in the Go heap as an immutable value
+// and cannot be wiped.
+func FromString(s, hint, fingerprint string) *Secret {
+	buf := memguard.NewBufferFromBytes([]byte(s))
+	return FromLockedBytes(buf, hint, fingerprint)
+}
+
+// Open returns a LockedBuffer holding the plaintext. The caller MUST
+// Destroy the returned buffer when finished:
+//
+//	buf, err := s.Open()
+//	if err != nil { ... }
+//	defer buf.Destroy()
+//	use(buf.Bytes())
+//
+// Callers should keep the open window narrow — the buffer is mlocked
+// but represents a moment of plaintext exposure.
+func (s *Secret) Open() (*memguard.LockedBuffer, error) {
+	if s.destroyed {
+		return nil, ErrDestroyed
+	}
+	if s.enclave == nil {
+		return nil, ErrUnset
+	}
+	return s.enclave.Open()
+}
+
+// Destroy wipes the underlying enclave. Subsequent Open calls return
+// [ErrDestroyed]. Idempotent.
+func (s *Secret) Destroy() {
+	if s.destroyed {
+		return
+	}
+	s.destroyed = true
+	s.enclave = nil // GC reclaims the encrypted ciphertext; key material is wiped by memguard finalizer.
+}
+
+// IsSet reports whether the secret holds a value (i.e. populated and
+// not yet destroyed).
+func (s *Secret) IsSet() bool {
+	return !s.destroyed && s.enclave != nil
+}
+
+// Hint returns the operator-facing description of what this secret is
+// (e.g. "Postgres primary"). Never the value itself.
+func (s *Secret) Hint() string { return s.hint }
+
+// Fingerprint returns the optional non-reversible identifier set at
+// authoring time (SHA-256 prefix, JWK thumbprint, etc.). Empty if the
+// authoring file did not provide one.
+func (s *Secret) Fingerprint() string { return s.fingerprint }

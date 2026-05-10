@@ -1,0 +1,15 @@
+@header chameleon.v1.LayerHeader
+{
+  id = "base"
+}
+
+# Schema-typed body — assume the consumer's config message is AppConfig
+# with fields: base_url, api_url, db_password (Secret), feature_flags.
+
+base_url = "mybigproject.com"
+api_url  = "api.${base_url}"     # post-merge interpolation
+
+feature_flags = {
+  "new_dashboard": false
+  "fast_path":     true
+}

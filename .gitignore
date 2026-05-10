@@ -1,0 +1,50 @@
+# Compiled binaries
+# protoc-gen-chameleon-go can land at the repo root (default `go build`
+# output for cmd/<name>) or in-package if built from inside cmd/...
+/protoc-gen-chameleon-go
+/cmd/protoc-gen-chameleon-go/protoc-gen-chameleon-go
+/bin/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test + coverage artifacts
+*.test
+*.out
+coverage.*
+/cov*.out
+
+# Build / dist
+/dist/
+/build/
+
+# Generated code from buf in examples/ (the example exists to show
+# users how to invoke the plugin, not to ship the generated output).
+/examples/buf/gen/
+
+# vendor/ optional — only present if a downstream consumer runs
+# `go mod vendor` for hermetic builds. Not part of source.
+/vendor/
+
+# IDE / editor state
+/.idea/
+/.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.history/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local environment files (never commit secrets, even in tests).
+.env
+.env.local
+*.sops.tmp
+
+# Agent / assistant session state (auto-memory). Not part of the
+# library; lives alongside the working tree by convention.
+/memory/

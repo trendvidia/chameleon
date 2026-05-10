@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
+syntax = "proto3";
+package myapp.v1;
+
+option go_package = "github.com/trendvidia/chameleon/examples/buf/gen/go/myapp/v1;myappv1";
+
+import "pxf/secret.proto";
+
+// AppConfig is the consumer's typed config message. It mixes plain
+// scalars, a nested message, and several pxf.Secret fields to exercise
+// every accessor shape the chameleon plugin emits.
+message AppConfig {
+  // Top-level scalar — no chameleon-specific generation; protoc-gen-go
+  // handles it normally.
+  string base_url = 1;
+
+  // Top-level Secret. The plugin emits:
+  //   AppConfigSecret_DbPassword(s secret.Map) *secret.Secret
+  pxf.Secret db_password = 2;
+
+  // Nested message containing a Secret. The plugin emits:
+  //   AppConfigSecret_Primary_AuthToken(s secret.Map) *secret.Secret
+  Endpoint primary = 3;
+
+  // Repeated Secret. The plugin emits:
+  //   AppConfigSecret_BackupKeys(s secret.Map, i int) *secret.Secret
+  repeated pxf.Secret backup_keys = 4;
+
+  // map<string, Secret>. The plugin emits:
+  //   AppConfigSecret_TenantKeys(s secret.Map, key string) *secret.Secret
+  map<string, pxf.Secret> tenant_keys = 5;
+}
+
+message Endpoint {
+  string url = 1;
+  pxf.Secret auth_token = 2;
+}

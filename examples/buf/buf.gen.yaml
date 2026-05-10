@@ -1,0 +1,28 @@
+# buf code-generation config for the chameleon example.
+#
+# Two plugins run side-by-side:
+#
+#   protoc-gen-go              standard proto types (App.pb.go)
+#   protoc-gen-chameleon-go    sidecar accessors (App.chameleon.go)
+#
+# Both write to the same `out:` directory; their filename suffixes don't
+# collide. The chameleon plugin only emits a sidecar for files that
+# contain at least one pxf.Secret-typed field — files without secrets
+# get no .chameleon.go output.
+
+version: v2
+
+plugins:
+  - local: protoc-gen-go
+    out: gen/go
+    opt:
+      - paths=source_relative
+
+  - local: protoc-gen-chameleon-go
+    out: gen/go
+    opt:
+      - paths=source_relative
+      # Optional: override the runtime Secret package import path. The
+      # default is the canonical github.com/trendvidia/chameleon/secret;
+      # uncomment to point at an internal fork or vendored copy.
+      # - secret_pkg=internal/myorg/secret
