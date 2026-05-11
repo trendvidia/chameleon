@@ -6,33 +6,32 @@ package header
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+
+	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
 // BodyHash returns the hex-encoded SHA-256 of a layer file's
-// schema-typed body. If data starts with a well-formed `@header ... {
-// ... }` preamble, only the bytes AFTER the closing `}` are hashed;
-// otherwise the entire input is hashed.
+// schema-typed body — the bytes after any leading @type / @<directive>
+// blocks. The body offset is what `pxf.Document.BodyOffset` reports
+// after parsing.
 //
-// Hashing the body-only avoids the chicken-and-egg problem of "hash
-// the file that contains its own hash": authors can set, clear, or
-// edit `@header.content_sha256` without invalidating the hash. The
+// Hashing body-only avoids the chicken-and-egg problem of "hash the
+// file that contains its own hash": authors can set, clear, or edit
+// `@header.content_sha256` without invalidating the hash. The
 // trade-off is that BodyHash does not detect tampering with the
 // header's id / environment / encrypted assertions — but those are
 // already cross-checked against the chain spec at resolve time, so
 // tampering would surface there.
-//
-// Errors mirror Split: only returned when an `@header` is present but
-// malformed.
 func BodyHash(data []byte) (string, error) {
-	body := data
-	match, err := Split(data)
+	doc, err := pxf.Parse(data)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("header: parse for hash: %w", err)
 	}
-	if match != nil {
-		body = match.Rest
+	if doc.BodyOffset < 0 || doc.BodyOffset > len(data) {
+		return "", fmt.Errorf("header: invalid body offset %d (len=%d)", doc.BodyOffset, len(data))
 	}
-	sum := sha256.Sum256(body)
+	sum := sha256.Sum256(data[doc.BodyOffset:])
 	return hex.EncodeToString(sum[:]), nil
 }
 

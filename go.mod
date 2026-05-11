@@ -1,6 +1,6 @@
 module github.com/trendvidia/chameleon
 
-go 1.25.0
+go 1.26.1
 
 require (
 	github.com/awnumar/memguard v0.22.5
@@ -8,6 +8,9 @@ require (
 	github.com/getsops/sops/v3 v3.13.0
 	github.com/stretchr/testify v1.11.1
 	github.com/trendvidia/protowire-go v0.71.0
+	go.opentelemetry.io/otel v1.43.0
+	go.opentelemetry.io/otel/metric v1.43.0
+	go.opentelemetry.io/otel/sdk/metric v1.43.0
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -117,10 +120,7 @@ require (
 	go.opentelemetry.io/contrib/detectors/gcp v1.43.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.68.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0 // indirect
-	go.opentelemetry.io/otel v1.43.0 // indirect
-	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
-	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
@@ -143,3 +143,11 @@ require (
 // protowire-go v0.71.0 introduced pxf.Secret recognition + the
 // layered-config exports chameleon depends on. See
 // internal/upstream/protowire_go_patches.go for the cross-repo contract.
+
+// TEMPORARY: replace directives point at local checkouts so chameleon can
+// build against the unreleased protowire-go directive grammar. Removed
+// before tagging the chameleon release; protowire-go is tagged first
+// and chameleon's `require` is bumped to the published version.
+replace github.com/trendvidia/protowire-go => /Users/bene/projects/src/github.com/trendvidia/protowire-go
+
+replace google.golang.org/protobuf => /Users/bene/projects/src/github.com/trendvidia/protobuf-go

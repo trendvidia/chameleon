@@ -12,6 +12,7 @@ import (
 
 	"github.com/trendvidia/chameleon/chain"
 	"github.com/trendvidia/chameleon/internal/header"
+	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
 func verifyCmd(args []string) error {
@@ -118,10 +119,17 @@ func verifyOne(w io.Writer, ref chain.LayerRef, layersDir string, strict bool) v
 		return statusError
 	}
 
-	match, err := header.Split(data)
+	doc, err := pxf.Parse(data)
 	if err != nil {
-		fmt.Fprintf(w, "ERROR\t%s\t@header: %v\n", tag, err)
+		fmt.Fprintf(w, "ERROR\t%s\tparse: %v\n", tag, err)
 		return statusError
+	}
+	var match *pxf.Directive
+	for i := range doc.Directives {
+		if doc.Directives[i].Name == header.DirectiveName {
+			match = &doc.Directives[i]
+			break
+		}
 	}
 	if match == nil {
 		level := "SKIP"
@@ -131,7 +139,7 @@ func verifyOne(w io.Writer, ref chain.LayerRef, layersDir string, strict bool) v
 		fmt.Fprintf(w, "%s\t%s\t(no @header)\n", level, tag)
 		return statusMissingHash
 	}
-	parsed, err := header.Parse(match.Inner)
+	parsed, err := header.Parse(match.Body)
 	if err != nil {
 		fmt.Fprintf(w, "ERROR\t%s\t@header parse: %v\n", tag, err)
 		return statusError
