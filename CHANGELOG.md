@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-11
+
+`@header` preamble release. Layer files can now carry sanity-check
+metadata (`id` / `environment` / `encrypted`) that the resolver
+enforces against the chain entry, plus opt-in `content_sha256`
+verification via two new CLI subcommands.
+
 ### Fixed
 
 - **`examples/simple/` now parses cleanly.** Three issues that broke the
