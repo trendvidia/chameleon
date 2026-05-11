@@ -59,10 +59,18 @@ var ErrInvalidSecret = errors.New("parse: pxf.Secret descriptor missing `value` 
 //
 // A nil msg returns (nil, nil).
 func Move(msg proto.Message) (*secret.Map, error) {
+	return MoveWithOptions(msg)
+}
+
+// MoveWithOptions is [Move] with caller-supplied [secret.MapOption]s.
+// Used by the resolver to wire per-Open observability
+// ([secret.WithInstruments]) without changing [Move]'s simple
+// signature.
+func MoveWithOptions(msg proto.Message, opts ...secret.MapOption) (*secret.Map, error) {
 	if msg == nil {
 		return nil, nil
 	}
-	out := secret.NewMap()
+	out := secret.NewMap(opts...)
 	w := walker{secrets: out}
 	if err := w.message(msg.ProtoReflect(), ""); err != nil {
 		// Partial Map handed back to the caller; let them Destroy what

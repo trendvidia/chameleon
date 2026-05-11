@@ -82,12 +82,13 @@ var ErrRequiredLayerMissing = errors.New("resolver: required layer missing")
 // Resolver is safe for concurrent Resolve calls; each call produces an
 // independent Resolution that owns its own secret.Map.
 type Resolver[T proto.Message] struct {
-	sample  T
-	spec    proto.Message
-	sources map[string]source.Source
-	dec     sops.Decrypter
-	trace   bool
-	metrics *instruments
+	sample             T
+	spec               proto.Message
+	sources            map[string]source.Source
+	dec                sops.Decrypter
+	trace              bool
+	metrics            *instruments
+	secretInstruments  *secret.Instruments
 }
 
 // Option configures a Resolver at construction.
@@ -179,12 +180,13 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 	}
 
 	return &Resolver[T]{
-		sample:  sample,
-		spec:    spec,
-		sources: cfg.sources,
-		dec:     cfg.dec,
-		trace:   cfg.trace,
-		metrics: newInstruments(cfg.mp),
+		sample:            sample,
+		spec:              spec,
+		sources:           cfg.sources,
+		dec:               cfg.dec,
+		trace:             cfg.trace,
+		metrics:           newInstruments(cfg.mp),
+		secretInstruments: secret.NewInstruments(cfg.mp),
 	}, nil
 }
 
@@ -414,7 +416,7 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 		return nil, fmt.Errorf("resolver: %w", err)
 	}
 
-	secrets, err := parse.Move(dst)
+	secrets, err := parse.MoveWithOptions(dst, secret.WithInstruments(r.secretInstruments, req.Environment))
 	if err != nil {
 		return nil, fmt.Errorf("resolver: extract secrets: %w", err)
 	}
