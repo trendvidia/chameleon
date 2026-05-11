@@ -12,8 +12,15 @@
 //	    whether it came from a default, whether interpolation
 //	    rewrote it, whether it's sensitive).
 //
-// More subcommands may follow (`validate`, `diff`); for now `explain`
-// is the only one.
+//	chameleon verify --chain=chain.pxf --layers=./layers --env=dev
+//	    Check @header.content_sha256 of every layer the chain spec
+//	    resolves to. Encrypted layers are skipped (sops already
+//	    authenticates them). Pass --strict to fail on layers without
+//	    a hash.
+//
+//	chameleon hash <file>
+//	    Print the canonical body SHA-256 of a single layer file —
+//	    the value to paste into @header.content_sha256.
 package main
 
 import (
@@ -30,6 +37,16 @@ func main() {
 	case "explain":
 		if err := explainCmd(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon explain:", err)
+			os.Exit(1)
+		}
+	case "verify":
+		if err := verifyCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon verify:", err)
+			os.Exit(1)
+		}
+	case "hash":
+		if err := hashCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon hash:", err)
 			os.Exit(1)
 		}
 	case "-h", "--help", "help":
@@ -49,6 +66,8 @@ Usage:
 
 Subcommands:
     explain    Resolve a config and print per-field provenance.
+    verify     Check @header.content_sha256 of every layer in a chain.
+    hash       Print the canonical body SHA-256 of a single layer file.
     help       Show this message.
 
 Run 'chameleon <subcommand> --help' for subcommand flags.`)

@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`examples/simple/` now parses cleanly.** Three issues that broke the
+  canonical example end-to-end:
+  - Layer files (`layers/base.pxf`, `layers/env/dev.pxf`) started with
+    `@header chameleon.v1.LayerHeader { ... }`, a directive the v0.3.0
+    PXF parser does not recognize (`@type` is the only `@`-form the
+    lexer accepts; everything else returns `ILLEGAL`). The resolver
+    now peels the header off itself before handing the body to
+    `pxf.UnmarshalFull` — see the new `@header` feature below.
+  - `chain.pxf` separated fields inside `{ ... }` blocks with commas
+    (`{ name = "sandbox", extends = "prod" }`), which the README's
+    "PXF authoring gotchas" section already explicitly calls out as
+    invalid. Same bug repeated in the `sources` map entries.
+  - The README still documents commas-inside-blocks as the failure
+    mode; the example was the thing that was wrong.
+  - `env/dev.pxf` did `base_url = "dev.${base_url}"`, the exact
+    self-referencing pattern the README's "tweak rather than
+    override" section warns against (interpolation runs post-merge
+    against the final state, so a self-reference is a cycle).
+    Rewrote `base.pxf` and `env/dev.pxf` to use the documented
+    intermediate-root pattern: `domain` is the root variable;
+    `base_url` and `api_url` interpolate against it; dev.pxf
+    overrides only `domain`.
+
+### Added
+
+- **`@header chameleon.v1.LayerHeader { ... }` preamble** at the top of
+  layer files. The resolver scans for a leading `@header` block before
+  parsing the schema-typed body and runs sanity checks against the
+  chain entry the layer was loaded for:
+  - `id` — must match `LayerEntry.id` (catches file-at-wrong-slot).
+  - `environment` — must match the env the layer materialization is
+    bound to (catches "prod settings ended up in the dev file" mistakes
+    in PER_ENV layers).
+  - `encrypted` — must match `LayerEntry.encrypted` (catches plaintext-
+    in-encrypted-slot and vice versa).
+  - `notes` — informational, parsed and ignored at resolve time.
+  - `content_sha256` — opt-in verification via the new `chameleon
+    verify` CLI (below). The resolver itself parses the field but
+    does not run the check; adding a logger-driven warning at
+    resolve time is still deferred.
+
+  All fields are optional. Author-omitted fields are not checked (PXF
+  three-state presence). The whole preamble is optional; layer files
+  without `@header` parse exactly as before.
+
+- **`chameleon verify` subcommand** — walks a chain spec, opens each
+  resolved layer file, and checks `@header.content_sha256` against
+  the file's actual body hash. Non-zero exit on mismatch. Encrypted
+  layers are skipped (sops already authenticates them). Pass
+  `--strict` to fail on layers without a hash.
+
+- **`chameleon hash <file>` subcommand** — prints the canonical body
+  SHA-256 an author should paste into `@header.content_sha256`. The
+  canonical bytes are everything after the closing `}` of the
+  `@header` preamble (or the whole file if no header), so adding /
+  editing / removing fields inside `@header` does not change the
+  hash.
+
+  Implementation: protowire-go's PXF lexer still only knows about
+  `@type`, so chameleon does the preamble extraction itself in
+  `internal/header` (a byte scanner that mirrors PXF tokenization
+  rules for strings, comments, and escapes). A future protowire-go
+  release with generic `@<directive>` support would let this
+  collapse to a `pxf.UnmarshalDocument`-style call — tracked in
+  `ROADMAP.md`.
+
+- **README install section for `protoc-gen-chameleon-go`** spelling out
+  the `GOPRIVATE` / `insteadOf` / `GH_TOKEN` prerequisites needed to
+  `go install` from the private module set. Same setup applies to
+  consumers that import chameleon directly.
+
 ## [0.3.0] — 2026-05-10
 
 Observability + tooling release. OTel metrics, the `chameleon explain`

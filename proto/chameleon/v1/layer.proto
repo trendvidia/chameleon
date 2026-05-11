@@ -14,10 +14,12 @@ option go_package = "github.com/trendvidia/chameleon/proto/chameleon/v1;chameleo
 // uses it for sanity checks and diagnostics — never for resolution
 // semantics.
 //
-// Layer file *content* is whatever the consumer's config schema defines;
-// chameleon does not wrap it in a Layer message. The header is parsed
-// from a leading PXF block keyed `chameleon.v1.LayerHeader` if present,
-// otherwise treated as empty. Example:
+// Wired by `internal/header`: chameleon peels the preamble off before
+// handing the body to `pxf.UnmarshalFull`. protowire-go's PXF lexer
+// itself still only recognizes `@type`; supporting `@header` as a
+// native directive is upstream work tracked in chameleon's ROADMAP.md.
+//
+// Authoring shape:
 //
 //   @header chameleon.v1.LayerHeader
 //   {
@@ -46,8 +48,9 @@ message LayerHeader {
   // `chameleon explain`.
   string notes = 4;
 
-  // SHA-256 of the file contents at write time. Optional integrity
-  // signal; resolver logs a warning if set and mismatched, but does not
-  // reject (sops already guarantees integrity for encrypted files).
+  // SHA-256 of the file contents at write time. Parsed but not yet
+  // verified — tracked in ROADMAP.md (requires a logger ABI plus a
+  // canonical-bytes rule). sops already guarantees integrity for
+  // encrypted files.
   string content_sha256 = 5;
 }

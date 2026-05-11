@@ -131,6 +131,25 @@ domain      = "dev.mybigproject.com"
 
 `base_url = "dev.${base_url}"` would error with `interpolate: cycle` — interpolation runs post-merge against the final state, so a self-reference resolves to its own template. Always introduce an intermediate root variable for compose-from-base patterns.
 
+#### Optional `@header` preamble
+
+A layer file may declare an `@header chameleon.v1.LayerHeader { ... }` block before the schema-typed body. Fields are checked against the chain entry that loaded the file; mismatch is a hard error at resolve time. Every field is optional — author-omitted fields are not checked.
+
+```pxf
+@header chameleon.v1.LayerHeader
+{
+  id          = "env"      # must equal LayerEntry.id from the chain spec
+  environment = "prod"     # must equal the env this materialization is bound to
+  encrypted   = true       # must equal LayerEntry.encrypted
+  notes       = "rotated 2026-04"  # informational, ignored at resolve time
+}
+
+# the rest is the consumer's schema
+base_url = "mybigproject.com"
+```
+
+What it catches: a `prod.pxf` file accidentally moved to `env/dev.pxf` (env mismatch), a plaintext file dropped into an encrypted slot (encrypted mismatch), the wrong layer file at the wrong path (id mismatch). What it doesn't carry: any resolution semantics. Layer content is still just the schema-typed body; the header is sanity-check metadata only. Files without `@header` parse exactly as before.
+
 ### Secrets
 
 Fields typed `pxf.Secret` (the WKT defined in [protowire/proto/pxf/secret.proto](https://github.com/trendvidia/protowire/blob/main/proto/pxf/secret.proto)) are recognized by the codec. Author them in PXF as scalar shorthand or block form:
@@ -211,6 +230,28 @@ Each field shows its final value (or `<sensitive>` for `pxf.Secret` fields) and 
 
 `--field=<dotted.path>` prints provenance for one field. `--ctx=region=eu,tenant=acme` supplies context for chain expansion.
 
+### `chameleon verify` CLI
+
+Walks the chain spec and checks each layer's `@header.content_sha256` against the file's actual body hash. Non-zero exit on mismatch:
+
+```sh
+chameleon verify --chain=chain.pxf --layers=./layers --env=dev
+# OK    base    base.pxf
+# OK    env     env/dev.pxf
+# SKIP  secrets dev.sops.pxf  (encrypted; sops authenticates)
+```
+
+Pass `--strict` to fail if any layer lacks a `content_sha256` (default behavior is to skip).
+
+The canonical bytes hashed are the schema-typed body — everything after the closing `}` of the `@header` preamble. This means adding, editing, or removing fields inside `@header` (including `content_sha256` itself) does not invalidate the hash. Use `chameleon hash <file>` to compute the value an author should paste into `@header.content_sha256`:
+
+```sh
+chameleon hash base.pxf
+# f38075764f27b34bdcc46845d5ad8c873a1b852667526651ac7b4b40c130ffdf
+```
+
+Encrypted layers are skipped — sops already authenticates the ciphertext.
+
 ## Custom decryption (programmatic key injection)
 
 `sops.Default()` sources keys from the ambient environment (`SOPS_AGE_KEY`, etc.). For programmatic key injection — say, fetching keys from a secret manager at runtime — implement the `sops.Decrypter` interface yourself:
@@ -236,6 +277,25 @@ The `Decrypter` interface is one method (`Decrypt`) — straightforward to wrap 
 ## Codegen
 
 The included `protoc-gen-chameleon-go` plugin emits a sidecar `*.chameleon.go` per `.proto` with one accessor per `pxf.Secret` field — including those reached through `repeated` and `map<*, V>` containers.
+
+### Installing the plugin
+
+```sh
+go install github.com/trendvidia/chameleon/cmd/protoc-gen-chameleon-go@latest
+```
+
+`github.com/trendvidia/*` is currently a private module set, so `go install` only succeeds if `go` is configured to fetch it privately. Either:
+
+- Set `GOPRIVATE=github.com/trendvidia/*` and add a git rewrite that uses your credentials, e.g.
+  ```sh
+  go env -w GOPRIVATE=github.com/trendvidia/*
+  git config --global url."git@github.com:trendvidia/".insteadOf "https://github.com/trendvidia/"
+  ```
+- Or export a `GH_TOKEN` / `GITHUB_TOKEN` with `repo` scope before `go install`.
+
+Without one of those, `go install` fails with `403 Forbidden` against the proxy or a `terminal prompts disabled` git error. Same setup applies to consumers that `import` chameleon directly.
+
+### Wiring into buf
 
 Run alongside `protoc-gen-go`:
 
@@ -335,6 +395,7 @@ defaults/               (pxf.default) post-merge pass
 examples/buf/           working buf.gen.yaml + sample schema
 examples/simple/        chain.pxf + base/dev layers (no Go code)
 interpolate/            ${field.path} post-merge expansion
+internal/header/        @header preamble scanner + LayerHeader sanity checks
 internal/pathfmt/       single source of truth for dotted-path format
 internal/upstream/      cross-repo contract with protowire-go (not built)
 merge/                  presence-aware proto-message overlay

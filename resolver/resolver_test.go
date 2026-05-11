@@ -987,3 +987,187 @@ layers = [
 	fd := res.Config.Descriptor().Fields().ByName("api_key")
 	assert.Equal(t, "dev-key", res.Config.Get(fd).String())
 }
+
+// --- @header preamble ---
+
+// headerSpec returns a minimal one-base-one-env chain spec parsed
+// against the test chainDesc. Sources used: "default" for plaintext,
+// "secrets" for an encrypted layer.
+func headerSpec(t *testing.T, chainDesc protoreflect.MessageDescriptor, encrypted bool) proto.Message {
+	t.Helper()
+	encField := ""
+	if encrypted {
+		encField = "encrypted = true source = \"secrets\""
+	}
+	return parseSpec(t, chainDesc, `
+version = "1.0.0"
+default_environment = "dev"
+environments = [
+  { name = "prod" }
+  { name = "dev" extends = "prod" }
+]
+layers = [
+  { id = "base" path = "base.pxf" for_each = ONCE required = true `+encField+` }
+  { id = "env"  path = "env/${env}.pxf" for_each = PER_ENV }
+]
+`)
+}
+
+func TestResolve_HeaderMatches(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := headerSpec(t, chainDesc, false)
+
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`
+@header chameleon.v1.LayerHeader
+{
+  id = "base"
+  encrypted = false
+}
+base_url = "x.com"
+`)},
+		"env/dev.pxf": &fstest.MapFile{Data: []byte(`
+@header chameleon.v1.LayerHeader
+{
+  id = "env"
+  environment = "dev"
+}
+base_url = "dev.x.com"
+`)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+	)
+	require.NoError(t, err)
+	res, err := r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.NoError(t, err)
+	defer res.Destroy()
+
+	fd := res.Config.Descriptor().Fields().ByName("base_url")
+	assert.Equal(t, "dev.x.com", res.Config.Get(fd).String(),
+		"body parses normally after @header is peeled off")
+}
+
+func TestResolve_HeaderIDMismatch(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := headerSpec(t, chainDesc, false)
+
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`
+@header chameleon.v1.LayerHeader
+{
+  id = "wrong-id"
+}
+base_url = "x.com"
+`)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+	)
+	require.NoError(t, err)
+	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "@header.id", "error mentions the offending field")
+	assert.Contains(t, err.Error(), "wrong-id")
+}
+
+func TestResolve_HeaderEnvironmentMismatch(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := headerSpec(t, chainDesc, false)
+
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x.com"`)},
+		"env/dev.pxf": &fstest.MapFile{Data: []byte(`
+@header chameleon.v1.LayerHeader
+{
+  environment = "prod"
+}
+base_url = "dev.x.com"
+`)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+	)
+	require.NoError(t, err)
+	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "@header.environment")
+}
+
+func TestResolve_HeaderEncryptedMismatch(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := headerSpec(t, chainDesc, false) // chain entry is NOT encrypted
+
+	// File asserts encrypted=true while the chain entry is plaintext.
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`
+@header chameleon.v1.LayerHeader
+{
+  encrypted = true
+}
+base_url = "x.com"
+`)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+	)
+	require.NoError(t, err)
+	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "@header.encrypted")
+}
+
+func TestResolve_HeaderWrongType(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := headerSpec(t, chainDesc, false)
+
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`
+@header some.other.Header
+{
+  id = "base"
+}
+base_url = "x.com"
+`)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+	)
+	require.NoError(t, err)
+	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "chameleon.v1.LayerHeader")
+}
+
+func TestResolve_HeaderOptionalAbsent(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := headerSpec(t, chainDesc, false)
+
+	// No @header at all — resolves cleanly, no assertion run.
+	fs := fstest.MapFS{
+		"base.pxf":    &fstest.MapFile{Data: []byte(`base_url = "x.com"`)},
+		"env/dev.pxf": &fstest.MapFile{Data: []byte(`base_url = "dev.x.com"`)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+	)
+	require.NoError(t, err)
+	res, err := r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.NoError(t, err)
+	defer res.Destroy()
+
+	fd := res.Config.Descriptor().Fields().ByName("base_url")
+	assert.Equal(t, "dev.x.com", res.Config.Get(fd).String())
+}

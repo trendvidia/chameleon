@@ -12,9 +12,9 @@ default_environment = "dev"
 #   base → prod → sandbox → uat
 environments = [
   { name = "prod" }
-  { name = "sandbox", extends = "prod" }
-  { name = "uat",     extends = "sandbox" }
-  { name = "dev",     extends = "sandbox" }
+  { name = "sandbox"  extends = "prod" }
+  { name = "uat"      extends = "sandbox" }
+  { name = "dev"      extends = "sandbox" }
 ]
 
 context_keys = [
@@ -30,8 +30,8 @@ context_keys = [
 ]
 
 sources = {
-  "default": { kind = "fs", options = { "root": "./layers" } }
-  "secrets": { kind = "fs", options = { "root": "./layers/secrets" } }
+  "default": { kind = "fs"  options = { "root": "./layers" } }
+  "secrets": { kind = "fs"  options = { "root": "./layers/secrets" } }
 }
 
 layers = [

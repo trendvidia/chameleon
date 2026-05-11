@@ -50,6 +50,7 @@ import (
 
 	"github.com/trendvidia/chameleon/chain"
 	"github.com/trendvidia/chameleon/defaults"
+	"github.com/trendvidia/chameleon/internal/header"
 	"github.com/trendvidia/chameleon/interpolate"
 	"github.com/trendvidia/chameleon/merge"
 	"github.com/trendvidia/chameleon/parse"
@@ -482,6 +483,33 @@ func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, de
 		data = buf.Bytes()
 	} else {
 		data = raw
+	}
+
+	// Peel off any leading `@header chameleon.v1.LayerHeader { ... }`
+	// preamble before handing the schema-typed body to pxf. The PXF
+	// lexer doesn't recognize `@header` (only `@type`), so chameleon
+	// scans the prefix itself — see internal/header for the
+	// design notes. Author-omitted headers are fine: Split returns
+	// (nil, nil) and data passes through unchanged.
+	if match, err := header.Split(data); err != nil {
+		return nil, fmt.Errorf("resolver: parse layer %q @header: %w", ref.EntryID, err)
+	} else if match != nil {
+		if match.Type != header.TypeName {
+			return nil, fmt.Errorf("resolver: layer %q: @header type must be %q, got %q",
+				ref.EntryID, header.TypeName, match.Type)
+		}
+		parsed, err := header.Parse(match.Inner)
+		if err != nil {
+			return nil, fmt.Errorf("resolver: parse layer %q @header: %w", ref.EntryID, err)
+		}
+		if err := parsed.Check(header.Ref{
+			EntryID:   ref.EntryID,
+			Env:       ref.Env,
+			Encrypted: ref.Encrypted,
+		}); err != nil {
+			return nil, fmt.Errorf("resolver: layer %q: %w", ref.EntryID, err)
+		}
+		data = match.Rest
 	}
 
 	// SkipPostDecode disables protowire-go's per-parse defaults +

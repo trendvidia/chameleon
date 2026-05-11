@@ -1,14 +1,17 @@
+# Optional preamble — id must match the chain entry's id, environment
+# must match the env this materialization is bound to. Both checked at
+# resolve time.
 @header chameleon.v1.LayerHeader
 {
   id = "env"
   environment = "dev"
+  content_sha256 = "b129a197d73f5f223f7247f06110616f2e45d5a95e8c2785e1503fcc986b00e1"
 }
 
-# Tweak rather than override: prepend "dev." to the inherited base_url.
-# After this layer merges, base_url = "dev.mybigproject.com" and api_url
-# (still the template "api.${base_url}") resolves to
-# "api.dev.mybigproject.com" at the interpolation pass.
-base_url = "dev.${base_url}"
+# Override the intermediate `domain` variable. base.pxf's `base_url` and
+# `api_url` templates (both `${domain}`-based) re-resolve post-merge to
+# "https://dev.mybigproject.com" and "https://api.dev.mybigproject.com".
+domain = "dev.mybigproject.com"
 
 feature_flags = {
   "new_dashboard": true

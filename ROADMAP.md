@@ -12,6 +12,47 @@ Things deliberately deferred from the v0.x line. Order is rough priority — ite
 
 **Impact when done:** type safety in `chain/expand.go`. No user-visible API change.
 
+### Generic `@<directive>` grammar in protowire-go
+
+Chameleon currently extracts the `@header chameleon.v1.LayerHeader { ... }`
+preamble itself in `internal/header` because protowire-go's PXF lexer
+only recognizes `@type` and emits `ILLEGAL` for any other `@<name>`.
+The byte scanner mirrors PXF tokenization rules (strings, comments,
+escapes, brace matching) — perfectly serviceable, but duplicates logic
+that already lives in the upstream lexer.
+
+The proper home for this is protowire-go growing a generic
+`@<directive> [<type>] { ... }` form and exposing a multi-document
+parse API (`pxf.UnmarshalDocument`-style) that returns the directive
+list plus the schema-typed body. Chameleon's `internal/header/scan.go`
+then collapses to a call into that API.
+
+**Why deferred:** the preamble already works end-to-end from
+chameleon's perspective; the upstream change is a generic-grammar
+question driven by whoever else needs multi-directive PXF (k8s-style
+manifests, chameleon's own future `@trace` / `@provenance` blocks),
+not by chameleon's v0.4.x line.
+
+**Impact when done:** delete `internal/header/scan.go`; chameleon's
+resolver consumes structured directives directly. No user-visible
+behavior change.
+
+### Resolver-time `content_sha256` verification
+
+The `chameleon verify` CLI checks `@header.content_sha256` against
+each layer's body hash on demand. The resolver itself parses the
+field but does not run the check at every Resolve — that would need
+a warning channel (the spec says "warn on mismatch, don't reject")
+and chameleon has intentionally avoided taking on a logger ABI (see
+"Logging hooks" under non-goals). A `resolver.WithContentSHA256Check`
+option could surface as either a hard-error mode or by routing into
+the existing OTel meter as a counter — both are viable, neither is
+yet pressing.
+
+**Why deferred:** out-of-band verification via the CLI covers the
+typical "did this layer file get tampered with?" workflow without
+inflating the resolver's hot path or its option surface.
+
 ### `protoc-gen-chameleon-go` field-replacement variant
 
 Current sidecar mode emits typed accessors *alongside* protoc-gen-go's output, but the proto-generated `*pxfv1.Secret.Value` field is still a publicly readable `string` on the struct. Reads return `""` after `Resolve` (because `parse.Move` clears it post-merge), but the footgun exists: a developer who writes `cfg.DbPassword.Value` gets a confusing empty string instead of a compile error.
