@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-11
+
+Upstream-handoff release. `@header` preamble parsing moves from
+chameleon's own byte scanner (`internal/header/scan.go`, ~250 lines)
+to native PXF grammar support introduced in protowire-go v0.72.0
+(`Result.Directives()`). End-to-end behavior is identical — same
+sanity checks, same CLI output, same file format — but the chameleon
+side is ~500 lines lighter and the directive vocabulary becomes
+extensible (chameleon can add `@trace`, `@provenance`, etc. later
+without re-tokenizing).
+
+### Changed
+
+- **Resolver consumes `pxf.Result.Directives()`.** `loadAndParse` is
+  back to a single `pxf.UnmarshalFull` call; chameleon iterates the
+  resulting directive list and calls `header.HandleDirectives(...)`
+  to run the existing id / environment / encrypted checks.
+
+- **`@header` type tag is now optional.** Authors may write
+  `@header chameleon.v1.LayerHeader { ... }` (preferred — file is
+  self-documenting) or `@header { ... }` (terse). chameleon owns
+  the directive-name → LayerHeader mapping; if the type tag is
+  present, it must match. The block contents are validated against
+  the same descriptor either way.
+
+- **`chameleon verify` and `chameleon hash`** now go through
+  `pxf.Parse` + `Document.BodyOffset` instead of the local scanner.
+  Output identical.
+
+### Removed
+
+- **`internal/header/scan.go` and `scan_test.go`** (498 lines).
+  Replaced by `pxf.Result.Directives()`. Functions previously
+  exported (`header.Split`) are gone; consumers should switch to
+  iterating `Result.Directives()`.
+
+### Updated
+
+- **`require github.com/trendvidia/protowire-go`** bumped from
+  v0.71.0 to v0.72.0. Spec change tracked in
+  [`protowire` v0.72.0](https://github.com/trendvidia/protowire/releases/tag/v0.72.0).
+
 ## [0.4.0] — 2026-05-11
 
 `@header` preamble release. Layer files can now carry sanity-check

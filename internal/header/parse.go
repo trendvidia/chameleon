@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 
+// Package header consumes `@header chameleon.v1.LayerHeader { ... }`
+// preambles attached to layer files.
+//
+// protowire-go's PXF lexer recognizes `@<directive>` natively (since
+// v0.72.0) and records each directive's body bytes on
+// `pxf.Result.Directives()`. chameleon iterates the recorded
+// directives, parses each as a `chameleon.v1.LayerHeader`, and runs
+// sanity checks against the chain entry the layer was loaded for.
 package header
 
 import (
@@ -18,10 +26,13 @@ import (
 // TypeName is the only @header type chameleon currently understands.
 const TypeName = "chameleon.v1.LayerHeader"
 
+// DirectiveName is the directive keyword (the bit after `@`). Always
+// "header" in chameleon's vocabulary.
+const DirectiveName = "header"
+
 // layerHeaderProto mirrors proto/chameleon/v1/layer.proto. Kept inline
 // so chameleon doesn't need a codegen step for its own protos; matches
-// the pattern in chain/load.go. When the typed-bindings work in
-// ROADMAP P2 lands this becomes dead.
+// the pattern in chain/load.go.
 const layerHeaderProto = `
 syntax = "proto3";
 package chameleon.v1;
@@ -51,8 +62,9 @@ type Ref struct {
 	Encrypted bool
 }
 
-// Parse decodes the inner body of a `@header chameleon.v1.LayerHeader
-// { ... }` block — the bytes between the braces, exclusive.
+// Parse decodes header body bytes — the bytes between the braces of a
+// `@header <type> { ... }` block. Typically obtained from
+// `pxf.Result.Directives()[i].Body` after a layer-file unmarshal.
 func Parse(inner []byte) (*Parsed, error) {
 	desc, err := descriptor()
 	if err != nil {
@@ -71,7 +83,8 @@ func Parse(inner []byte) (*Parsed, error) {
 // omitted is not checked (three-state presence semantics).
 //
 // `notes` is informational and not checked. `content_sha256` is parsed
-// but not yet verified — see chameleon ROADMAP.md.
+// but not yet verified at resolve time — see chameleon ROADMAP.md and
+// the `chameleon verify` CLI subcommand for on-demand verification.
 func (p *Parsed) Check(ref Ref) error {
 	fields := p.msg.Descriptor().Fields()
 
@@ -91,6 +104,30 @@ func (p *Parsed) Check(ref Ref) error {
 		got := p.msg.Get(fields.ByName("encrypted")).Bool()
 		if got != ref.Encrypted {
 			return fmt.Errorf("@header.encrypted = %v does not match chain entry encrypted = %v", got, ref.Encrypted)
+		}
+	}
+	return nil
+}
+
+// HandleDirectives walks a list of directives recorded by the PXF
+// decoder, parses each @header against the canonical LayerHeader
+// shape, and runs Check against ref. Unknown directives (anything
+// other than @header) are an error: chameleon owns the layer-file
+// directive vocabulary.
+func HandleDirectives(dirs []pxf.Directive, ref Ref) error {
+	for _, dir := range dirs {
+		if dir.Name != DirectiveName {
+			return fmt.Errorf("unknown directive @%s at %v", dir.Name, dir.Pos)
+		}
+		if dir.Type != TypeName {
+			return fmt.Errorf("@header type must be %q, got %q", TypeName, dir.Type)
+		}
+		p, err := Parse(dir.Body)
+		if err != nil {
+			return fmt.Errorf("@header parse: %w", err)
+		}
+		if err := p.Check(ref); err != nil {
+			return err
 		}
 	}
 	return nil

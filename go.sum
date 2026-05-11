@@ -332,8 +332,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/tjfoc/gmsm v1.4.1 h1:aMe1GlZb+0bLjn+cKTPEvvn9oUEBlJitaZiiBwsbgho=
 github.com/tjfoc/gmsm v1.4.1/go.mod h1:j4INPkHWMrhJb38G+J6W4Tw0AbuN8Thu3PbdVYhVcTE=
-github.com/trendvidia/protowire-go v0.71.0 h1:UlRqfmRJ0yHIWe1E+5Gx0VGqFz1JUChPDOyPhcvERR0=
-github.com/trendvidia/protowire-go v0.71.0/go.mod h1:cZsYUs9O8LxRLIl4qNiKumRBzL+PTQhYNHEKRjC4cs0=
+github.com/trendvidia/protowire-go v0.72.0 h1:rCcNvsD0/C3EwMDRk30SDvYPEXd//hh6+Un28wya0dY=
+github.com/trendvidia/protowire-go v0.72.0/go.mod h1:cZsYUs9O8LxRLIl4qNiKumRBzL+PTQhYNHEKRjC4cs0=
 github.com/urfave/cli v1.22.17 h1:SYzXoiPfQjHBbkYxbew5prZHS1TOLT3ierW8SYLqtVQ=
 github.com/urfave/cli v1.22.17/go.mod h1:b0ht0aqgH/6pBYzzxURyrM4xXNgsoT/n2ZzwQiEhNVo=
 github.com/xdg-go/pbkdf2 v1.0.0/go.mod h1:jrpuAogTd400dnrH08LKmI/xc1MbPOebTwRqcT5RDeI=
