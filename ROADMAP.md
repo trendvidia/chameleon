@@ -10,7 +10,7 @@ All three reuse the existing OTel meter plumbing. No cross-repo coordination.
 - **[#3 — secret: per-Open() observability](https://github.com/trendvidia/chameleon/issues/3)** — three new instruments (`chameleon.secret.opens` counter, `.active` gauge, `.open.duration` histogram). Wraps memguard's `LockedBuffer` so chameleon can track active holders, not just resolve-time counts.
 - **[#4 — docs: pair resolve-time provenance with runtime observability](https://github.com/trendvidia/chameleon/issues/4)** — README "Debugging" section that distinguishes `chameleon explain` (compile-time: which layer set X) from per-Open metrics (runtime: who's holding X right now). Ships with #3.
 
-Plus upstream: **[getsops/sops#2179 — decrypt API lacks context.Context](https://github.com/getsops/sops/issues/2179)** filed; no chameleon code change required, but pre-existing limitation graduates from "out of scope" to "tracked upstream."
+Plus closed via fork: **sops context.Context** — shipped in [trendvidia/sops v3.13.2](https://github.com/trendvidia/sops/releases/tag/v3.13.2) and adopted by chameleon (via `replace` directive in `go.mod` + ``decrypt.DataIntoWriterContext`` in `chameleon/sops/decrypt.go`). Upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) remains open as a pull-request candidate. Cancellation now honored end-to-end through AWS / GCP / Azure / Vault natively, HuaweiCloud KMS via goroutine shim (see fork [#10](https://github.com/trendvidia/sops/issues/10)).
 
 ## Milestone 2 — v0.7.0 (new tooling)
 
@@ -62,6 +62,6 @@ Distinct from metrics (which we DO support — see OTel). Chameleon doesn't emit
 
 PXF is proto3-only by spec; the codec never produces a `GroupKind` field. Chameleon's pipeline matches that scope. If a future PXF revision admits proto2, this gets revisited.
 
-### Sops `context.Context` mid-call cancellation — now tracked upstream
+### Sops `context.Context` mid-call cancellation — CLOSED via fork
 
-Was "out of scope" because no upstream path existed. Filed [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) proposing `decrypt.DataWithContext`. Chameleon's `Decrypter.Decrypt` continues to check `ctx.Err()` pre-call; once sops merges the upstream change, chameleon threads `ctx` through and the limitation closes without further chameleon design work.
+Resolved in [trendvidia/sops v3.13.2](https://github.com/trendvidia/sops/releases/tag/v3.13.2) and adopted by chameleon (see v0.6.0). Chameleon's `Decrypter.Decrypt` now threads `ctx` through `decrypt.DataIntoWriterContext`; in-flight KMS round-trips abort on ctx deadline / cancellation across AWS / GCP / Azure / Vault. HuaweiCloud KMS is approximated via a goroutine shim — tracked at [sops fork #10](https://github.com/trendvidia/sops/issues/10). Upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) remains open as an upstream PR candidate; until merged, chameleon consumes via the `replace` directive in `go.mod`.

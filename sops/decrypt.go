@@ -136,21 +136,88 @@ func (defaultDecrypter) Decrypt(ctx context.Context, ciphertext []byte, format F
 	if len(ciphertext) == 0 {
 		return nil, ErrEmptyCiphertext
 	}
-	// Honor caller cancellation. sops's decrypt API has no ctx hook,
-	// so we check ctx before the (potentially slow) cloud-KMS round-
-	// trip and let the call run to completion afterward.
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
 
-	plaintext, err := decrypt.Data(ciphertext, format.String())
-	if err != nil {
+	// Stream plaintext directly into a memguard-locked buffer via the
+	// fork's decrypt.DataIntoWriterContext (trendvidia/sops v3.13.2+).
+	// The previous decrypt.Data + NewBufferFromBytes flow had a
+	// transient []byte on the regular Go heap between sops returning
+	// and memguard copying — closing that gap is the load-bearing
+	// piece of trendvidia/chameleon#9 phase 1.
+	//
+	// ctx threads end-to-end through sops's keyservice + KMS layers;
+	// a deadlined ctx aborts in-flight KMS round-trips instead of
+	// blocking until the provider's internal timeout.
+	w := &memguardWriter{}
+	if err := decrypt.DataIntoWriterContext(ctx, w, ciphertext, format.String()); err != nil {
+		w.Destroy()
 		return nil, fmt.Errorf("sops: decrypt: %w", err)
 	}
 
-	// NewBufferFromBytes copies plaintext into the locked region and
-	// wipes the source slice. Ciphertext is no longer needed; wipe.
-	buf := memguard.NewBufferFromBytes(plaintext)
 	memguard.WipeBytes(ciphertext)
-	return buf, nil
+	return w.finalize(), nil
+}
+
+// memguardWriter is an io.Writer whose Write calls land bytes inside a
+// memguard.LockedBuffer. Used as the sink for
+// decrypt.DataIntoWriterContext so plaintext never resides on the
+// regular Go heap during the sops → chameleon handoff.
+//
+// Growth strategy: start with a small mlocked buffer and grow by
+// allocating a larger one + copying when full. memguard buffers are
+// fixed-size, so growth requires alloc + copy + destroy old. Doubles
+// each time.
+type memguardWriter struct {
+	buf *memguard.LockedBuffer
+	n   int
+}
+
+const initialMemguardSize = 4096
+
+func (w *memguardWriter) Write(p []byte) (int, error) {
+	if w.buf == nil {
+		size := initialMemguardSize
+		if len(p) > size {
+			size = len(p)
+		}
+		w.buf = memguard.NewBuffer(size)
+	}
+	for w.n+len(p) > w.buf.Size() {
+		newSize := w.buf.Size() * 2
+		for newSize < w.n+len(p) {
+			newSize *= 2
+		}
+		next := memguard.NewBuffer(newSize)
+		copy(next.Bytes(), w.buf.Bytes()[:w.n])
+		w.buf.Destroy()
+		w.buf = next
+	}
+	copy(w.buf.Bytes()[w.n:], p)
+	w.n += len(p)
+	return len(p), nil
+}
+
+// finalize trims the buffer to the exact bytes written and returns it.
+// Caller takes ownership.
+func (w *memguardWriter) finalize() *memguard.LockedBuffer {
+	if w.buf == nil {
+		return memguard.NewBuffer(0)
+	}
+	if w.n == w.buf.Size() {
+		buf := w.buf
+		w.buf = nil
+		return buf
+	}
+	trimmed := memguard.NewBufferFromBytes(w.buf.Bytes()[:w.n])
+	w.buf.Destroy()
+	w.buf = nil
+	return trimmed
+}
+
+// Destroy wipes any partial state. Safe to call on a Writer that has
+// never been written to.
+func (w *memguardWriter) Destroy() {
+	if w.buf != nil {
+		w.buf.Destroy()
+		w.buf = nil
+	}
 }
