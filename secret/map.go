@@ -24,12 +24,41 @@ type Map struct {
 	mu        sync.Mutex
 	entries   map[string]*Secret
 	destroyed bool
+
+	// Observability — when non-nil, each Set() wires the Instruments
+	// onto the inserted Secret so its Open()/Destroy() record per-path
+	// OTel metrics. env is attached as a stable attribute.
+	instruments *Instruments
+	env         string
+}
+
+// MapOption configures a Map at construction time.
+type MapOption func(*Map)
+
+// WithInstruments enables per-path observability on every Secret
+// inserted into the Map. The env string is attached as the
+// `chameleon.env` attribute on each recording; pass "" to suppress it.
+// Pass nil instruments (or no [WithInstruments] option) for the
+// noop-meter default.
+func WithInstruments(i *Instruments, env string) MapOption {
+	return func(m *Map) {
+		m.instruments = i
+		m.env = env
+	}
 }
 
 // NewMap returns an empty Map ready for population. Used by
 // [parse.Move]; consumers normally don't construct one directly.
-func NewMap() *Map {
-	return &Map{entries: make(map[string]*Secret)}
+//
+// Options:
+//   - [WithInstruments] — wires per-path OTel metrics on every
+//     Open/Destroy of secrets inserted into this Map.
+func NewMap(opts ...MapOption) *Map {
+	m := &Map{entries: make(map[string]*Secret)}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // Get returns the Secret stored at path, or nil if no secret was put
@@ -88,6 +117,11 @@ func (m *Map) Set(path string, s *Secret) {
 	}
 	if old, ok := m.entries[path]; ok && old != nil {
 		old.Destroy()
+	}
+	if s != nil && m.instruments != nil {
+		s.instruments = m.instruments
+		s.path = path
+		s.env = m.env
 	}
 	m.entries[path] = s
 }

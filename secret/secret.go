@@ -32,7 +32,9 @@
 package secret
 
 import (
+	"context"
 	"errors"
+	"time"
 
 	"github.com/awnumar/memguard"
 )
@@ -62,6 +64,13 @@ type Secret struct {
 
 	hint        string
 	fingerprint string
+
+	// Observability fields, populated by Map.Set when the Map was
+	// constructed with [WithInstruments]. nil instruments → recordings
+	// become no-op. path + env are used as attribute values.
+	instruments *Instruments
+	path        string
+	env         string
 }
 
 // FromLockedBytes constructs a Secret by sealing the supplied
@@ -88,7 +97,7 @@ func FromString(s, hint, fingerprint string) *Secret {
 	return FromLockedBytes(buf, hint, fingerprint)
 }
 
-// Open returns a LockedBuffer holding the plaintext. The caller MUST
+// Open returns an [OpenedBuffer] holding the plaintext. The caller MUST
 // Destroy the returned buffer when finished:
 //
 //	buf, err := s.Open()
@@ -98,14 +107,33 @@ func FromString(s, hint, fingerprint string) *Secret {
 //
 // Callers should keep the open window narrow — the buffer is mlocked
 // but represents a moment of plaintext exposure.
-func (s *Secret) Open() (*memguard.LockedBuffer, error) {
+//
+// When this Secret was inserted into a [Map] constructed with
+// [WithInstruments], Open records three OTel metrics: chameleon.secret.opens
+// (counter), chameleon.secret.active (up-down counter, incremented here
+// and decremented by [OpenedBuffer.Destroy]), and chameleon.secret.open.duration
+// (histogram, recorded by Destroy). When the Secret has no Instruments
+// attached, the recordings are no-op.
+func (s *Secret) Open() (*OpenedBuffer, error) {
 	if s.destroyed {
 		return nil, ErrDestroyed
 	}
 	if s.enclave == nil {
 		return nil, ErrUnset
 	}
-	return s.enclave.Open()
+	buf, err := s.enclave.Open()
+	if err != nil {
+		return nil, err
+	}
+	o := &OpenedBuffer{buf: buf, openedAt: time.Now()}
+	if s.instruments != nil {
+		o.instruments = s.instruments
+		o.attrs = pathAttr(s.path, s.env)
+		ctx := context.Background()
+		s.instruments.opens.Add(ctx, 1, o.attrs)
+		s.instruments.active.Add(ctx, 1, o.attrs)
+	}
+	return o, nil
 }
 
 // Destroy wipes the underlying enclave. Subsequent Open calls return
