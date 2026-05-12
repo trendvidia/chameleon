@@ -408,7 +408,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 - **`protoc-gen-chameleon-go` sidecar mode** doesn't hide the `*pxfv1.Secret.Value` field on the proto-generated struct. `cfg.DbPassword.Value` compiles and runs — but reads `""` after `Resolve`, because `parse.Move` clears it post-merge. The plaintext lives only in the memguard `Enclave`. Discipline-based protection rather than type-system. A field-replacement plugin variant would close this at compile time but requires implementing `proto.Message` for a hand-rolled type — not yet done.
 
-- **Plaintext-in-heap window — closed for scalar shorthand, residual for block form.** Scalar-shorthand secrets (`pw = "x"`, repeated `["a", "b"]`, map values `{ "acme": "k" }`) bypass the proto message entirely: the chameleon resolver wires protowire-go's `UnmarshalOptions.OnSecretField` hook (added in protowire-go v0.76.0) to seal those values into a memguard `Enclave` mid-decode. The bytes never land on the regular Go heap as `*pxfv1.Secret.Value`. Block-form secrets (`pw { value = "x", hint = "h" }`) still ride the standard string-field decoder, so their plaintext lives transiently on `Secret.Value` until `parse.MoveInto` runs at the end of `Resolve` — Go strings are immutable, so those bytes can't be wiped (only GCed). The window is now scoped to "secrets users wrote in block form, between decode and the final walker," which is the rarer surface. To close it for a layer, normalize its secrets to scalar shorthand. Hint and fingerprint metadata are always block-form-only and are never sensitive.
+- **Plaintext-in-heap window — closed end-to-end.** All `pxf.Secret` value bytes — scalar shorthand AND block form — bypass the proto message: the chameleon resolver wires protowire-go's `UnmarshalOptions.OnSecretField` hook (scalar shorthand from v0.76.0; block form from v0.77.0) to seal those values into a memguard `Enclave` mid-decode. `*pxfv1.Secret.Value` never holds the plaintext on the regular Go heap regardless of the source's authoring form. Hint and fingerprint metadata still flow through the proto message and are folded onto the Map's Secret entry by `parse.MoveInto`'s post-decode walker; both are diagnostic, not sensitive. The walker remains as a defensive sweep that catches orphans (paths a higher layer's `null` cleared) and enriches hook-routed entries with the block-form metadata.
 
 - **WKT atomic merge** — `pxf.Secret` / `Timestamp` / `BigInt` / etc. replace whole, never deep-merge. So a higher layer's `db_password = "new"` discards a lower layer's `hint`. Re-declare metadata explicitly if you want it preserved.
 
@@ -421,7 +421,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 | Dep | Version |
 |---|---|
 | Go | 1.25+ |
-| `github.com/trendvidia/protowire-go` | `>= v0.76.0` (was `>= v0.71.0`; bumped for `UnmarshalOptions.OnSecretField`) |
+| `github.com/trendvidia/protowire-go` | `>= v0.77.0` (block-form `OnSecretField` routing; v0.76.0+ covers scalar shorthand) |
 | `github.com/getsops/sops/v3` | `>= v3.13.0` |
 | `github.com/awnumar/memguard` | `>= v0.22.5` |
 

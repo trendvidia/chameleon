@@ -266,19 +266,28 @@ func (w *walker) takeSecret(secMsg protoreflect.Message, path string) error {
 		w.visited[path] = struct{}{}
 	}
 	plaintext := secMsg.Get(valueFd).String()
-	if plaintext == "" {
-		// Unset secret (or already-moved or hook-routed). Skip — don't
-		// insert empty Secrets that would surprise consumers calling
-		// Get(). Hook-routed entries are already in the Map; the
-		// visited mark above keeps them.
-		return nil
-	}
 	var hint, fingerprint string
 	if hf := desc.Fields().ByName("hint"); hf != nil {
 		hint = secMsg.Get(hf).String()
 	}
 	if ff := desc.Fields().ByName("fingerprint"); ff != nil {
 		fingerprint = secMsg.Get(ff).String()
+	}
+	if plaintext == "" {
+		// Unset secret (or already-moved or hook-routed). Don't
+		// insert an empty Secret. But — if this was hook-routed
+		// (value empty because protowire-go's OnSecretField took the
+		// bytes mid-decode, while hint/fingerprint were assigned to
+		// the proto message normally — true for block-form Secrets
+		// since protowire-go v0.77.0), fold the metadata back onto
+		// the Map's existing hook entry so consumers reading
+		// Secret.Hint() / Fingerprint() see what the source supplied.
+		if (hint != "" || fingerprint != "") && w.secrets != nil {
+			if existing := w.secrets.Get(path); existing != nil {
+				existing.SetMetadata(hint, fingerprint)
+			}
+		}
+		return nil
 	}
 	w.secrets.Set(path, secret.FromString(plaintext, hint, fingerprint))
 	secMsg.Clear(valueFd)

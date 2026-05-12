@@ -160,3 +160,23 @@ func (s *Secret) Hint() string { return s.hint }
 // authoring time (SHA-256 prefix, JWK thumbprint, etc.). Empty if the
 // authoring file did not provide one.
 func (s *Secret) Fingerprint() string { return s.fingerprint }
+
+// SetMetadata updates hint and fingerprint on an existing Secret.
+// Used by [parse.MoveInto] to enrich a hook-routed Map entry with
+// the diagnostic metadata that block-form `pw { value hint
+// fingerprint }` carries — the protowire-go OnSecretField hook
+// (since v0.77.0) routes value through the hook but assigns hint
+// and fingerprint to the proto message normally, so the resolver
+// folds them back onto the Secret after decode. Empty values
+// overwrite (the caller is responsible for skip-when-empty
+// semantics).
+//
+// Safe to call on a Secret already inserted into a [Map]; hint and
+// fingerprint are plain Go strings, not memguard-backed.
+func (s *Secret) SetMetadata(hint, fingerprint string) {
+	if s == nil {
+		return
+	}
+	s.hint = hint
+	s.fingerprint = fingerprint
+}
