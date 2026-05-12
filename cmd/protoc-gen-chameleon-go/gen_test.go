@@ -40,6 +40,23 @@ message AppConfig {
   map<string, pxf.Secret> tenant_keys = 5;
   map<int32, pxf.Secret> port_keys = 6;
 
+  // Additional map-key kinds — exercise every branch of the
+  // codegen plugin's runtime key formatter (FormatInt for int64,
+  // FormatUint with/without conversion for uint32/uint64,
+  // FormatBool for bool). Field numbers 20-23 cover the function-
+  // form emit (joinFragmentRefs in gen.go); 24-27 cover the
+  // wrapper-mode map chain-helper emit (mapKeyRuntimeExpr in
+  // gen_resolved.go). Both helpers must agree byte-for-byte —
+  // these fixtures lock in that they do for all six valid kinds.
+  map<int64, pxf.Secret> shard_keys = 20;     // FormatInt(v, 10)         [function-form]
+  map<uint32, pxf.Secret> rate_buckets = 21;   // FormatUint(uint64(v), 10) [function-form]
+  map<uint64, pxf.Secret> large_ids = 22;      // FormatUint(v, 10)         [function-form]
+  map<bool, pxf.Secret> flag_keys = 23;        // FormatBool(v)             [function-form]
+  map<int64, Endpoint> sites_by_seq = 24;      // FormatInt(v, 10)         [wrapper chain]
+  map<uint32, Endpoint> sites_by_port = 25;    // FormatUint(uint64(v), 10) [wrapper chain]
+  map<uint64, Endpoint> sites_by_uid = 26;     // FormatUint(v, 10)         [wrapper chain]
+  map<bool, Endpoint> sites_by_flag = 27;      // FormatBool(v)             [wrapper chain]
+
   // Recursion cases — the original sidecar plugin skipped these.
   repeated Endpoint replicas = 7;             // repeated user-msg with inner Secret
   map<string, Endpoint> sites = 8;            // map<K, user-msg> with inner Secret
