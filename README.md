@@ -412,7 +412,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 - **WKT atomic merge** — `pxf.Secret` / `Timestamp` / `BigInt` / etc. replace whole, never deep-merge. So a higher layer's `db_password = "new"` discards a lower layer's `hint`. Re-declare metadata explicitly if you want it preserved.
 
-- **Sops API has no `ctx.Context` hook** — slow KMS round-trips can't be interrupted mid-decrypt. The chameleon Decrypter checks `ctx.Err()` before invoking sops but cannot cancel in-flight calls.
+- **Sops `context.Context` threading — closed via the `trendvidia/sops/v3` fork.** Chameleon's `Decrypter.Decrypt` threads `ctx` through `decrypt.DataIntoWriterContext`; in-flight KMS round-trips abort on `ctx` deadline / cancellation natively for AWS / GCP / Azure / Vault. HuaweiCloud KMS is approximated via a goroutine shim (see fork [#10](https://github.com/trendvidia/sops/issues/10)). The `chameleon migrate` CLI uses the corresponding `encrypt.UsingSameKeysAsWithContext` so re-encrypts honor ctx the same way. Upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) tracks the merge candidate; until then, chameleon consumes via the `replace` directive — see [Compatibility → Replace directives](#replace-directives--required-in-your-gomod).
 
 - **Forked dependencies require explicit `replace` directives in consumer `go.mod`.** Chameleon depends on two upstream-incompatible forks (`trendvidia/sops/v3`, `trendvidia/protobuf-go`); Go's `replace` directive is non-transitive so the chameleon repo's `replace` does NOT propagate to consumers. See **Compatibility → Replace directives** above for the exact lines to copy into your own `go.mod`.
 
