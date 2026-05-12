@@ -44,6 +44,26 @@ message AppConfig {
   repeated Endpoint replicas = 7;             // repeated user-msg with inner Secret
   map<string, Endpoint> sites = 8;            // map<K, user-msg> with inner Secret
   Cluster primary_cluster = 9;                // nested user-msg with deeper containers
+
+  // Non-Secret field shapes (Phase 2b PR3 — field-by-field getters).
+  // These should each generate a thin pass-through getter on
+  // AppConfigResolved so consumers can stop reaching for Underlying().
+  int32 max_replicas = 10;                    // scalar primitive (int)
+  bool enabled = 11;                          // scalar primitive (bool)
+  double rate_limit_per_sec = 12;             // scalar primitive (float)
+  bytes signature = 13;                       // bytes
+  Mode mode = 14;                             // scalar enum
+  repeated string feature_flags = 15;         // repeated primitive
+  map<string, string> labels = 16;            // map<*, primitive>
+  Metadata metadata = 17;                     // scalar message, no Secret inside
+  repeated Metadata history = 18;             // repeated message, no Secret
+  map<string, Metadata> annotations = 19;     // map<*, msg>, no Secret
+
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_FAST = 1;
+    MODE_SAFE = 2;
+  }
 }
 
 message Endpoint {
@@ -54,6 +74,13 @@ message Endpoint {
 
 message Cluster {
   repeated Endpoint nodes = 1;                // two-deep: AppConfig.primary_cluster.nodes[i].auth_token
+}
+
+// Metadata is intentionally Secret-free; reference points for the
+// PR3 field-getter emit on non-wrapper-bearing message types.
+message Metadata {
+  string version = 1;
+  int32 generation = 2;
 }
 `
 
