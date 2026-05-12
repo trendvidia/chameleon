@@ -488,6 +488,20 @@ func TestResolved_FieldGetter_MapMessage_NoSecrets(t *testing.T) {
 	assert.NotContains(t, out, "type AppConfigAnnotationsResolved struct {")
 }
 
+// TestResolved_FieldGetter_MapEnum — map<*, Enum> renders the value
+// type as the protogen-managed enum GoIdent (e.g.
+// `map[string]AppConfig_Mode`), not bare `int32`. Pre-v0.11 the
+// codegen punted on enum values and emitted `int32` — technically
+// compile-safe (enums ARE int32 under the hood) but broke the
+// visible signature contract.
+func TestResolved_FieldGetter_MapEnum(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) ModeByName() map[string]AppConfig_Mode {",
+		"map<*, enum> should render value as the enum's GoIdent (AppConfig_Mode), not int32")
+	assert.NotContains(t, out, "func (r *AppConfigResolved) ModeByName() map[string]int32",
+		"regression guard: the v0.10 'punt to int32' fallback should not fire for well-formed enum-valued maps")
+}
+
 // TestResolved_FieldGetter_NotEmittedForSecretLeaves — pxf.Secret in
 // any shape (scalar / repeated / map<*, Secret>) is covered by the
 // typed Secret accessor methods. The generic field-getter emit must

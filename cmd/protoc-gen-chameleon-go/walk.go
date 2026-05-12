@@ -175,6 +175,23 @@ func mapValueMessage(f *protogen.Field) *protogen.Message {
 	return nil
 }
 
+// mapValueEnum is the enum-typed counterpart of mapValueMessage. For a
+// `map<K, MyEnum>` field, returns the *protogen.Enum for MyEnum so
+// the codegen can render `map[K]MyEnum` with the protogen-managed
+// import. Returns nil for maps whose value isn't an enum (caller
+// should have already checked valFd.Kind() == protoreflect.EnumKind).
+func mapValueEnum(f *protogen.Field) *protogen.Enum {
+	if f.Message == nil {
+		return nil
+	}
+	for _, sub := range f.Message.Fields {
+		if string(sub.Desc.Name()) == "value" && sub.Enum != nil {
+			return sub.Enum
+		}
+	}
+	return nil
+}
+
 func isSecret(d protoreflect.MessageDescriptor) bool {
 	return d != nil && d.FullName() == secretFullName
 }
