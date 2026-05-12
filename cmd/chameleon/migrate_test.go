@@ -132,6 +132,50 @@ func TestMigrateOne_NonDefaultSourceSkipped(t *testing.T) {
 	assert.Contains(t, out.String(), "non-default source")
 }
 
+// TestMigrateOne_DeleteField_Toplevel — pipeline-level smoke for the
+// delete-field transform on a plaintext layer.
+func TestMigrateOne_DeleteField_Toplevel(t *testing.T) {
+	dir := t.TempDir()
+	path := "base.pxf"
+	full := filepath.Join(dir, path)
+	require.NoError(t, os.WriteFile(full, []byte("feature = true\nkeep = 1\n"), 0o644))
+
+	ref := chain.LayerRef{EntryID: "base", Path: path, Required: true}
+	tf := &deleteField{path: "feature"}
+
+	var out bytes.Buffer
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default())
+	require.NoError(t, err)
+	assert.Equal(t, migrateChanged, status)
+
+	updated, err := os.ReadFile(full)
+	require.NoError(t, err)
+	assert.NotContains(t, string(updated), "feature")
+	assert.Contains(t, string(updated), "keep = 1")
+}
+
+// TestMigrateOne_RenameField_Nested — pipeline-level smoke for the
+// rename-field transform on a nested path.
+func TestMigrateOne_RenameField_Nested(t *testing.T) {
+	dir := t.TempDir()
+	path := "base.pxf"
+	full := filepath.Join(dir, path)
+	require.NoError(t, os.WriteFile(full, []byte("db {\n  user = \"alice\"\n}\n"), 0o644))
+
+	ref := chain.LayerRef{EntryID: "base", Path: path, Required: true}
+	tf := &renameField{from: "db.user", to: "db.username"}
+
+	var out bytes.Buffer
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default())
+	require.NoError(t, err)
+	assert.Equal(t, migrateChanged, status)
+
+	updated, err := os.ReadFile(full)
+	require.NoError(t, err)
+	assert.Contains(t, string(updated), `username = "alice"`)
+	assert.NotContains(t, string(updated), `user = "alice"`)
+}
+
 // TestMigrateOne_EncryptedLayer_AgeRoundTrip — encrypts a PXF fixture
 // with age, runs migrate to add a field, and verifies the resulting
 // file decrypts back with the new field present. Exercises the full
