@@ -39,3 +39,36 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
+
+  bench:
+    name: bench (vs main)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+      - name: benchmark PR head
+        run: go test -bench=. -benchmem -count=5 -run='^$' -benchtime=500ms ./... | tee /tmp/bench-new.txt
+      - name: benchmark main baseline
+        continue-on-error: true
+        run: |
+          git fetch origin main --depth=1
+          git switch --detach origin/main
+          go test -bench=. -benchmem -count=5 -run='^$' -benchtime=500ms ./... | tee /tmp/bench-old.txt
+          git switch -
+      - name: compare with benchstat
+        continue-on-error: true
+        run: |
+          if [ -s /tmp/bench-old.txt ]; then
+            benchstat /tmp/bench-old.txt /tmp/bench-new.txt
+          else
+            echo "No baseline available (main has no benchmarks yet); PR-head results:"
+            cat /tmp/bench-new.txt
+          fi

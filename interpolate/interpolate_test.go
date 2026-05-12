@@ -47,8 +47,8 @@ message Endpoint {
 }
 `
 
-func compileApp(t *testing.T) protoreflect.MessageDescriptor {
-	t.Helper()
+func compileApp(tb testing.TB) protoreflect.MessageDescriptor {
+	tb.Helper()
 	sources := map[string]string{
 		"app.proto":        appProtoSrc,
 		"pxf/secret.proto": secretProtoSrc,
@@ -59,16 +59,16 @@ func compileApp(t *testing.T) protoreflect.MessageDescriptor {
 		),
 	}
 	files, err := comp.Compile(context.Background(), "app.proto")
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	d, err := files.AsResolver().FindDescriptorByName("interp_test.v1.AppConfig")
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	return d.(protoreflect.MessageDescriptor)
 }
 
-func parse(t *testing.T, desc protoreflect.MessageDescriptor, input string) proto.Message {
-	t.Helper()
+func parse(tb testing.TB, desc protoreflect.MessageDescriptor, input string) proto.Message {
+	tb.Helper()
 	msg := dynamicpb.NewMessage(desc)
-	require.NoError(t, pxf.Unmarshal([]byte(input), msg))
+	require.NoError(tb, pxf.Unmarshal([]byte(input), msg))
 	return msg
 }
 

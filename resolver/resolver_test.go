@@ -102,8 +102,8 @@ message AppConfig {
 }
 `
 
-func compileAll(t *testing.T) (chainDesc, appDesc protoreflect.MessageDescriptor) {
-	t.Helper()
+func compileAll(tb testing.TB) (chainDesc, appDesc protoreflect.MessageDescriptor) {
+	tb.Helper()
 	sources := map[string]string{
 		"chain.proto":      chainSpecProtoSrc,
 		"pxf/secret.proto": pxfSecretProtoSrc,
@@ -116,20 +116,20 @@ func compileAll(t *testing.T) (chainDesc, appDesc protoreflect.MessageDescriptor
 	}
 	files, err := comp.Compile(context.Background(),
 		"chain.proto", "app.proto")
-	require.NoError(t, err)
+	require.NoError(tb, err)
 
 	rl := files.AsResolver()
 	cd, err := rl.FindDescriptorByName("chameleon.v1.ChainSpec")
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	ad, err := rl.FindDescriptorByName("app.v1.AppConfig")
-	require.NoError(t, err)
+	require.NoError(tb, err)
 	return cd.(protoreflect.MessageDescriptor), ad.(protoreflect.MessageDescriptor)
 }
 
-func parseSpec(t *testing.T, desc protoreflect.MessageDescriptor, input string) proto.Message {
-	t.Helper()
+func parseSpec(tb testing.TB, desc protoreflect.MessageDescriptor, input string) proto.Message {
+	tb.Helper()
 	msg := dynamicpb.NewMessage(desc)
-	require.NoError(t, pxf.Unmarshal([]byte(input), msg))
+	require.NoError(tb, pxf.Unmarshal([]byte(input), msg))
 	return msg
 }
 
