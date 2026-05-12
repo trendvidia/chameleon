@@ -294,6 +294,13 @@ func (w *walker) takeSecret(secMsg protoreflect.Message, path string) error {
 		// since protowire-go v0.77.0), fold the metadata back onto
 		// the Map's existing hook entry so consumers reading
 		// Secret.Hint() / Fingerprint() see what the source supplied.
+		//
+		// Skip-when-both-empty is intentional: a layer that doesn't
+		// supply hint/fingerprint must NOT clobber whatever a lower
+		// layer (or an earlier hook call at the same path) already
+		// fed onto the Map's Secret. SetMetadata itself overwrites
+		// unconditionally — see its godoc — so the empty-check
+		// happens here at the call site.
 		if (hint != "" || fingerprint != "") && w.secrets != nil {
 			if existing := w.secrets.Get(path); existing != nil {
 				existing.SetMetadata(hint, fingerprint)
