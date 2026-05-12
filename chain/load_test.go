@@ -48,7 +48,7 @@ func TestParseSpec_ConcurrentFirstCallers(t *testing.T) {
 		descs    = make([]protoreflect.MessageDescriptor, n)
 	)
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(i int) {
 			defer wg.Done()
 			spec, err := chain.ParseSpec([]byte(minimalSpec))

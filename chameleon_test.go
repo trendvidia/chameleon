@@ -152,7 +152,7 @@ api_url = "api.${base_url}"
 	baseline := runtime.NumGoroutine()
 
 	const iterations = 500
-	for i := 0; i < iterations; i++ {
+	for range iterations {
 		res, err := chameleon.Load[*dynamicpb.Message](
 			dynamicpb.NewMessage(appDesc), spec, fs, "prod")
 		require.NoError(t, err)

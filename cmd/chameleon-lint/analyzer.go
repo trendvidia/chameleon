@@ -117,7 +117,8 @@ func isPxfSecret(t *types.Named) bool {
 		return false
 	}
 	have := map[string]bool{}
-	for i := 0; i < st.NumFields(); i++ {
+	n := st.NumFields()
+	for i := range n {
 		f := st.Field(i)
 		if !f.Exported() {
 			continue

@@ -1,0 +1,86 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - durationcheck
+    - errorlint
+    - gocritic
+    - gosec
+    - intrange
+    - misspell
+    - nilerr
+    - nilnesserr
+    - noctx
+    - nolintlint
+    - prealloc
+    - revive
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+
+  settings:
+    errcheck:
+      check-type-assertions: false
+      check-blank: false
+      exclude-functions:
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
+        - (io.Closer).Close
+
+    gosec:
+      excludes:
+        - G101 # potential hardcoded credentials — false positives in test fixtures + secret-handling code
+        - G115 # integer overflow conversion — protowire wire format requires these casts
+
+    revive:
+      rules:
+        - name: exported
+          disabled: true # protogen-emitted identifiers trigger this; godoc lives in upstream proto sources
+        - name: package-comments
+          disabled: true # generated files dominate; manual package docs in selected files
+        - name: var-naming
+          disabled: true # codegen identifiers follow proto's naming, not Go's
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    generated: lax
+    rules:
+      # Generated code: skip everything.
+      - path: '\.pb\.go$'
+        linters: [all]
+      - path: '\.chameleon\.go$'
+        linters: [all]
+
+      # Tests: relax security + complexity rules; setup code commonly returns errors we don't propagate.
+      - path: '_test\.go$'
+        linters: [gosec, errcheck, noctx, prealloc]
+
+      # Fuzz targets: fuzz inputs are by definition untrusted; gosec false-positives.
+      - path: 'fuzz_test\.go$'
+        linters: [gosec]
+
+      # Plugin codegen emits string templates — gosec G203 (HTML-unescaped) false-positives.
+      - path: 'cmd/protoc-gen-chameleon-go/'
+        linters: [gosec]
+
+      # CLI subcommands print user-provided paths verbatim; that's the feature, not a finding.
+      - path: 'cmd/chameleon/'
+        linters: [gosec]
+        text: 'G304' # file path provided as taint input
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
