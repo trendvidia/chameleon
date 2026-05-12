@@ -50,10 +50,14 @@ func TestMoveInto_HookEntriesSurvive(t *testing.T) {
 	assert.Equal(t, "p1", readSecretPlain(t, secrets.Get("db_password")))
 }
 
-// TestMoveInto_BlockFormHarvested — block-form Secrets bypass the
-// hook and land on Secret.value. MoveInto walks the message and folds
-// them into the same Map.
-func TestMoveInto_BlockFormHarvested(t *testing.T) {
+// TestMoveInto_BlockFormHookRoutedWithMetadata — since protowire-go
+// v0.77.0 the block form ALSO fires OnSecretField; the value lands
+// in the Map via the hook, and hint/fingerprint stay on the proto
+// message until MoveInto folds them back onto the existing Map
+// entry via SetMetadata. End state: one Map entry per Secret path
+// with all three fields populated, regardless of whether the source
+// used scalar shorthand or block form.
+func TestMoveInto_BlockFormHookRoutedWithMetadata(t *testing.T) {
 	desc := compileApp(t)
 
 	secrets := secret.NewMap()
@@ -68,21 +72,30 @@ func TestMoveInto_BlockFormHarvested(t *testing.T) {
 	input := `db_password {
   value = "p1"
   hint = "Postgres primary"
+  fingerprint = "sha256:abc"
 }`
 	msg, err := opts.UnmarshalDescriptor([]byte(input), desc)
 	require.NoError(t, err)
 
-	// Hook should not have fired for block form.
-	assert.Equal(t, 0, secrets.Len(), "hook should not see block form")
+	// v0.77.0 — hook fires once for the block-form value subfield;
+	// hint and fingerprint were assigned to the proto message
+	// normally and are not yet on the Map's Secret.
+	require.Equal(t, 1, secrets.Len(), "hook should fire for block form (protowire-go v0.77)")
+	hookEntry := secrets.Get("db_password")
+	require.NotNil(t, hookEntry)
+	assert.Equal(t, "", hookEntry.Hint(), "hook closure didn't pass hint yet")
 
+	// MoveInto walks the message, sees the hint/fingerprint on the
+	// (otherwise empty-value) Secret, and folds them onto the Map's
+	// existing hook entry via SetMetadata.
 	require.NoError(t, parse.MoveInto(msg, secrets))
 
-	assert.Equal(t, 1, secrets.Len())
+	assert.Equal(t, 1, secrets.Len(), "still one entry after enrichment")
 	s := secrets.Get("db_password")
 	require.NotNil(t, s)
 	assert.Equal(t, "p1", readSecretPlain(t, s))
-	// Hint is on the Secret struct, not in the Enclave.
-	assert.Equal(t, "Postgres primary", s.Hint())
+	assert.Equal(t, "Postgres primary", s.Hint(), "metadata folded back by MoveInto")
+	assert.Equal(t, "sha256:abc", s.Fingerprint())
 }
 
 // TestMoveInto_OrphanCleanup — a hook entry whose path is no longer
