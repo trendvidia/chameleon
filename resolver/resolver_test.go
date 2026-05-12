@@ -19,6 +19,7 @@ import (
 
 	"github.com/trendvidia/chameleon/chain"
 	"github.com/trendvidia/chameleon/resolver"
+	"github.com/trendvidia/chameleon/secret"
 	"github.com/trendvidia/chameleon/source"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
@@ -674,6 +675,142 @@ api_url = "api.eu.dev.mybigproject.com"
 var _ = chain.Expand
 
 // --- concurrency safety ---
+
+// TestResolver_ConcurrentResolve backs the godoc claim at
+// resolver.go:82 — "Resolver is safe for concurrent Resolve calls;
+// each call produces an independent Resolution." Without this test
+// the claim is asserted but unverified, which is risky to lock in
+// at v1.0.
+//
+// N goroutines call r.Resolve against the same *Resolver. Each must:
+//   - return a non-nil *Resolution with no error;
+//   - observe the SAME field values (the underlying spec + FS are
+//     unchanged across calls);
+//   - hold a SEPARATE secret.Map (per-Resolve allocation, no aliasing).
+//
+// Under `go test -race`, this test would flag any unsynchronized
+// shared state on the Resolver itself (e.g. a cached descriptor
+// without sync.Once, mutable fields not protected by a mutex).
+func TestResolver_ConcurrentResolve(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [
+  { name = "prod" }
+  { name = "dev" extends = "prod" }
+]
+layers = [
+  { id = "base"  path = "base.pxf"           for_each = ONCE required = true }
+  { id = "env"   path = "env/${env}.pxf"     for_each = PER_ENV }
+]
+`)
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`
+base_url = "base.example.com"
+api_url = "api.base.example.com"
+db_password = "base-pw"
+feature_flags = ["fast_path"]
+`)},
+		"env/prod.pxf": &fstest.MapFile{Data: []byte(`
+base_url = "prod.example.com"
+`)},
+		"env/dev.pxf": &fstest.MapFile{Data: []byte(`
+base_url = "dev.example.com"
+db_password = "dev-pw"
+feature_flags = ["fast_path", "new_dashboard"]
+`)},
+	}
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)))
+	require.NoError(t, err)
+
+	const n = 64
+	results := make([]*resolver.Resolution[*dynamicpb.Message], n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			// Alternate environments so the resolver exercises both
+			// branches of the chain. Race detection on shared state
+			// (caches, presence unions, OTel instrument writes) fires
+			// regardless of which env is requested; mixing them
+			// stresses the merge / interpolate paths too.
+			env := "prod"
+			if i%2 == 1 {
+				env = "dev"
+			}
+			res, err := r.Resolve(context.Background(), resolver.Request{Environment: env})
+			results[i] = res
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+	// Schedule Destroy on every successful Resolution before any
+	// assertions, so a panicking assert doesn't leak Enclaves.
+	t.Cleanup(func() {
+		for _, res := range results {
+			if res != nil {
+				res.Destroy()
+			}
+		}
+	})
+
+	// All goroutines succeeded.
+	for i, err := range errs {
+		require.NoError(t, err, "goroutine %d", i)
+		require.NotNil(t, results[i], "goroutine %d returned nil Resolution", i)
+	}
+
+	// Resolutions are independent — pairwise-distinct secret.Map
+	// pointers. The Config message pointer also differs per Resolve
+	// (each call gets a fresh proto allocation).
+	seenSecrets := make(map[*secret.Map]int)
+	for i, res := range results {
+		if existing, ok := seenSecrets[res.Secrets]; ok {
+			t.Errorf("goroutine %d shares Secrets map with goroutine %d (aliased Resolution)", i, existing)
+		}
+		seenSecrets[res.Secrets] = i
+	}
+
+	// Field values are consistent per environment across all
+	// goroutines that requested that env. base_url and feature_flags
+	// differ between prod and dev; we verify each env's resolutions
+	// agree internally and disagree with the other env's.
+	getBaseURL := func(res *resolver.Resolution[*dynamicpb.Message]) string {
+		fd := res.Config.Descriptor().Fields().ByName("base_url")
+		return res.Config.Get(fd).String()
+	}
+	getSecret := func(res *resolver.Resolution[*dynamicpb.Message], path string) string {
+		s := res.Secrets.Get(path)
+		require.NotNil(t, s, "secret %q missing in resolution", path)
+		buf, err := s.Open()
+		require.NoError(t, err)
+		defer buf.Destroy()
+		return string(buf.Bytes())
+	}
+
+	for i, res := range results {
+		env := "prod"
+		if i%2 == 1 {
+			env = "dev"
+		}
+		switch env {
+		case "prod":
+			assert.Equal(t, "prod.example.com", getBaseURL(res),
+				"goroutine %d (env=prod): base_url drift", i)
+			assert.Equal(t, "base-pw", getSecret(res, "db_password"),
+				"goroutine %d (env=prod): db_password drift", i)
+		case "dev":
+			assert.Equal(t, "dev.example.com", getBaseURL(res),
+				"goroutine %d (env=dev): base_url drift", i)
+			assert.Equal(t, "dev-pw", getSecret(res, "db_password"),
+				"goroutine %d (env=dev): db_password drift", i)
+		}
+	}
+}
 
 func TestResolution_DestroyConcurrent(t *testing.T) {
 	chainDesc, appDesc := compileAll(t)
