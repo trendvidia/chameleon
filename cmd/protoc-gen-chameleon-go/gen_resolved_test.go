@@ -56,13 +56,19 @@ func runPluginWithResolved(t *testing.T) string {
 }
 
 // TestResolved_WrapperStructAndConstructor — the opt-in flag emits the
-// wrapper struct + constructor for the root message that has Secrets.
+// wrapper struct + constructor for the root message that has Secrets,
+// plus the proto.Message delegation methods (Reset / String /
+// ProtoReflect) that make the wrapper substitutable for the raw
+// proto in reflection-driven APIs.
 func TestResolved_WrapperStructAndConstructor(t *testing.T) {
 	out := runPluginWithResolved(t)
 	assert.Contains(t, out, "type AppConfigResolved struct {")
 	assert.Contains(t, out, "func NewAppConfigResolved(m *AppConfig, secrets *")
-	assert.Contains(t, out, "func (r *AppConfigResolved) Underlying() *AppConfig")
 	assert.Contains(t, out, "func (r *AppConfigResolved) Secrets() *")
+	// proto.Message delegation (added in v0.9.0; replaces Underlying()).
+	assert.Contains(t, out, "func (r *AppConfigResolved) Reset()")
+	assert.Contains(t, out, "func (r *AppConfigResolved) String() string")
+	assert.Contains(t, out, "func (r *AppConfigResolved) ProtoReflect()")
 }
 
 // TestResolved_DefaultOff — without the flag, no wrapper is emitted.
@@ -558,62 +564,51 @@ func TestGoPrimitiveType(t *testing.T) {
 	}
 }
 
-// --- Phase 2b PR4: Underlying() deprecation marker ---
+// --- proto.Message delegation (v0.9.0 — Underlying() removed) ---
 
-// TestResolved_UnderlyingDeprecationMarker — the godoc on Underlying
-// carries Go's standard "Deprecated:" prefix. staticcheck /
-// golangci-lint's SA1019 / U1000 / similar checks recognize the
-// marker and flag consumer code that still calls Underlying().
-// Catches the chameleon-lint footgun at the CI tier without
-// removing the method (still useful for proto.Marshal / Equal /
-// other reflection-driven escape hatches until proto.Message
-// delegation lands on the wrapper).
-func TestResolved_UnderlyingDeprecationMarker(t *testing.T) {
+// TestResolved_NoUnderlyingMethod — Underlying() must NOT be emitted
+// on any wrapper. The Deprecated marker in v0.8.0 has been followed
+// by hard removal in v0.9.0 — the wrapper IS proto.Message, no raw-
+// proto escape hatch remains. Catches accidental re-introduction.
+func TestResolved_NoUnderlyingMethod(t *testing.T) {
 	out := runPluginWithResolved(t)
-	// The marker must appear in the godoc block IMMEDIATELY above
-	// `func (r *AppConfigResolved) Underlying()`. Two-step assertion:
-	// (1) Deprecated: phrase is present at all; (2) it's adjacent to
-	// the right method.
-	assert.Contains(t, out, "// Deprecated: prefer the typed accessor methods")
-
-	idx := strings.Index(out, "func (r *AppConfigResolved) Underlying()")
-	require.Greater(t, idx, 0, "Underlying() should still be emitted")
-	// Walk backwards through the preceding comment block and confirm
-	// the Deprecated: line is in it.
-	headStart := strings.LastIndex(out[:idx], "// Underlying returns the raw")
-	require.Greater(t, headStart, 0, "should find Underlying godoc start")
-	header := out[headStart:idx]
-	assert.Contains(t, header, "// Deprecated:",
-		"Deprecated: marker must sit in the godoc block above Underlying()")
+	assert.NotContains(t, out, ") Underlying() *",
+		"Underlying() was removed in v0.9.0; the wrapper implements proto.Message directly")
+	assert.NotContains(t, out, "// Deprecated: prefer the typed accessor methods",
+		"the v0.8.0 deprecation note should be gone with the method")
 }
 
-// TestResolved_UnderlyingStillEmitted — the deprecation is godoc-only;
-// the method body still exists so consumers who DO need the raw
-// proto (for proto.Marshal, etc.) aren't blocked. The follow-up
-// removal lands once proto.Message delegation is implemented on the
-// wrapper itself.
-func TestResolved_UnderlyingStillEmitted(t *testing.T) {
+// TestResolved_ProtoMessageDelegation — every wrapper emits Reset,
+// String, and ProtoReflect, delegating to the inner proto. The
+// wrapper is fully substitutable for the raw proto in proto.Marshal
+// / proto.Equal / proto.Clone / any other reflection-driven API.
+func TestResolved_ProtoMessageDelegation(t *testing.T) {
 	out := runPluginWithResolved(t)
-	// On every wrapper.
 	for _, wrapper := range []string{"AppConfigResolved", "EndpointResolved", "ClusterResolved"} {
-		assert.Contains(t, out,
-			"func (r *"+wrapper+") Underlying() *",
-			"%s.Underlying() must still be emitted", wrapper)
+		assert.Contains(t, out, "func (r *"+wrapper+") Reset() { r.m.Reset() }",
+			"%s.Reset() should delegate to inner proto", wrapper)
+		assert.Contains(t, out, "func (r *"+wrapper+") String() string { return r.m.String() }",
+			"%s.String() should delegate to inner proto", wrapper)
+		assert.Contains(t, out, "func (r *"+wrapper+") ProtoReflect()",
+			"%s.ProtoReflect() should be emitted", wrapper)
 	}
+	// ProtoReflect body delegates to r.m.ProtoReflect() — the
+	// return-type ident is import-managed by protogen so we just
+	// check the body shape.
+	assert.Contains(t, out, "{ return r.m.ProtoReflect() }")
 }
 
-// TestResolved_UnderlyingDeprecation_OnEveryWrapper — every wrapper
-// (top-level AND nested) carries the Deprecated: marker on its
-// Underlying. Catches drift if a future emit path skips one.
-func TestResolved_UnderlyingDeprecation_OnEveryWrapper(t *testing.T) {
+// TestResolved_CompileTimeAssertion — the generated file carries a
+// `var _ proto.Message = (*XResolved)(nil)` for every wrapper. If
+// the emit path ever skips one of the three required methods
+// (Reset / String / ProtoReflect), the CONSUMER's go build breaks
+// at the assertion line — self-validating codegen.
+func TestResolved_CompileTimeAssertion(t *testing.T) {
 	out := runPluginWithResolved(t)
-	// Count Underlying methods and Deprecated: lines that mention
-	// "typed accessor methods" (the canonical marker phrase).
-	underlyings := strings.Count(out, ") Underlying() *")
-	deprecated := strings.Count(out, "// Deprecated: prefer the typed accessor methods")
-	assert.Equal(t, underlyings, deprecated,
-		"Deprecated: marker count (%d) should match Underlying() count (%d)",
-		deprecated, underlyings)
+	for _, wrapper := range []string{"AppConfigResolved", "EndpointResolved", "ClusterResolved"} {
+		assert.Contains(t, out, "var _ proto.Message = (*"+wrapper+")(nil)",
+			"compile-time proto.Message assertion missing for %s", wrapper)
+	}
 }
 
 // TestResolved_GeneratedCodeShape — assert the wrapper block sits

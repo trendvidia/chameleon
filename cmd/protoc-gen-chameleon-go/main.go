@@ -60,15 +60,16 @@
 // wrapper-bearing message containers are routed through the
 // chained-access helpers).
 //
-// Underlying() — the legacy escape hatch that returns the raw proto —
-// is marked `// Deprecated:` on every wrapper since chameleon#6
-// Phase 2b PR4. Static analyzers (staticcheck SA1019,
-// golangci-lint's deprecation linters) flag consumer code that
-// still calls it. Underlying() is kept emitted (not hard-removed)
-// for callers passing the wrapper's payload to proto.Marshal,
-// proto.Equal, or other reflection-driven APIs until a follow-up
-// adds proto.Message delegation on the wrapper itself; once that
-// lands, Underlying() can be hard-removed.
+// proto.Message delegation. Every generated wrapper implements
+// proto.Message (Reset / String / ProtoReflect, each delegating to
+// the inner message). The wrapper is fully substitutable for the
+// raw proto in proto.Marshal, proto.Equal, proto.Clone, and any
+// other reflection-driven API. A `var _ proto.Message =
+// (*XResolved)(nil)` compile-time assertion is emitted alongside
+// each wrapper, so missing-method drift fails the consumer's go
+// build at the assertion line. The legacy `Underlying()` escape
+// hatch was deprecated in v0.8.0 and hard-removed in v0.9.0; the
+// wrapper API is the only public surface.
 package main
 
 import (
