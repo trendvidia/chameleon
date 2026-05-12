@@ -149,12 +149,13 @@ func emitOneResolvedWrapper(gf *protogen.GeneratedFile, root *protogen.Message, 
 		gf.P()
 	}
 
-	// Phase 2b PR1: emit chain methods for scalar-message fields whose
-	// target is itself wrapper-bearing. Lets consumers chain like
-	// cfg.Primary().AuthToken() in place of cfg.PrimaryAuthToken().
-	// Both shapes coexist; the chain form is the path forward, the
-	// flat form stays for back-compat with Phase 2a consumers.
-	emitChainMethods(gf, typeName, root)
+	// Phase 2b chain methods. Scalar-message subfields (PR1) get a
+	// method returning the nested wrapper; repeated / map containers
+	// (PR2) get a method returning a list/map accessor helper whose
+	// At(i)/Get(key) returns the nested wrapper with the correct
+	// runtime prefix. Both shapes coexist with the existing flat
+	// top-level methods for back-compat.
+	emitChainMethods(gf, typeName, root, strconvPkg)
 }
 
 // emitWrapperMethod writes one accessor method on the wrapper for
@@ -197,23 +198,75 @@ func emitWrapperMethod(gf *protogen.GeneratedFile, typeName string, s secretSite
 // another top-level message declaration (`message Endpoint { ... }`
 // next to AppConfig), so it gets a wrapper too.
 //
-// Container fields (repeated / map<*, msg>) are deliberately skipped
-// in this PR — chained access through them requires accessor helper
-// types (Replicas().At(i).AuthToken()) and lands in a follow-up.
-// The flat-method emit on the parent (e.g. ReplicasAuthTokenAt) still
-// covers those paths.
-func emitChainMethods(gf *protogen.GeneratedFile, parentTypeName string, parent *protogen.Message) {
+// Three cases: scalar message field → chain method returning the
+// nested wrapper directly; repeated <UserMsg> → chain method
+// returning a list-accessor helper (Len/At); map<K, UserMsg> → chain
+// method returning a map-accessor helper (Len/Get). The pxf.Secret
+// leaf itself is never wrapper-bearing — typed Secret access already
+// goes through the parent's flat-method emit (DbPassword(),
+// BackupKeysAt(i), TenantKeys(key)).
+func emitChainMethods(gf *protogen.GeneratedFile, parentTypeName string, parent *protogen.Message, strconvPkg protogen.GoImportPath) {
 	for _, f := range parent.Fields {
-		if !isScalarMessageField(f) {
-			continue
+		switch {
+		case isScalarMessageField(f):
+			target := f.Message
+			if !messageContainsSecret(target) {
+				continue
+			}
+			emitOneChainMethod(gf, parentTypeName, f, target)
+			gf.P()
+
+		case isRepeatedUserMessageField(f):
+			target := f.Message
+			if !messageContainsSecret(target) {
+				continue
+			}
+			emitListChainMethod(gf, parentTypeName, parent, f, target, strconvPkg)
+			gf.P()
+
+		case isMapUserMessageField(f):
+			target := mapValueMessage(f)
+			if target == nil || !messageContainsSecret(target) {
+				continue
+			}
+			emitMapChainMethod(gf, parentTypeName, parent, f, target, strconvPkg)
+			gf.P()
 		}
-		target := f.Message
-		if !messageContainsSecret(target) {
-			continue
-		}
-		emitOneChainMethod(gf, parentTypeName, f, target)
-		gf.P()
 	}
+}
+
+// isRepeatedUserMessageField reports whether f is `repeated UserMsg`
+// (not repeated pxf.Secret — those are typed leaves handled by the
+// flat-method emit). The wrapper-bearing decision is made by the
+// caller via messageContainsSecret on f.Message.
+func isRepeatedUserMessageField(f *protogen.Field) bool {
+	if !f.Desc.IsList() {
+		return false
+	}
+	if f.Desc.Kind() != protoreflect.MessageKind {
+		return false
+	}
+	if isSecret(f.Desc.Message()) {
+		return false
+	}
+	return f.Message != nil
+}
+
+// isMapUserMessageField reports whether f is `map<K, UserMsg>` (not
+// map<K, pxf.Secret>). The wrapper-bearing decision is made by the
+// caller via messageContainsSecret on mapValueMessage(f).
+func isMapUserMessageField(f *protogen.Field) bool {
+	if !f.Desc.IsMap() {
+		return false
+	}
+	valFd := f.Desc.MapValue()
+	if valFd.Kind() != protoreflect.MessageKind {
+		return false
+	}
+	if isSecret(valFd.Message()) {
+		return false
+	}
+	return f.Message != nil
 }
 
 // isScalarMessageField reports whether f is a single (not repeated,
@@ -308,6 +361,177 @@ func emitOneChainMethod(gf *protogen.GeneratedFile, parentTypeName string, f *pr
 	gf.P("\t\tprefix:  r.prefix + ", strconv.Quote(protoName+"."), ",")
 	gf.P("\t}")
 	gf.P("}")
+}
+
+// emitListChainMethod writes both the per-parent-per-field accessor
+// helper type AND the parent-wrapper method returning it, for a
+// `repeated <UserMsg>` field where UserMsg is wrapper-bearing:
+//
+//	type AppConfigReplicasResolved struct {
+//	    m       []*Endpoint
+//	    secrets *secret.Map
+//	    prefix  string  // inherits parent's prefix
+//	}
+//
+//	func (r *AppConfigReplicasResolved) Len() int { return len(r.m) }
+//
+//	func (r *AppConfigReplicasResolved) At(i int) *EndpointResolved {
+//	    if i < 0 || i >= len(r.m) {
+//	        return nil  // out-of-range yields nil; matches the
+//	                    // chameleon-wide "absent never panics" posture.
+//	    }
+//	    return &EndpointResolved{
+//	        m:       r.m[i],
+//	        secrets: r.secrets,
+//	        prefix:  r.prefix + "replicas[" + strconv.Itoa(i) + "].",
+//	    }
+//	}
+//
+//	func (r *AppConfigResolved) Replicas() *AppConfigReplicasResolved {
+//	    return &AppConfigReplicasResolved{
+//	        m:       r.m.GetReplicas(),
+//	        secrets: r.secrets,
+//	        prefix:  r.prefix,
+//	    }
+//	}
+//
+// One helper type per (parent, field) pair. Two parents that both
+// have a `replicas []*Endpoint` get distinct helper types — slight
+// duplication, but keeps the type names parent-scoped and avoids
+// generic-Go gymnastics for a feature consumers don't ask for.
+func emitListChainMethod(gf *protogen.GeneratedFile, parentTypeName string, parent *protogen.Message, f *protogen.Field, target *protogen.Message, strconvPkg protogen.GoImportPath) {
+	helperType := parent.GoIdent.GoName + f.GoName + "Resolved"
+	targetType := target.GoIdent.GoName + "Resolved"
+	protoName := string(f.Desc.Name())
+	targetIdent := target.GoIdent
+	itoaIdent := strconvPkg.Ident("Itoa")
+
+	// Helper type.
+	gf.P("// ", helperType, " is the chained-access view of ",
+		parentTypeName, ".", f.GoName, ". Len reports the element count;")
+	gf.P("// At(i) returns the ", targetType, " for the i-th element with")
+	gf.P("// a prefix scoped to ", strconv.Quote(protoName+"[i]."), " so")
+	gf.P("// downstream Secret lookups produce the canonical PXF path.")
+	gf.P("type ", helperType, " struct {")
+	gf.P("\tm       []*", targetIdent)
+	gf.P("\tsecrets *", protogen.GoImportPath(pluginState.secretPkg).Ident("Map"))
+	gf.P("\tprefix  string")
+	gf.P("}")
+	gf.P()
+	gf.P("// Len returns the element count.")
+	gf.P("func (r *", helperType, ") Len() int { return len(r.m) }")
+	gf.P()
+	gf.P("// At returns the ", targetType, " at index i, or nil for an")
+	gf.P("// out-of-range index. Matches chameleon's \"absent never panics\"")
+	gf.P("// posture — callers checking Len first never see nil.")
+	gf.P("func (r *", helperType, ") At(i int) *", targetType, " {")
+	gf.P("\tif i < 0 || i >= len(r.m) {")
+	gf.P("\t\treturn nil")
+	gf.P("\t}")
+	gf.P("\treturn &", targetType, "{")
+	gf.P("\t\tm:       r.m[i],")
+	gf.P("\t\tsecrets: r.secrets,")
+	gf.P("\t\tprefix:  r.prefix + ", strconv.Quote(protoName+"["), " + ", itoaIdent, "(i) + ", strconv.Quote("]."), ",")
+	gf.P("\t}")
+	gf.P("}")
+	gf.P()
+
+	// Parent method.
+	gf.P("// ", f.GoName, " returns a chained accessor over the ",
+		strconv.Quote(protoName), " repeated field. Use Len/At on the")
+	gf.P("// returned helper to reach Secrets without touching")
+	gf.P("// *pxfv1.Secret.Value on the underlying proto.")
+	gf.P("func (r *", parentTypeName, ") ", f.GoName, "() *", helperType, " {")
+	gf.P("\treturn &", helperType, "{")
+	gf.P("\t\tm:       r.m.Get", f.GoName, "(),")
+	gf.P("\t\tsecrets: r.secrets,")
+	gf.P("\t\tprefix:  r.prefix,")
+	gf.P("\t}")
+	gf.P("}")
+}
+
+// emitMapChainMethod writes both the per-parent-per-field accessor
+// helper type AND the parent-wrapper method returning it, for a
+// `map<K, UserMsg>` field where UserMsg is wrapper-bearing. Mirrors
+// emitListChainMethod but with Get(key) instead of At(i) and the
+// proper runtime key-formatting expression keyed off the proto map
+// key kind.
+func emitMapChainMethod(gf *protogen.GeneratedFile, parentTypeName string, parent *protogen.Message, f *protogen.Field, target *protogen.Message, strconvPkg protogen.GoImportPath) {
+	helperType := parent.GoIdent.GoName + f.GoName + "Resolved"
+	targetType := target.GoIdent.GoName + "Resolved"
+	protoName := string(f.Desc.Name())
+	targetIdent := target.GoIdent
+
+	keyFd := f.Desc.MapKey()
+	keyGoType := goTypeForMapKey(keyFd.Kind())
+	keyFmtExpr := mapKeyRuntimeExpr(gf, keyFd.Kind(), "key", strconvPkg)
+
+	// Helper type.
+	gf.P("// ", helperType, " is the chained-access view of ",
+		parentTypeName, ".", f.GoName, ". Len reports the entry count;")
+	gf.P("// Get(key) returns the ", targetType, " for that key with a")
+	gf.P("// prefix scoped to ", strconv.Quote(protoName+"[key]."), " so")
+	gf.P("// downstream Secret lookups produce the canonical PXF path.")
+	gf.P("type ", helperType, " struct {")
+	gf.P("\tm       map[", keyGoType, "]*", targetIdent)
+	gf.P("\tsecrets *", protogen.GoImportPath(pluginState.secretPkg).Ident("Map"))
+	gf.P("\tprefix  string")
+	gf.P("}")
+	gf.P()
+	gf.P("// Len returns the entry count.")
+	gf.P("func (r *", helperType, ") Len() int { return len(r.m) }")
+	gf.P()
+	gf.P("// Get returns the ", targetType, " at the given key, or nil")
+	gf.P("// if the key is absent. Matches chameleon's \"absent never")
+	gf.P("// panics\" posture.")
+	gf.P("func (r *", helperType, ") Get(key ", keyGoType, ") *", targetType, " {")
+	gf.P("\tv, ok := r.m[key]")
+	gf.P("\tif !ok {")
+	gf.P("\t\treturn nil")
+	gf.P("\t}")
+	gf.P("\treturn &", targetType, "{")
+	gf.P("\t\tm:       v,")
+	gf.P("\t\tsecrets: r.secrets,")
+	gf.P("\t\tprefix:  r.prefix + ", strconv.Quote(protoName+"["), " + ", keyFmtExpr, " + ", strconv.Quote("]."), ",")
+	gf.P("\t}")
+	gf.P("}")
+	gf.P()
+
+	// Parent method.
+	gf.P("// ", f.GoName, " returns a chained accessor over the ",
+		strconv.Quote(protoName), " map field. Use Len/Get on the")
+	gf.P("// returned helper to reach Secrets without touching")
+	gf.P("// *pxfv1.Secret.Value on the underlying proto.")
+	gf.P("func (r *", parentTypeName, ") ", f.GoName, "() *", helperType, " {")
+	gf.P("\treturn &", helperType, "{")
+	gf.P("\t\tm:       r.m.Get", f.GoName, "(),")
+	gf.P("\t\tsecrets: r.secrets,")
+	gf.P("\t\tprefix:  r.prefix,")
+	gf.P("\t}")
+	gf.P("}")
+}
+
+// mapKeyRuntimeExpr returns the Go source for converting a typed map
+// key variable into its path-segment string at runtime. Mirrors the
+// per-kind dispatch in joinFragmentRefs so map chain accessors match
+// the function-form path scheme byte-for-byte.
+func mapKeyRuntimeExpr(gf *protogen.GeneratedFile, kind protoreflect.Kind, paramName string, strconvPkg protogen.GoImportPath) string {
+	switch kind {
+	case protoreflect.StringKind:
+		return gf.QualifiedGoIdent(strconvPkg.Ident("Quote")) + "(" + paramName + ")"
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return gf.QualifiedGoIdent(strconvPkg.Ident("FormatInt")) + "(int64(" + paramName + "), 10)"
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return gf.QualifiedGoIdent(strconvPkg.Ident("FormatInt")) + "(" + paramName + ", 10)"
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		return gf.QualifiedGoIdent(strconvPkg.Ident("FormatUint")) + "(uint64(" + paramName + "), 10)"
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return gf.QualifiedGoIdent(strconvPkg.Ident("FormatUint")) + "(" + paramName + ", 10)"
+	case protoreflect.BoolKind:
+		return gf.QualifiedGoIdent(strconvPkg.Ident("FormatBool")) + "(" + paramName + ")"
+	default:
+		return gf.QualifiedGoIdent(strconvPkg.Ident("Itoa")) + "(" + paramName + ")"
+	}
 }
 
 // wrapperMethodName builds the method name from a path.
