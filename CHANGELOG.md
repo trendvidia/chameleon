@@ -7,6 +7,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-12
+
+API-stability release. Two closures that finish the v0.8.0 wrapper-
+mode design and the long-standing plaintext-in-heap window
+([chameleon#6](https://github.com/trendvidia/chameleon/issues/6) and
+[chameleon#7](https://github.com/trendvidia/chameleon/issues/7)
+threads):
+
+- **proto.Message delegation on every `<Root>Resolved` wrapper**
+  ([#25](https://github.com/trendvidia/chameleon/pull/25)). The
+  wrapper now implements `proto.Message` (Reset / String /
+  ProtoReflect, each delegating to the inner message). Callers
+  hand the wrapper directly to `proto.Marshal` / `proto.Equal` /
+  `proto.Clone` / any reflection-driven API — no escape hatch
+  needed. The deprecated `Underlying()` method introduced in v0.8.0
+  is hard-removed; the wrapper IS the proto representation.
+- **Block-form `pxf.Secret` heap closure**
+  ([#26](https://github.com/trendvidia/chameleon/pull/26),
+  protowire-go [v0.77.0](https://github.com/trendvidia/protowire-go/releases/tag/v0.77.0)).
+  `OnSecretField` now fires for block-form assignments
+  (`pw { value = "x" hint = "h" }`) in addition to scalar shorthand.
+  The resolver routes value bytes from the decoder lexer straight
+  into a memguard `Enclave`; `parse.MoveInto` folds the block-form
+  hint/fingerprint metadata back onto the Map entry via the new
+  `(*secret.Secret).SetMetadata` method. End state: regardless of
+  authoring form, plaintext never lands on `*pxfv1.Secret.Value`
+  on the Go heap.
+
+### Changed
+
+- **`<Root>Resolved.Underlying()` removed.** Was Deprecated in
+  v0.8.0; the v0.9.0 cycle hard-removes it. Migration path:
+  - **Reflection APIs** (`proto.Marshal`, `proto.Equal`,
+    `proto.Clone`): pass the wrapper directly — it satisfies
+    `proto.Message`.
+  - **Typed `*AppConfig` signatures**: change the signature to
+    accept `proto.Message`, OR keep the raw `*AppConfig` in a
+    separate variable (`resolver.Resolve` already returns it on
+    `res.Config`).
+
+- **`protowire-go` minimum bumped to `>= v0.77.0`** (was
+  `>= v0.76.0`). Required for the block-form `OnSecretField` route.
+
+### Added
+
+- **Compile-time `var _ proto.Message = (*XResolved)(nil)`
+  assertion** in the generated `.chameleon.go` file. Self-validating
+  codegen: if a future emit path forgets one of Reset / String /
+  ProtoReflect, the consumer's next `go build` fails at the
+  assertion line.
+
+- **`(*secret.Secret).SetMetadata(hint, fingerprint string)`** —
+  mutator for the two diagnostic strings on a Secret. Used by
+  `parse.MoveInto` to enrich a hook-routed Map entry with block-
+  form metadata after decode. Hint and fingerprint are plain Go
+  strings on the Secret struct (not memguard-backed); mutating
+  them post-construction is safe.
+
+### Notes for upgraders
+
+- **Breaking change is wrapper-mode-only.** Consumers who didn't
+  opt into `--chameleon-go_opt=with_resolved=true` aren't affected
+  by the `Underlying()` removal. The function-form accessors stay
+  emitted regardless.
+- **No other API changes.** Resolver, secret.Map, parse.MoveInto's
+  external signature, sops wrapper, chain expansion — all
+  unchanged from v0.8.0.
+
+### What v0.9.0 closes
+
+Combined with v0.8.0's wrapper API + v0.7.0's chameleon-lint:
+
+| Path | Outcome |
+|---|---|
+| `cfg.DbPassword.Value` (wrapper, scalar shorthand or block form) | Compile error — `DbPassword()` returns `*secret.Secret`. |
+| `cfg.Underlying().DbPassword.Value` | Compile error — method removed. |
+| Plaintext on `*pxfv1.Secret.Value` for any authoring form | Never — hook routes mid-decode. |
+| `proto.Marshal(cfg)` etc. | Works — wrapper IS `proto.Message`. |
+
 ## [0.8.0] — 2026-05-12
 
 Compile-time safety release. Closes [chameleon#6](https://github.com/trendvidia/chameleon/issues/6) end-to-end: with the new `with_resolved=true` plugin mode, the codegen now emits a `<Root>Resolved` wrapper per Secret-bearing message that exposes every field through typed accessor methods. The wrapper has no `Value` field, no public `*pxfv1.Secret`, and chained access for nested submessages / repeated / map containers. The remaining escape hatch (`Underlying()`) carries Go's standard `Deprecated:` marker so `staticcheck` / `golangci-lint` flag any consumer that still bypasses it. Combined with chameleon-lint (v0.7.0), `cfg.X.Value` is now caught at the typed-API tier (compile error) and at the CI tier (lint).

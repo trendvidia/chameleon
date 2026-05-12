@@ -2,6 +2,10 @@
 
 Each milestone groups issues that ship together. Detailed designs live in the linked issues; this file is the index.
 
+## Status: feature-complete
+
+All three planned milestones shipped. Pre-1.0 development is in a soak period; v1.0 cuts after one release cycle without API churn. See [v1.0 readiness criteria](#v10-readiness-criteria) below.
+
 ## Milestone 1 — v0.6.0 (chameleon-internal, cheap)
 
 All three reuse the existing OTel meter plumbing. No cross-repo coordination.
@@ -17,10 +21,49 @@ Plus closed via fork: **sops context.Context** — shipped in [trendvidia/sops v
 - **[#5 — cmd/chameleon migrate: bulk-edit encrypted layers](https://github.com/trendvidia/chameleon/issues/5)** — `chameleon migrate --transform=add-field --path=db.password --kind=secret` decrypts every layer in a chain spec, applies the transform at the PXF AST level, re-encrypts. Adds an encrypt wrapper to chameleon's `sops` package alongside the existing decrypt wrapper.
 - **[#6 phase 1 — chameleon-lint: flag `cfg.X.Value` reads at CI time](https://github.com/trendvidia/chameleon/issues/6)** — Go AST analyzer that catches the `pxfv1.Secret.Value` footgun in consumer code without waiting for the full field-replacement codegen. 95% of the protection for 5% of the cost.
 
-## Milestone 3 — v1.0 prep (cross-repo, weeks of work)
+## Milestone 3 — v0.8.0 / v0.9.0 (cross-repo, shipped)
 
-- **[#6 phase 2 — protoc-gen-chameleon-go field-replacement mode](https://github.com/trendvidia/chameleon/issues/6)** — `--mode=replace` emits a struct that has no `Value` field exposed. `cfg.DbPassword.Value` becomes a compile error. Requires implementing `proto.Message` manually for the replacement type.
-- **[#7 — protowire-go Secret-direct decode path](https://github.com/trendvidia/chameleon/issues/7)** — protowire-go v0.73.0 adds an `OnSecretField` decoder hook so chameleon can route bytes from the codec directly into a memguard Enclave, closing the plaintext-in-heap window between `pxf.UnmarshalFull` and `parse.Move`. Pairs with #6 phase 2 — together they ship "no public Value field, no transient string allocation."
+Originally scoped as "v1.0 prep, weeks of work." Shipped in two consecutive minor releases:
+
+- **[#6 — protoc-gen-chameleon-go `with_resolved` wrapper mode](https://github.com/trendvidia/chameleon/issues/6)** — opt-in plugin flag emits a `<Root>Resolved` wrapper per Secret-bearing message. Typed Secret accessors return `*secret.Secret` directly; nested / repeated / map containers route through chained accessor helpers; field-by-field getters cover every non-Secret shape. v0.9.0 follow-up implements `proto.Message` on the wrapper via delegation and hard-removes the deprecated `Underlying()` escape hatch. Net result: `cfg.DbPassword.Value` is a compile error end-to-end. Phase 1 (chameleon-lint) stays in place as defense-in-depth for consumers who don't opt into wrapper mode.
+- **[#7 — protowire-go `OnSecretField` decoder hook](https://github.com/trendvidia/chameleon/issues/7)** — protowire-go [v0.76.0](https://github.com/trendvidia/protowire-go/releases/tag/v0.76.0) added the hook for scalar shorthand; [v0.77.0](https://github.com/trendvidia/protowire-go/releases/tag/v0.77.0) extended it to block form. Chameleon's resolver wires it on every per-layer decode so plaintext bytes flow from the PXF lexer straight into a memguard Enclave without an intermediate `*pxfv1.Secret.Value` Go string. `parse.MoveInto` folds block-form hint/fingerprint metadata back onto the Map entry via `(*secret.Secret).SetMetadata` for diagnostic visibility. Window closed for both authoring forms.
+
+## v1.0 readiness criteria
+
+A v1.0 cut promises API stability — breaking changes thereafter require a major version bump. The criteria to clear before tagging v1.0:
+
+- **One release cycle of soak without API churn.** v0.9.0 just landed; let it bake for a release before locking in. Hidden surface that real consumers exercise tends to surface in this window.
+- **No open enhancement issues blocking core flows.** All listed milestones are shipped; the two remaining "Other deferred items" below are explicitly non-blocking (typed ChainSpec access is an internal refactor; resolver-time content_sha256 verification has out-of-band CLI coverage).
+- **README + godoc cross-checked against current behavior.** Sweep for stale notes referencing deprecated or removed APIs (e.g. anything that still mentions `Underlying()` post-v0.9.0).
+- **Cross-repo pins documented.** protowire-go minimum, sops fork dependency, memguard version — all listed in the compatibility table.
+
+Out of scope for v1.0:
+- Anything in "Out of scope (intentional non-goals)" stays out — file-watch, logging hooks, proto2 groups.
+- Anything in "Other deferred items" stays deferred. Not required for v1.0.
+
+When v1.0 cuts, the [public API surface freeze](#public-api-surface-at-v10) section below documents what's covered by the stability promise.
+
+## Public API surface (at v1.0)
+
+These packages and types are stable at v1.0; consumers may rely on their signatures across the 1.x line:
+
+- `github.com/trendvidia/chameleon/resolver` — `New`, `Resolver[T]`, `Resolve`, `Resolution[T]`, `Request`, `Trace`, the `With*` option set.
+- `github.com/trendvidia/chameleon/chain` — `Spec`, `LayerRef`, `LoadSpec`, `Expand`.
+- `github.com/trendvidia/chameleon/secret` — `Secret`, `Map`, `FromString`, `FromLockedBytes`, `OpenedBuffer`, `Instruments`, `MapOption`, `WithInstruments`.
+- `github.com/trendvidia/chameleon/parse` — `Move`, `MoveWithOptions`, `MoveInto`.
+- `github.com/trendvidia/chameleon/merge` — `Merge`, `MergeWithOptions`, `Options`, `ClobberInfo`.
+- `github.com/trendvidia/chameleon/sops` — `Decrypter`, `Default`, `Format*`, `FormatForPath`.
+- `github.com/trendvidia/chameleon/source` — `Source`, `FS`, `ErrNotFound`.
+- `github.com/trendvidia/chameleon/internal/header` — internal; not covered.
+- `github.com/trendvidia/chameleon/internal/upstream` — internal; not covered.
+
+CLI commands (stable):
+- `chameleon explain` / `verify` / `migrate` / `hash`.
+- `chameleon-lint`.
+
+Codegen output (stable):
+- `protoc-gen-chameleon-go` function-form accessors (`<Root>Secret_<Path>`).
+- `protoc-gen-chameleon-go` wrapper mode (`<Root>Resolved` + chained access + field getters + `proto.Message` delegation).
 
 ---
 
