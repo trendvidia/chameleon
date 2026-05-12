@@ -7,6 +7,171 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-05-12
+
+v1.0 readiness sweep. v0.9.0 was the planned v1.0 candidate; before
+tagging the stability promise, a four-axis audit (security,
+pipeline correctness, codegen, API + docs + tests) surfaced
+thirteen items ranging from one stale README line to one actual
+data race. This release rolls them all up. The ROADMAP's v1.0
+readiness criteria are now satisfied; v1.0.0 follows after a short
+soak.
+
+### Added
+
+- **`resolver.WithMaxLayerBytes(n int64)` + `ErrLayerTooLarge`
+  sentinel** ([#38](https://github.com/trendvidia/chameleon/pull/38)).
+  Caps the size of each layer's raw bytes read from a Source.
+  Default 10 MiB; pass `math.MaxInt64` to disable. Defense against
+  pathological Sources that return huge files or hang on slow
+  readers without a ctx deadline. Cap applies before decrypt —
+  ciphertext size is approximately plaintext size, so a single cap
+  covers both shapes. `ErrLayerTooLarge` wraps the layer id, path,
+  and active limit for actionable logs.
+
+- **`interpolate.MaxResolveDepth` constant + `ErrDepthExceeded`
+  sentinel** ([#39](https://github.com/trendvidia/chameleon/pull/39)).
+  Hard cap on `${...}` reference chain depth (64 frames).
+  Defense against pathological non-cyclic chains
+  (`a -> b -> c -> ... -> z[1000]`) that previously recursed
+  without bound. Cycle detection (`ErrCycle`) still runs and is
+  the distinct error class for actual cycles.
+
+- **`chain.LoadSpec` / `chain.ParseSpec` are now safe for concurrent
+  first-callers** ([#29](https://github.com/trendvidia/chameleon/pull/29)).
+  The previous unsynchronized cache in `chain/load.go`
+  (package-level `cachedDesc` / `cachedErr` / `cachedSet`) had two
+  real races: a wasted-compile race, and a `(nil, nil)` race where
+  a reader could observe `cachedSet=true` before the writer's
+  assignment to `cachedDesc` was visible. Replaced with
+  `sync.OnceValues`. `Resolve` was already safe (per-Resolve
+  allocation of every mutable structure); this fix closes the
+  construction-time concurrency hole — the broader "safe for
+  concurrent use" promise now holds.
+
+- **`protoc-gen-chameleon-go` reserved-name collision check**
+  ([#30](https://github.com/trendvidia/chameleon/pull/30)).
+  Wrapper mode emits fixed methods (`Reset`, `String`,
+  `ProtoReflect`, `Secrets`). A user proto whose field PascalCases
+  into any of those would generate a duplicate method on the
+  wrapper → opaque "method redeclared" at the consumer's `go
+  build`. The plugin now fails fast at codegen time with a clear
+  diagnostic naming the field, the message, the colliding method,
+  and two remediation paths (rename the field, or opt out of
+  with_resolved). Two reserved sets applied — proto-side paths
+  (no protogen mangling) vs Go-side field names (protogen
+  pre-mangles `Reset` / `String` only).
+
+### Changed
+
+- **README + godoc cross-checked against current behavior.** Five
+  stale claims tightened or rewritten:
+
+  - The "plaintext never lands on the Go heap" claim
+    ([#31](https://github.com/trendvidia/chameleon/pull/31)) was
+    overstated: true for `*pxfv1.Secret.Value` (the proto-field
+    path), but the PXF lexer string + the hook closure's `value`
+    parameter are immutable Go strings that live on the heap
+    until the next GC after the lexer advances past the token.
+    Window is bounded by GC pacing, not resolve duration — a
+    real improvement over the pre-v0.7 walker, but worth precise
+    documentation before locking in the v1.0 promise.
+
+  - The "Sops API has no ctx.Context hook" Limitations entry
+    ([#33](https://github.com/trendvidia/chameleon/pull/33))
+    hadn't been true since v0.6.0 (ctx threading shipped via the
+    trendvidia/sops/v3 fork). Rewritten to describe what's
+    actually closed and the residual HuaweiCloud goroutine shim.
+
+  - The compatibility table now documents the `replace` directives
+    consumers must add to their own `go.mod`
+    ([#32](https://github.com/trendvidia/chameleon/pull/32)).
+    Go's `replace` is non-transitive — the chameleon repo's
+    directives do NOT propagate to consumers — so any consumer
+    that doesn't copy the sops + protobuf-go replaces will fail
+    `go build` because chameleon calls into functions absent from
+    the upstream surfaces. Previous wording implied the replaces
+    were inherited; this corrects the record.
+
+  - The README's Go minimum version is bumped to 1.26+
+    ([#28](https://github.com/trendvidia/chameleon/pull/28)) to
+    match `go.mod`. The previous 1.25+ line silently failed `go
+    build` for consumers on the older toolchain.
+
+  - Stale `Underlying()`-era doc comments in the plugin's
+    `gen_resolved.go` ([#35](https://github.com/trendvidia/chameleon/pull/35))
+    referenced `Underlying()` as a live API; hard-removed in
+    v0.9.0. Scrubbed. The historical removal note stays in
+    `main.go`'s package godoc as the canonical reference.
+
+- **`ROADMAP.md`'s "Public API surface (at v1.0)" enumeration**
+  ([#34](https://github.com/trendvidia/chameleon/pull/34))
+  regenerated from `go doc` walks. The previous stylized summary
+  missed 10+ de-facto-public types/funcs the v1.0 stability
+  promise will cover — including the top-level `chameleon.Load`,
+  the `interpolate` / `defaults` / `validate` / `wkt` packages,
+  several `resolver` types (`ClobberRecord`, `TraceEntry`,
+  `WithStrictMetadata`, `WithMeterProvider`), and detailed
+  method sets on `secret.Map` / `Secret` / `OpenedBuffer`. New
+  format groups Functions / Types / Methods / Errors / Constants
+  per package so future audits diff a stable shape.
+
+- **README CLI documentation** ([#40](https://github.com/trendvidia/chameleon/pull/40)).
+  The `chameleon` CLI section now lists all four subcommands
+  (`explain`, `verify`, `migrate`, `hash`) instead of just
+  `explain`; the duplicate H3 header is removed; the repo-layout
+  block calls out `cmd/chameleon-lint` alongside the other
+  binaries; and all five previously-undocumented `sops.Format*`
+  constants now carry godoc.
+
+### Tests
+
+- **Concurrent `Resolve` regression guard**
+  ([#36](https://github.com/trendvidia/chameleon/pull/36)). 64
+  goroutines through one `*Resolver`, alternating environments.
+  Verifies independent Secrets maps + env-consistent values +
+  race detector clean. Backs the long-standing godoc
+  thread-safety claim that had been asserted but unverified.
+
+- **`source` (0% → 100%) and `internal/pathfmt` (0% → 87.5%)
+  test coverage** ([#37](https://github.com/trendvidia/chameleon/pull/37)).
+  `source.FS`'s `ErrNotFound` wrapping is the only thing standing
+  between a typo'd layer path and the resolver's "skip optional
+  layer" semantics. `internal/pathfmt.MapKey` is the documented
+  "single source of truth" for dotted-path format across three
+  callers — drift between any two would silently break
+  `secret.Map.Get` lookups. Both now lock the behavior in.
+
+### Notes for upgraders
+
+- **No breaking changes.** All additions are opt-in or
+  defense-in-depth. The new `WithMaxLayerBytes` default (10 MiB)
+  is well above realistic layer sizes; the new
+  `interpolate.MaxResolveDepth` (64) is well above realistic
+  template chain depths.
+
+- The `chain` concurrency fix unblocks consumers who construct
+  multiple Resolvers in `init()` across goroutines, but
+  single-Resolver users see no behavior change.
+
+- Consumers of `protoc-gen-chameleon-go` in `with_resolved=true`
+  mode whose schemas happen to use a field named `secrets`,
+  `proto_reflect`, or whose `pxf.Secret` field is named `reset`
+  / `string` / `secrets` will see the new collision diagnostic at
+  codegen time. Rename the proto field per the error's
+  remediation hint.
+
+### v1.0 readiness criteria — satisfied
+
+| Criterion | PRs |
+|---|---|
+| One release cycle of soak | v0.9.0 ran clean; v0.10.0 starts another |
+| No open enhancement issues blocking core flows | Zero open issues |
+| README + godoc cross-checked against current behavior | [#28](https://github.com/trendvidia/chameleon/pull/28), [#31](https://github.com/trendvidia/chameleon/pull/31), [#33](https://github.com/trendvidia/chameleon/pull/33), [#35](https://github.com/trendvidia/chameleon/pull/35), [#40](https://github.com/trendvidia/chameleon/pull/40) |
+| Cross-repo pins documented | [#32](https://github.com/trendvidia/chameleon/pull/32) |
+
+v1.0.0 cuts after a short soak if no API-shaped feedback surfaces.
+
 ## [0.9.0] — 2026-05-12
 
 API-stability release. Two closures that finish the v0.8.0 wrapper-
