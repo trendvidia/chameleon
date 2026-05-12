@@ -143,3 +143,12 @@ require (
 // protowire-go v0.72.0 introduced the generic @<directive> grammar
 // chameleon's @header preamble depends on. See
 // internal/upstream/protowire_go_patches.go for the cross-repo contract.
+
+// trendvidia/sops is a soft fork of getsops/sops/v3 with the additions
+// chameleon depends on (PXF store + comment directives in v3.13.1,
+// context.Context end-to-end + encrypt package + DataIntoWriter in
+// v3.13.2). The fork keeps the upstream module path so the replace
+// directive below is the canonical consumption pattern. When upstream
+// merges the relevant parts, the replace can be dropped and the
+// require version bumped to the merged upstream tag.
+replace github.com/getsops/sops/v3 => github.com/trendvidia/sops/v3 v3.13.2
