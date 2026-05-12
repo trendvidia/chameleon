@@ -182,7 +182,9 @@ pw := res.Secrets.Get("db_password")
 
 ### Metrics (OpenTelemetry)
 
-Pass `resolver.WithMeterProvider(mp)` to record OTel metrics on every `Resolve` call:
+Pass `resolver.WithMeterProvider(mp)` to record OTel metrics. Two families:
+
+**Resolve-time** (one observation per `Resolve` call):
 
 | Instrument | Type | Attributes |
 |---|---|---|
@@ -190,6 +192,15 @@ Pass `resolver.WithMeterProvider(mp)` to record OTel metrics on every `Resolve` 
 | `chameleon.resolve.errors` | Counter | `chameleon.env` |
 | `chameleon.resolve.layers` | Histogram | `chameleon.env` |
 | `chameleon.resolve.secrets` | Histogram | `chameleon.env` |
+| `chameleon.merge.clobbered_metadata` | Counter | `chameleon.env` |
+
+**Runtime** (one observation per `Secret.Open()` / `Destroy()` pair):
+
+| Instrument | Type | Attributes |
+|---|---|---|
+| `chameleon.secret.opens` | Counter | `chameleon.path`, `chameleon.env` |
+| `chameleon.secret.active` | UpDownCounter (gauge) | `chameleon.path` |
+| `chameleon.secret.open.duration` | Histogram (seconds) | `chameleon.path` |
 
 ```go
 r, _ := resolver.New[*AppConfig](sample, spec,
@@ -203,6 +214,46 @@ Without `WithMeterProvider`, instruments use the noop provider — every record 
 ### Trace (per-field provenance)
 
 `resolver.WithTrace()` populates `Resolution.Trace` with one entry per dotted field path: which layer set it, whether a default applied, whether interpolation rewrote it, whether it's sensitive. Used by the `chameleon explain` CLI (below) and powerful for debugging "why does this field have this value?"
+
+`Resolution.Trace.ClobberedMetadata` also lists any WKT-metadata losses detected during merge — e.g., a higher layer's `db_password = "y"` silently drops a lower layer's `hint`. See [WKT metadata clobber](#wkt-metadata-clobber-warning) below.
+
+### Debugging: pairing resolve-time provenance with runtime state
+
+Two production-debugging questions, two distinct answers:
+
+**"Where did this field's value come from?"** — resolve-time, answered by `chameleon explain` (below) and `Resolution.Trace`. Tells you which layer set the value, whether a default applied, whether interpolation rewrote it.
+
+**"Who's holding this secret right now?"** — runtime, answered by the `chameleon.secret.*` metrics. Tells you whether any goroutine is currently inside an `Open()` → `Destroy()` window, how often the secret is opened, how long it's typically held.
+
+Worked example: suspecting a memguard buffer leak for `db.password`.
+
+```promql
+# Is anything holding it open right now?
+chameleon_secret_active{chameleon_path="db.password"} > 0
+
+# For how long has the gauge been non-zero?
+max_over_time(chameleon_secret_active{chameleon_path="db.password"}[5m]) > 0
+
+# Sustained opens that never returned?
+rate(chameleon_secret_opens{chameleon_path="db.password"}[5m])
+  - rate(chameleon_secret_open_duration_count{chameleon_path="db.password"}[5m]) > 0
+```
+
+The last query catches leaked enclaves: opens-per-second minus close-durations-per-second should average zero in steady state. A sustained positive delta means a code path opened the secret but never called `Destroy()` on the returned `OpenedBuffer`. Pair with `pprof` goroutine dumps to find the offending caller.
+
+### WKT metadata clobber warning
+
+WKTs (`pxf.Secret`, `Timestamp`, `BigInt`, wrapper types) are atomic — a higher layer's whole-value write replaces the lower layer's value entirely, including any metadata. For `pxf.Secret` specifically, that means an `env/dev.pxf` writing `db_password = "y"` silently drops the `hint = "Postgres primary"` that `base.pxf` had set.
+
+Chameleon detects this and surfaces it three ways:
+
+- **`Resolution.Trace.ClobberedMetadata`** (when `WithTrace()`): a slice of `ClobberRecord{Path, Type, LostFields, ClobberingLayerID}` per loss.
+- **`chameleon.merge.clobbered_metadata`** OTel counter (when `WithMeterProvider()`): increments once per loss, attributed by `chameleon.env`.
+- **`resolver.WithStrictMetadata()`**: opt-in option that promotes the warning to a hard `Resolve` error. Use when your authoring discipline says "always re-declare metadata if you override a Secret" and you want accidental drops to fail loud.
+
+Currently only `pxf.Secret` has a metadata concept (`hint`, `fingerprint`). Other atomic WKTs replace whole without checks.
+
+### `chameleon explain` CLI
 
 ### `chameleon explain` CLI
 
