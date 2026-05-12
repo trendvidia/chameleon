@@ -18,39 +18,43 @@ import (
 // the (`*Message`, `*secret.Map`) pair and exposes typed-method
 // accessors for every Secret reachable from that root.
 //
-// Design — Phase 2a of chameleon#6:
+// Design (chameleon#6 — current state):
 //
 //   - The wrapper keeps an unexported `m *<Message>` and `secrets
-//     *secret.Map`. The only escape hatch to the raw proto is
-//     `Underlying() *<Message>` — chameleon-lint flags
-//     `cfg.Underlying().X.Value` reads the same way it flags direct
-//     `cfg.X.Value` reads, so the wrapper narrows the surface where
-//     the footgun is reachable.
+//     *secret.Map` plus a `prefix string` for chained accessors.
+//     There is no public escape hatch to the raw proto. The wrapper
+//     itself implements `proto.Message` by delegating Reset / String
+//     / ProtoReflect to the inner message; reflection-driven APIs
+//     (`proto.Marshal`, `proto.Equal`, `proto.Clone`) accept the
+//     wrapper directly.
 //
-//   - One method per Secret site, named `<RootName>` stripped from
-//     the function-style accessor (which the plugin still emits
-//     alongside for callers that prefer the standalone form).
-//     Example: function `AppConfigSecret_Primary_AuthToken(s, ...)` →
-//     method `(*AppConfigResolved).PrimaryAuthToken(...)`.
+//   - One method per Secret site, named from the dotted PXF path via
+//     wrapperMethodName (PascalCase segments concatenated, with an
+//     "At" suffix when any segment is repeated). Example: PXF path
+//     `primary.auth_token` → method
+//     `(*AppConfigResolved).PrimaryAuthToken() *secret.Secret`. The
+//     function-form accessor stays emitted alongside for callers
+//     that prefer the standalone shape.
 //
-//   - Repeated and map Secret containers carry their index/key
-//     parameter on the method, mirroring the function-form
-//     signature: `BackupKeyAt(i int) *secret.Secret`,
-//     `TenantKey(key string) *secret.Secret`.
+//   - Scalar-message subfields whose target message is wrapper-
+//     bearing get a chain method that returns the nested wrapper:
+//     `cfg.Primary() *EndpointResolved`. Repeated and map containers
+//     of wrapper-bearing messages get a `<Parent><Field>Resolved`
+//     accessor helper with Len / At(i) / Get(key) returning the
+//     nested wrapper for each element. Pxf.Secret leaves in repeated
+//     / map shapes get the flat indexed method form
+//     (`BackupKeysAt(i int)`, `TenantKeys(key string)`).
 //
-// What this PR does NOT do (deliberate scope; see CHANGELOG +
-// chameleon#6 for the full picture):
+//   - Every non-Secret, non-chain-bearing field of the underlying
+//     message gets a delegating getter on the wrapper. Scalar
+//     primitives, bytes, enums, repeated, map, and non-wrapper-
+//     bearing message fields are all covered; bodies use the proto-
+//     generated nil-safe `GetX()` accessor.
 //
-//   - The wrapper does not implement `proto.Message`. For
-//     serialization, callers still reach for the underlying proto
-//     via `Underlying()`. Delegating ProtoReflect to the inner
-//     message is a tractable follow-up but not a security gate.
-//
-//   - Non-Secret scalar / message / repeated / map fields aren't
-//     mirrored as wrapper methods. Reading them goes through
-//     `Underlying()`. A future PR could emit field-by-field getters
-//     so `Underlying()` becomes unnecessary; the security win is
-//     already in place once Secret access goes through the wrapper.
+//   - A compile-time `var _ proto.Message = (*XResolved)(nil)`
+//     assertion is emitted alongside each wrapper so the consumer's
+//     `go build` fails immediately if a future emit path forgets one
+//     of the three required delegating methods.
 func emitResolvedWrappers(gf *protogen.GeneratedFile, sites []secretSite, secretIdent, mapIdent protogen.GoIdent, strconvPkg protogen.GoImportPath) error {
 	if len(sites) == 0 {
 		return nil
@@ -222,11 +226,10 @@ func emitOneResolvedWrapper(gf *protogen.GeneratedFile, root *protogen.Message, 
 	// proto.Message implementation by delegation. The wrapper IS a
 	// proto.Message; callers passing the resolved config to
 	// proto.Marshal / proto.Equal / proto.Clone / any reflection-
-	// driven API hand the wrapper directly. The legacy Underlying()
-	// escape hatch was removed in v0.9.0 — typed accessors cover
-	// every field shape, and the proto.Message delegation here
-	// covers every reflection-driven use case that Underlying()
-	// previously enabled.
+	// driven API hand the wrapper directly. No raw-proto escape
+	// hatch is emitted — typed accessors and the field-by-field
+	// getters below cover every field shape, and the proto.Message
+	// delegation here covers every reflection-driven use case.
 	protoreflectMsg := protogen.GoImportPath("google.golang.org/protobuf/reflect/protoreflect").Ident("Message")
 
 	gf.P("// Reset zeroes the underlying proto message. Implements the")
@@ -267,9 +270,10 @@ func emitOneResolvedWrapper(gf *protogen.GeneratedFile, root *protogen.Message, 
 	// top-level methods for back-compat.
 	emitChainMethods(gf, typeName, root, strconvPkg)
 
-	// Phase 2b PR3 — field-by-field getters for every non-Secret,
-	// non-chain-bearing field on this wrapper's message. Lets
-	// consumers drop Underlying() for routine reads.
+	// Field-by-field getters for every non-Secret, non-chain-bearing
+	// field on this wrapper's message. Together with the typed
+	// Secret methods + chain methods above, this gives consumers a
+	// complete typed surface — no raw-proto access is required.
 	emitFieldGetters(gf, typeName, root)
 
 	// Compile-time guarantee: the wrapper implements proto.Message.
@@ -660,10 +664,12 @@ func mapKeyRuntimeExpr(gf *protogen.GeneratedFile, kind protoreflect.Kind, param
 
 // emitFieldGetters writes one delegating getter per field on parent
 // where the field is neither a pxf.Secret leaf (already covered by
-// the flat-method emit) nor a wrapper-bearing message container
-// (already covered by the chain-method emit). Lets consumers reach
-// scalar primitives, bytes, enums, non-Secret messages, and
-// non-Secret message containers without touching Underlying().
+// the typed Secret-method emit) nor a wrapper-bearing message
+// container (already covered by the chain-method emit). Lets
+// consumers reach scalar primitives, bytes, enums, non-Secret
+// messages, and non-Secret message containers through the typed
+// wrapper surface — the wrapper has no raw-proto escape hatch by
+// design.
 //
 //	func (r *AppConfigResolved) BaseUrl() string { return r.m.GetBaseUrl() }
 //	func (r *AppConfigResolved) MaxReplicas() int32 { return r.m.GetMaxReplicas() }
