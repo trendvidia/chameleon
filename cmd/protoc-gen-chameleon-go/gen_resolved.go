@@ -51,9 +51,9 @@ import (
 //     `Underlying()`. A future PR could emit field-by-field getters
 //     so `Underlying()` becomes unnecessary; the security win is
 //     already in place once Secret access goes through the wrapper.
-func emitResolvedWrappers(gf *protogen.GeneratedFile, sites []secretSite, secretIdent, mapIdent protogen.GoIdent, strconvPkg protogen.GoImportPath) {
+func emitResolvedWrappers(gf *protogen.GeneratedFile, sites []secretSite, secretIdent, mapIdent protogen.GoIdent, strconvPkg protogen.GoImportPath) error {
 	if len(sites) == 0 {
-		return
+		return nil
 	}
 
 	// Group sites by root message; iterate roots in a deterministic
@@ -77,21 +77,110 @@ func emitResolvedWrappers(gf *protogen.GeneratedFile, sites []secretSite, secret
 	}
 	sort.Strings(rootOrder)
 
+	// Validate every wrapper up-front before any code emit. A
+	// reserved-name collision (e.g. user proto field named "secrets"
+	// or "reset") would produce duplicate methods on the generated
+	// wrapper — a hard compile error at the consumer. Surface the
+	// collision here with a clear plugin-level error so the user
+	// regenerates with a renamed field rather than chasing the
+	// duplicate-method symptom at consumer build time.
+	for _, k := range rootOrder {
+		g := byRoot[k]
+		if err := validateNoReservedNameCollisions(g.root, g.sites); err != nil {
+			return err
+		}
+	}
+
 	gf.P("// --- Resolved wrappers (opt-in via --chameleon-go_opt=with_resolved=true) ---")
 	gf.P("//")
 	gf.P("// One `<Root>Resolved` per top-level message with at least one")
 	gf.P("// pxf.Secret in its tree. The wrapper holds the resolved")
 	gf.P("// proto + the chameleon resolver's secret.Map together, and")
 	gf.P("// exposes typed methods for every Secret reachable from the")
-	gf.P("// root. Consumer code that goes through the wrapper avoids")
-	gf.P("// touching `*pxfv1.Secret.Value` entirely; access non-Secret")
-	gf.P("// fields via `Underlying()`.")
+	gf.P("// root. Consumer code that goes through the wrapper IS a")
+	gf.P("// proto.Message — pass it directly to proto.Marshal /")
+	gf.P("// proto.Equal / proto.Clone / etc.")
 	gf.P()
 
 	for _, k := range rootOrder {
 		g := byRoot[k]
 		emitOneResolvedWrapper(gf, g.root, g.sites, secretIdent, mapIdent, strconvPkg)
 	}
+	return nil
+}
+
+// reservedWrapperMethodNames_FromGoName lists method names the
+// codegen emits on every `<Root>Resolved` wrapper that are derived
+// from a field's *Go* name (protogen.Field.GoName). Field getters
+// and chain methods both use f.GoName; only chameleon-specific
+// emitted methods need protection here, because protogen has
+// already mangled any field GoName that would collide with a
+// proto.Message-interface method (Reset, String — both confirmed
+// to become "Reset_", "String_" when used as proto field names).
+//
+// Empirical note: protogen does NOT mangle `ProtoReflect` or
+// `Secrets` (a field literally named `proto_reflect` or `secrets`
+// keeps GoName "ProtoReflect" / "Secrets"). The validator catches
+// those.
+var reservedWrapperMethodNames_FromGoName = map[string]string{
+	"ProtoReflect": "the proto.Message ProtoReflect method on the wrapper",
+	"Secrets":      "the wrapper's secret.Map accessor",
+}
+
+// reservedWrapperMethodNames_FromPath lists method names the codegen
+// emits for Secret accessors, derived from the proto-side path via
+// wrapperMethodName(). That path doesn't go through protogen's
+// GoName mangling, so we need the full set of proto.Message-
+// interface methods plus the chameleon-specific Secrets accessor.
+// Example collision: `pxf.Secret reset = 1;` would emit
+// `func (r *AppConfigResolved) Reset() *secret.Secret { ... }`,
+// duplicating the proto.Message Reset() delegation.
+var reservedWrapperMethodNames_FromPath = map[string]string{
+	"Reset":        "the proto.Message Reset method on the wrapper",
+	"String":       "the proto.Message String method on the wrapper",
+	"ProtoReflect": "the proto.Message ProtoReflect method on the wrapper",
+	"Secrets":      "the wrapper's secret.Map accessor",
+}
+
+// validateNoReservedNameCollisions runs against a root's Secret sites
+// AND the root's direct fields, computing every method name the emit
+// would produce and checking each against the appropriate reserved
+// set. Returns an error wrapping the first collision found, with a
+// remediation hint so the user can fix the proto rather than chase a
+// duplicate-method symptom in the generated file.
+func validateNoReservedNameCollisions(root *protogen.Message, sites []secretSite) error {
+	check := func(methodName, originDesc string, set map[string]string) error {
+		if reason, isReserved := set[methodName]; isReserved {
+			return fmt.Errorf(
+				"protoc-gen-chameleon-go: %s in %s would shadow %s; "+
+					"rename the proto field or opt out of with_resolved mode",
+				originDesc, root.Desc.FullName(), reason,
+			)
+		}
+		return nil
+	}
+	// Secret-method emit uses wrapperMethodName(path) — proto-side
+	// names, no protogen mangling. Full reserved set applies.
+	for _, s := range sites {
+		if s.Root != root {
+			continue
+		}
+		name := wrapperMethodName(s.Path)
+		if err := check(name, fmt.Sprintf("Secret method %q (from path %q)", name, dottedPath(s.Path)), reservedWrapperMethodNames_FromPath); err != nil {
+			return err
+		}
+	}
+	// Field-getter and chain-method emits use f.GoName — protogen
+	// has already mangled the proto.Message-interface collisions
+	// (Reset, String). The remaining risk is the chameleon-specific
+	// names protogen doesn't know about (ProtoReflect — surprisingly
+	// not mangled — and Secrets).
+	for _, f := range root.Fields {
+		if err := check(f.GoName, fmt.Sprintf("field method %q", f.GoName), reservedWrapperMethodNames_FromGoName); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func emitOneResolvedWrapper(gf *protogen.GeneratedFile, root *protogen.Message, sites []secretSite, secretIdent, mapIdent protogen.GoIdent, strconvPkg protogen.GoImportPath) {

@@ -61,7 +61,9 @@ func generateSidecar(p *protogen.Plugin, f *protogen.File, sites []secretSite) e
 	}
 
 	if pluginState.withResolved {
-		emitResolvedWrappers(gf, sites, secretIdent, mapIdent, strconvPkg)
+		if err := emitResolvedWrappers(gf, sites, secretIdent, mapIdent, strconvPkg); err != nil {
+			return err
+		}
 	}
 	return nil
 }
