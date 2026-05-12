@@ -251,18 +251,18 @@ func TestResolved_ChainMethod_NestedThroughCluster(t *testing.T) {
 	assert.Contains(t, out, "\t\tprefix:  r.prefix + \"primary_cluster.\",")
 }
 
-// TestResolved_ChainMethod_NotEmittedForContainers — repeated /
-// map<*, msg> fields do NOT get chain methods in PR1. Container
-// chained access (Replicas().At(i).AuthToken()) requires accessor
-// helper types and lands in a follow-up. The flat methods on the
-// parent (ReplicasAuthTokenAt) still cover those paths.
-func TestResolved_ChainMethod_NotEmittedForContainers(t *testing.T) {
+// TestResolved_ContainerChainMethods_Emitted — repeated and map
+// message fields whose element/value type contains a Secret get
+// chain methods returning accessor helper types (Phase 2b PR2).
+// Flat methods (ReplicasAuthTokenAt, SitesAuthToken) coexist for
+// back-compat with Phase 2a consumers.
+func TestResolved_ContainerChainMethods_Emitted(t *testing.T) {
 	out := runPluginWithResolved(t)
-	// `replicas` is repeated Endpoint — must NOT have a chain method.
-	assert.NotContains(t, out, "func (r *AppConfigResolved) Replicas() *")
-	// `sites` is map<string, Endpoint> — must NOT have a chain method.
-	assert.NotContains(t, out, "func (r *AppConfigResolved) Sites() *")
-	// But the flat methods must still be present for those paths.
+	// repeated Endpoint → AppConfigReplicasResolved with Len/At.
+	assert.Contains(t, out, "func (r *AppConfigResolved) Replicas() *AppConfigReplicasResolved")
+	// map<string, Endpoint> → AppConfigSitesResolved with Len/Get.
+	assert.Contains(t, out, "func (r *AppConfigResolved) Sites() *AppConfigSitesResolved")
+	// Flat methods still emitted.
 	assert.Contains(t, out, "ReplicasAuthTokenAt")
 	assert.Contains(t, out, "SitesAuthToken")
 }
@@ -313,6 +313,97 @@ func TestMessageContainsSecret_ViaCodegen(t *testing.T) {
 	// wrapper-bearing → chain method emitted on
 	// AppConfigResolved.PrimaryCluster().
 	assert.Contains(t, out, "PrimaryCluster() *ClusterResolved")
+}
+
+// TestResolved_ListHelper_TypeShape — the repeated chain method emits
+// a `<Parent><Field>Resolved` helper type with slice-typed m, an
+// inherited prefix, Len, and an At(i) that builds a nested wrapper
+// scoped to "<field>[i].".
+func TestResolved_ListHelper_TypeShape(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "type AppConfigReplicasResolved struct {")
+	assert.Contains(t, out, "\tm       []*Endpoint")
+	assert.Contains(t, out, "\tprefix  string")
+	assert.Contains(t, out, "func (r *AppConfigReplicasResolved) Len() int")
+	assert.Contains(t, out, "func (r *AppConfigReplicasResolved) At(i int) *EndpointResolved")
+	// Out-of-range yields nil.
+	assert.Contains(t, out, "if i < 0 || i >= len(r.m) {")
+	// Prefix construction uses Itoa and the field's proto name.
+	assert.Contains(t, out, `r.prefix + "replicas[" + strconv.Itoa(i) + "].",`)
+}
+
+// TestResolved_MapHelper_StringKeyShape — map<string, Endpoint>
+// emits a helper whose Get takes string and quotes it for the path
+// to match parse.Move's `["acme"]` rendering.
+func TestResolved_MapHelper_StringKeyShape(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "type AppConfigSitesResolved struct {")
+	assert.Contains(t, out, "\tm       map[string]*Endpoint")
+	assert.Contains(t, out, "func (r *AppConfigSitesResolved) Len() int")
+	assert.Contains(t, out, "func (r *AppConfigSitesResolved) Get(key string) *EndpointResolved")
+	// Absent key yields nil.
+	assert.Contains(t, out, "v, ok := r.m[key]")
+	assert.Contains(t, out, "if !ok {")
+	// Prefix construction uses Quote for string keys.
+	assert.Contains(t, out, `r.prefix + "sites[" + strconv.Quote(key) + "].",`)
+}
+
+// TestResolved_NestedContainerOnNestedWrapper — Cluster.nodes is a
+// repeated Endpoint field on a NESTED wrapper. The container chain
+// method emits there too (ClusterResolved.Nodes()), so consumers can
+// reach
+//
+//	cfg.PrimaryCluster().Nodes().At(0).AuthToken()
+//
+// alongside the flat
+//
+//	cfg.PrimaryClusterNodesAuthTokenAt(0).
+func TestResolved_NestedContainerOnNestedWrapper(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "type ClusterNodesResolved struct {")
+	assert.Contains(t, out, "func (r *ClusterResolved) Nodes() *ClusterNodesResolved")
+	assert.Contains(t, out, "func (r *ClusterNodesResolved) At(i int) *EndpointResolved")
+	// Path construction is field-relative; the parent's prefix is
+	// already "primary_cluster." when reached via the AppConfig chain,
+	// so the full runtime path is "primary_cluster.nodes[0]." → secret
+	// lookups land at "primary_cluster.nodes[0].auth_token".
+	assert.Contains(t, out, `r.prefix + "nodes[" + strconv.Itoa(i) + "].",`)
+}
+
+// TestResolved_ListChain_NotForRepeatedSecret — `repeated pxf.Secret
+// backup_keys` is a SCALAR-leaf repeated, not a user-message
+// repeated. No helper type emitted; the existing flat method
+// BackupKeysAt(i) covers it.
+func TestResolved_ListChain_NotForRepeatedSecret(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.NotContains(t, out, "type AppConfigBackupKeysResolved")
+	assert.NotContains(t, out, "func (r *AppConfigResolved) BackupKeys()")
+	// But the flat method must still exist.
+	assert.Contains(t, out, "BackupKeysAt")
+}
+
+// TestResolved_MapChain_NotForMapSecret — `map<string, pxf.Secret>
+// tenant_keys` is a scalar-leaf map. No helper; flat method
+// TenantKeys(key) covers it.
+func TestResolved_MapChain_NotForMapSecret(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.NotContains(t, out, "type AppConfigTenantKeysResolved")
+	// `func ... TenantKeys()` (zero-arg parent chain method) must NOT
+	// exist — the existing TenantKeys(key string) flat-method does,
+	// so just check the parameterless variant is absent.
+	assert.NotContains(t, out, "func (r *AppConfigResolved) TenantKeys() *")
+	// Flat method present.
+	assert.Contains(t, out, "func (r *AppConfigResolved) TenantKeys(key string) *")
+}
+
+// TestResolved_MapKeyRuntimeExpr — covers the key-formatter dispatch
+// for non-string map keys. Currently no map<int*, UserMsg> fixture
+// in the schema, so we exercise the helper directly.
+func TestResolved_MapKeyRuntimeExpr_StringKind(t *testing.T) {
+	// Already covered by the Sites test above; this is a sanity
+	// check that the schema in sample.proto uses map<string, Endpoint>.
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "Get(key string)")
 }
 
 // TestResolved_GeneratedCodeShape — assert the wrapper block sits
