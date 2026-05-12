@@ -558,6 +558,64 @@ func TestGoPrimitiveType(t *testing.T) {
 	}
 }
 
+// --- Phase 2b PR4: Underlying() deprecation marker ---
+
+// TestResolved_UnderlyingDeprecationMarker — the godoc on Underlying
+// carries Go's standard "Deprecated:" prefix. staticcheck /
+// golangci-lint's SA1019 / U1000 / similar checks recognize the
+// marker and flag consumer code that still calls Underlying().
+// Catches the chameleon-lint footgun at the CI tier without
+// removing the method (still useful for proto.Marshal / Equal /
+// other reflection-driven escape hatches until proto.Message
+// delegation lands on the wrapper).
+func TestResolved_UnderlyingDeprecationMarker(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// The marker must appear in the godoc block IMMEDIATELY above
+	// `func (r *AppConfigResolved) Underlying()`. Two-step assertion:
+	// (1) Deprecated: phrase is present at all; (2) it's adjacent to
+	// the right method.
+	assert.Contains(t, out, "// Deprecated: prefer the typed accessor methods")
+
+	idx := strings.Index(out, "func (r *AppConfigResolved) Underlying()")
+	require.Greater(t, idx, 0, "Underlying() should still be emitted")
+	// Walk backwards through the preceding comment block and confirm
+	// the Deprecated: line is in it.
+	headStart := strings.LastIndex(out[:idx], "// Underlying returns the raw")
+	require.Greater(t, headStart, 0, "should find Underlying godoc start")
+	header := out[headStart:idx]
+	assert.Contains(t, header, "// Deprecated:",
+		"Deprecated: marker must sit in the godoc block above Underlying()")
+}
+
+// TestResolved_UnderlyingStillEmitted — the deprecation is godoc-only;
+// the method body still exists so consumers who DO need the raw
+// proto (for proto.Marshal, etc.) aren't blocked. The follow-up
+// removal lands once proto.Message delegation is implemented on the
+// wrapper itself.
+func TestResolved_UnderlyingStillEmitted(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// On every wrapper.
+	for _, wrapper := range []string{"AppConfigResolved", "EndpointResolved", "ClusterResolved"} {
+		assert.Contains(t, out,
+			"func (r *"+wrapper+") Underlying() *",
+			"%s.Underlying() must still be emitted", wrapper)
+	}
+}
+
+// TestResolved_UnderlyingDeprecation_OnEveryWrapper — every wrapper
+// (top-level AND nested) carries the Deprecated: marker on its
+// Underlying. Catches drift if a future emit path skips one.
+func TestResolved_UnderlyingDeprecation_OnEveryWrapper(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// Count Underlying methods and Deprecated: lines that mention
+	// "typed accessor methods" (the canonical marker phrase).
+	underlyings := strings.Count(out, ") Underlying() *")
+	deprecated := strings.Count(out, "// Deprecated: prefer the typed accessor methods")
+	assert.Equal(t, underlyings, deprecated,
+		"Deprecated: marker count (%d) should match Underlying() count (%d)",
+		deprecated, underlyings)
+}
+
 // TestResolved_GeneratedCodeShape — assert the wrapper block sits
 // AFTER the function-form accessors in the file. Avoids surprising
 // diff for consumers running `gofmt -d` on regenerated files.

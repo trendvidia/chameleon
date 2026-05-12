@@ -49,16 +49,26 @@
 //	                         field-replacement variant.
 //	                         (default: false; opt-in.)
 //
-// Limitation. The proto-generated type's Secret field still has a public
-// Value string — `cfg.DbPassword.Value` reads the plaintext directly,
-// bypassing memguard. That's a property of protoc-gen-go's emit shape;
-// fully closing it requires either forking protoc-gen-go or wrapping
-// its output. The `with_resolved` mode (above) narrows the surface by
-// giving callers a typed wrapper they should use in place of the raw
-// proto type, but a determined caller can still go through
-// `Wrapper.Underlying().DbPassword.Value`. chameleon-lint
-// catches that pattern at CI-time; field-replacement codegen
-// (chameleon#6 Phase 2b) is the eventual hard fix.
+// Compile-time prevention of `cfg.X.Value`. The `with_resolved` mode
+// emits a wrapper with typed accessor methods for every field —
+// scalar / repeated / map primitives, enums, bytes, non-Secret
+// messages, plus *secret.Secret accessors and chained-access helpers
+// for Secret-bearing paths. Consumers using the wrapper end-to-end
+// never see *pxfv1.Secret.Value: the typed Secret methods return
+// *secret.Secret, and the non-Secret field getters return either a
+// scalar Go type or a *MsgType that contains no Secret (since
+// wrapper-bearing message containers are routed through the
+// chained-access helpers).
+//
+// Underlying() — the legacy escape hatch that returns the raw proto —
+// is marked `// Deprecated:` on every wrapper since chameleon#6
+// Phase 2b PR4. Static analyzers (staticcheck SA1019,
+// golangci-lint's deprecation linters) flag consumer code that
+// still calls it. Underlying() is kept emitted (not hard-removed)
+// for callers passing the wrapper's payload to proto.Marshal,
+// proto.Equal, or other reflection-driven APIs until a follow-up
+// adds proto.Message delegation on the wrapper itself; once that
+// lands, Underlying() can be hard-removed.
 package main
 
 import (
