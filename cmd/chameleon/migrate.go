@@ -30,8 +30,10 @@ func migrateCmd(args []string) error {
 		only      = fs.String("only", "", "limit migration to a single LayerEntry id (e.g. base, env)")
 
 		// Transform spec.
-		transform = fs.String("transform", "", "transform kind: add-field (more land in follow-ups)")
-		tPath     = fs.String("path", "", "dotted field path the transform operates on")
+		transform = fs.String("transform", "", "transform kind: add-field | delete-field | rename-field")
+		tPath     = fs.String("path", "", "dotted field path (add-field, delete-field)")
+		tFrom     = fs.String("from", "", "source dotted path (rename-field)")
+		tTo       = fs.String("to", "", "destination dotted path (rename-field)")
 		tValue    = fs.String("value", "", "string value for add-field")
 		tInt      = fs.String("int", "", "integer value for add-field")
 		tBool     = fs.String("bool", "", "bool value for add-field (true|false)")
@@ -41,13 +43,19 @@ func migrateCmd(args []string) error {
 
 Walks the chain spec, decrypts each encrypted layer, applies the
 transform at the PXF AST level, re-encrypts using the same key set,
-and writes back. v1 supports the add-field transform; delete-field,
-rename-field, and set-default land in follow-ups.
+and writes back.
 
-Usage:
-    chameleon migrate \
-        --chain=chain.pxf --layers=./layers --env=dev \
+Transforms (dotted paths supported for nested blocks):
+    add-field    --path=<dotted> --value|--int|--bool=<v>
+    delete-field --path=<dotted>
+    rename-field --from=<dotted> --to=<dotted>   (same parent only)
+
+Examples:
+    chameleon migrate --chain=chain.pxf --layers=./layers --env=dev \
         --transform=add-field --path=feature_flag --bool=true
+
+    chameleon migrate --chain=chain.pxf --layers=./layers --env=dev \
+        --transform=rename-field --from=db.user --to=db.username
 
 Flags:`)
 		fs.PrintDefaults()
@@ -59,7 +67,7 @@ Flags:`)
 		fs.Usage()
 		return fmt.Errorf("--chain is required")
 	}
-	t, err := parseTransform(*transform, *tPath, *tValue, *tInt, *tBool)
+	t, err := parseTransform(*transform, *tPath, *tFrom, *tTo, *tValue, *tInt, *tBool)
 	if err != nil {
 		fs.Usage()
 		return err
