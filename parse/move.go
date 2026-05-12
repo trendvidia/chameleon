@@ -80,8 +80,77 @@ func MoveWithOptions(msg proto.Message, opts ...secret.MapOption) (*secret.Map, 
 	return out, nil
 }
 
+// MoveInto walks msg and folds its block-form pxf.Secret values into
+// secrets — a caller-managed [secret.Map] already populated with
+// scalar-shorthand secrets via [pxf.UnmarshalOptions.OnSecretField].
+// Used by the chameleon resolver to close the plaintext-in-heap window
+// for the scalar-shorthand case while keeping the block-form path
+// (where `value` is set via a regular `value = "x"` assignment inside
+// a Secret block) covered by the same final secret.Map.
+//
+// Semantics:
+//
+//   - For every Secret-typed field reached by the walker, if its
+//     inner `value` is non-empty, MoveInto seals it into a new
+//     [secret.Secret] and inserts it into secrets (overwriting any
+//     hook-routed entry at the same path; the merged message is
+//     authoritative for the final value).
+//
+//   - For every Secret-typed field the walker reaches, the path is
+//     recorded as "visited" regardless of value emptiness — a Secret
+//     message that the hook routed (so value is empty) is still
+//     visited, which marks its hook-routed entry as still valid in
+//     the merged result.
+//
+//   - After the walk completes, MoveInto Deletes any entry in
+//     secrets whose path was NOT visited. This is the orphan-cleanup
+//     pass: when a higher layer nulls a Secret a lower layer set via
+//     scalar shorthand, merge clears the Secret message from dst, the
+//     walker never visits the path, and the hook entry would
+//     otherwise outlive its null override. The cleanup ensures
+//     consumers never see a secret the merged config says is gone.
+//
+// MoveInto is idempotent on a non-error second call: visited paths
+// stay, orphans were already dropped on the first pass.
+//
+// A nil msg returns nil without touching secrets. A nil secrets
+// returns an error — the caller must own a Map to fold into.
+func MoveInto(msg proto.Message, secrets *secret.Map) error {
+	if msg == nil {
+		return nil
+	}
+	if secrets == nil {
+		return errors.New("parse: MoveInto requires a non-nil *secret.Map")
+	}
+	visited := make(map[string]struct{})
+	w := walker{secrets: secrets, visited: visited}
+	if err := w.message(msg.ProtoReflect(), ""); err != nil {
+		return err
+	}
+	// Orphan cleanup: any hook-routed entry whose path the walker
+	// didn't reach was cleared by a higher layer's null. Delete it
+	// so consumers can't fetch a secret the merged config disowns.
+	var toDrop []string
+	secrets.Range(func(path string, _ *secret.Secret) bool {
+		if _, ok := visited[path]; !ok {
+			toDrop = append(toDrop, path)
+		}
+		return true
+	})
+	for _, p := range toDrop {
+		secrets.Delete(p)
+	}
+	return nil
+}
+
 type walker struct {
 	secrets *secret.Map
+	// visited records every Secret-typed path the walker reaches,
+	// even when the message has an empty inner `value` (the
+	// hook-routed case). Used by [MoveInto] for orphan cleanup.
+	// Nil for the legacy [Move] / [MoveWithOptions] entry points,
+	// which have no hook-routed entries to reconcile.
+	visited map[string]struct{}
 }
 
 func (w *walker) message(m protoreflect.Message, path string) error {
@@ -189,10 +258,19 @@ func (w *walker) takeSecret(secMsg protoreflect.Message, path string) error {
 	if valueFd == nil {
 		return fmt.Errorf("%w: at path %q", ErrInvalidSecret, path)
 	}
+	// Always mark the path visited — even an empty Secret message
+	// (the hook-routed case) is "still here" from the merged
+	// message's perspective, which keeps its hook-populated entry
+	// from being dropped by [MoveInto]'s orphan sweep.
+	if w.visited != nil {
+		w.visited[path] = struct{}{}
+	}
 	plaintext := secMsg.Get(valueFd).String()
 	if plaintext == "" {
-		// Unset secret (or already-moved). Skip — don't insert empty
-		// Secrets that would surprise consumers calling Get().
+		// Unset secret (or already-moved or hook-routed). Skip — don't
+		// insert empty Secrets that would surprise consumers calling
+		// Get(). Hook-routed entries are already in the Map; the
+		// visited mark above keeps them.
 		return nil
 	}
 	var hint, fingerprint string
@@ -213,4 +291,3 @@ func joinPath(parent, name string) string {
 	}
 	return parent + "." + name
 }
-

@@ -104,9 +104,9 @@ message AppConfig {
 func compileAll(t *testing.T) (chainDesc, appDesc protoreflect.MessageDescriptor) {
 	t.Helper()
 	sources := map[string]string{
-		"chain.proto":       chainSpecProtoSrc,
-		"pxf/secret.proto":  pxfSecretProtoSrc,
-		"app.proto":         appProtoSrc,
+		"chain.proto":      chainSpecProtoSrc,
+		"pxf/secret.proto": pxfSecretProtoSrc,
+		"app.proto":        appProtoSrc,
 	}
 	comp := protocompile.Compiler{
 		Resolver: protocompile.WithStandardImports(
@@ -205,7 +205,7 @@ layers = [
 `)
 
 	fs := fstest.MapFS{
-		"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "base.example.com"`)},
+		"base.pxf":     &fstest.MapFile{Data: []byte(`base_url = "base.example.com"`)},
 		"env/prod.pxf": &fstest.MapFile{Data: []byte(`api_url = "api.prod.example.com"`)},
 		// No env/dev.pxf — dev should fall through to prod's api_url
 		// and base's base_url.
@@ -318,6 +318,98 @@ db_password {
 	defer buf.Destroy()
 	assert.Equal(t, "dev-override", string(buf.Bytes()),
 		"dev layer's scalar shorthand overrides base's block-form Secret")
+}
+
+// TestResolve_HookRoutedSecret_ProtoMessageLeftEmpty — confirms the
+// scalar-shorthand secret reaches the Map via the per-decode
+// OnSecretField hook AND leaves Secret.value untouched on the proto
+// message. The hook is the load-bearing thing; if it were not wired,
+// the proto message would carry the plaintext (the v0.6.x behavior)
+// and the test would observe "supersecret" on the message even
+// though the Map also has it.
+func TestResolve_HookRoutedSecret_ProtoMessageLeftEmpty(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [
+  { id = "base" path = "base.pxf" for_each = ONCE required = true }
+]
+`)
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`db_password = "supersecret"`)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+	)
+	require.NoError(t, err)
+
+	res, err := r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+	require.NoError(t, err)
+	defer res.Destroy()
+
+	// Map has the secret (via the hook, not via Move's walk — Move
+	// would have skipped because Secret.value is empty on the message).
+	s := res.Secrets.Get("db_password")
+	require.NotNil(t, s)
+	buf, err := s.Open()
+	require.NoError(t, err)
+	defer buf.Destroy()
+	assert.Equal(t, "supersecret", string(buf.Bytes()))
+
+	// Critically: Secret.value on the merged proto message must be
+	// empty — confirming the hook took the bytes during decode and
+	// the standard string-field assignment was bypassed.
+	pwField := res.Config.Descriptor().Fields().ByName("db_password")
+	pwMsg := res.Config.Get(pwField).Message()
+	pwValue := pwMsg.Get(pwMsg.Descriptor().Fields().ByName("value")).String()
+	assert.Equal(t, "", pwValue, "hook must have taken the value during decode; proto message should be empty")
+}
+
+// TestResolve_NullOverridesHookEntry — base layer writes a scalar-
+// shorthand secret (hook routes it into the Map mid-decode); a
+// higher layer explicitly nulls the field. Merge clears the Secret
+// from dst, MoveInto's orphan-cleanup pass detects the missing path,
+// and the consumer must NOT see the lower layer's value.
+//
+// Without orphan cleanup, the hook entry would outlive its null
+// override — a real security regression (consumer fetches a secret
+// the merged config disowned).
+func TestResolve_NullOverridesHookEntry(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [
+  { name = "prod" }
+  { name = "dev" extends = "prod" }
+]
+layers = [
+  { id = "base"    path = "base.pxf"             for_each = ONCE required = true }
+  { id = "env-pwd" path = "env/${env}.pwd.pxf"  for_each = ONCE }
+]
+`)
+	fs := fstest.MapFS{
+		"base.pxf":        &fstest.MapFile{Data: []byte(`db_password = "base-secret"`)},
+		"env/dev.pwd.pxf": &fstest.MapFile{Data: []byte(`db_password = null`)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+	)
+	require.NoError(t, err)
+
+	res, err := r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.NoError(t, err)
+	defer res.Destroy()
+
+	assert.Nil(t, res.Secrets.Get("db_password"),
+		"null override must drop the hook entry; otherwise consumers can fetch a secret the merged config nulled")
+	assert.Equal(t, 0, res.Secrets.Len())
 }
 
 // --- error paths ---
@@ -773,8 +865,8 @@ layers = [
 ]
 `)
 	fs := fstest.MapFS{
-		"base.pxf":     &fstest.MapFile{Data: []byte(`base_url = "base"`)},
-		"env/dev.pxf":  &fstest.MapFile{Data: []byte(`api_url = "api.dev"`)},
+		"base.pxf":    &fstest.MapFile{Data: []byte(`base_url = "base"`)},
+		"env/dev.pxf": &fstest.MapFile{Data: []byte(`api_url = "api.dev"`)},
 	}
 	sample := dynamicpb.NewMessage(appDesc)
 	r, err := resolver.New[*dynamicpb.Message](sample, spec,
@@ -969,7 +1061,7 @@ layers = [
 ]
 `)
 	fs := fstest.MapFS{
-		"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x"`)},
+		"base.pxf":     &fstest.MapFile{Data: []byte(`base_url = "x"`)},
 		"env/prod.pxf": &fstest.MapFile{Data: []byte(`api_key = "prod-key"`)},
 		"env/dev.pxf":  &fstest.MapFile{Data: []byte(`api_key = "dev-key"`)},
 	}
