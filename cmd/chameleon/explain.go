@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -20,7 +21,7 @@ import (
 	"github.com/trendvidia/chameleon/source"
 )
 
-func explainCmd(args []string) error {
+func explainCmd(out io.Writer, args []string) error {
 	fs := flag.NewFlagSet("explain", flag.ContinueOnError)
 	var (
 		schema    = fs.String("schema", "", ".proto file describing the consumer's config (required)")
@@ -92,10 +93,10 @@ Flags:`)
 
 	// 5) Print.
 	if *field != "" {
-		printOne(*field, res)
+		printOne(out, *field, res)
 		return nil
 	}
-	printAll(res)
+	printAll(out, res)
 	return nil
 }
 
@@ -148,19 +149,19 @@ func parseCtx(s string) (map[string]string, error) {
 }
 
 // printOne renders provenance for a single dotted field path.
-func printOne(path string, res *resolver.Resolution[*dynamicpb.Message]) {
+func printOne(out io.Writer, path string, res *resolver.Resolution[*dynamicpb.Message]) {
 	e := res.Trace.Get(path)
 	val := readField(res.Config.ProtoReflect(), path)
-	fmt.Println(format(path, val, e))
+	fmt.Fprintln(out, format(path, val, e))
 }
 
 // printAll renders provenance for every traced field path, sorted.
-func printAll(res *resolver.Resolution[*dynamicpb.Message]) {
+func printAll(out io.Writer, res *resolver.Resolution[*dynamicpb.Message]) {
 	paths := res.Trace.Paths()
 	sort.Strings(paths)
 	for _, p := range paths {
 		val := readField(res.Config.ProtoReflect(), p)
-		fmt.Println(format(p, val, res.Trace.Get(p)))
+		fmt.Fprintln(out, format(p, val, res.Trace.Get(p)))
 	}
 }
 

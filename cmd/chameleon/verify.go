@@ -15,7 +15,7 @@ import (
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
-func verifyCmd(args []string) error {
+func verifyCmd(out io.Writer, args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	var (
 		chainPath = fs.String("chain", "", "path to chain.pxf (required)")
@@ -64,7 +64,7 @@ Flags:`)
 
 	var mismatched, missingHash int
 	for _, ref := range refs {
-		status := verifyOne(os.Stdout, ref, *layersDir, *strict)
+		status := verifyOne(out, ref, *layersDir, *strict)
 		switch status {
 		case statusMismatch:
 			mismatched++
@@ -166,7 +166,7 @@ func verifyOne(w io.Writer, ref chain.LayerRef, layersDir string, strict bool) v
 	return statusOK
 }
 
-func hashCmd(args []string) error {
+func hashCmd(out io.Writer, args []string) error {
 	fs := flag.NewFlagSet("hash", flag.ContinueOnError)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `chameleon hash <file> — print the canonical body SHA-256 of a layer file.
@@ -196,6 +196,6 @@ Usage:
 	if err != nil {
 		return err
 	}
-	fmt.Println(got)
+	fmt.Fprintln(out, got)
 	return nil
 }
