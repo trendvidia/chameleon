@@ -126,6 +126,33 @@ func (m *Map) Set(path string, s *Secret) {
 	m.entries[path] = s
 }
 
+// Delete removes the Secret at path, destroying its memguard backing.
+// Idempotent — a missing path is a no-op. Nil-safe receiver.
+//
+// Used by post-merge cleanup in the resolver: when a higher layer
+// nulls a Secret that a lower layer set via scalar shorthand (and
+// therefore wrote into this Map through pxf.OnSecretField), the
+// resolver walks the merged message, discovers the path is no longer
+// present, and Delete()s the orphaned entry so its plaintext never
+// reaches consumers. Without this, the hook entry would survive the
+// null override.
+func (m *Map) Delete(path string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.destroyed {
+		return
+	}
+	if s, ok := m.entries[path]; ok {
+		if s != nil {
+			s.Destroy()
+		}
+		delete(m.entries, path)
+	}
+}
+
 // Range iterates entries in arbitrary order. The callback returns
 // false to stop early. Range snapshots the entries inside the lock and
 // calls the callback unlocked, so the callback may safely call back

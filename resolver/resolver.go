@@ -54,10 +54,10 @@ import (
 	"github.com/trendvidia/chameleon/interpolate"
 	"github.com/trendvidia/chameleon/merge"
 	"github.com/trendvidia/chameleon/parse"
-	"github.com/trendvidia/chameleon/validate"
 	"github.com/trendvidia/chameleon/secret"
 	"github.com/trendvidia/chameleon/sops"
 	"github.com/trendvidia/chameleon/source"
+	"github.com/trendvidia/chameleon/validate"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 	"google.golang.org/protobuf/proto"
 )
@@ -383,6 +383,25 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 	// apart from "explicitly set to zero", so we can't rely on Has().
 	presenceUnion := make(map[string]struct{})
 
+	// Secrets accumulator. Constructed before the layer loop so each
+	// layer's OnSecretField hook (wired in loadAndParse) can fold its
+	// scalar-shorthand pxf.Secret values into it directly during PXF
+	// decode — closing the plaintext-in-heap window for the common
+	// secret form. Block-form Secrets (`pw { value = "x", hint =
+	// "h" }`) still ride the post-decode walker via parse.MoveInto
+	// below, which also runs an orphan-cleanup sweep for any hook
+	// entry whose path a higher layer subsequently nulled.
+	secrets := secret.NewMap(secret.WithInstruments(r.secretInstruments, req.Environment))
+	defer func() {
+		// On error: tear down any partially-populated secrets so we
+		// don't leak Enclaves. The success path hands them off to the
+		// Resolution and clears this defer's effect by re-pointing
+		// secrets at nil before returning.
+		if err != nil && secrets != nil {
+			secrets.Destroy()
+		}
+	}()
+
 	// Trace state. Nil unless WithTrace() was passed at construction.
 	var trace *Trace
 	if r.trace {
@@ -399,7 +418,7 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 		}
 
 		layer := r.fresh()
-		result, err := loadAndParse(ctx, ref, src, r.dec, layer)
+		result, err := loadAndParse(ctx, ref, src, r.dec, layer, secrets)
 		if err != nil {
 			return nil, err
 		}
@@ -480,8 +499,11 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 		return nil, fmt.Errorf("resolver: %w", err)
 	}
 
-	secrets, err := parse.MoveWithOptions(dst, secret.WithInstruments(r.secretInstruments, req.Environment))
-	if err != nil {
+	// Fold any block-form Secret values (and only block form — the
+	// scalar-shorthand ones are already in the Map via the per-layer
+	// hook above) into the same secrets accumulator, and drop any
+	// hook-routed entries whose path was nulled by a higher layer.
+	if err := parse.MoveInto(dst, secrets); err != nil {
 		return nil, fmt.Errorf("resolver: extract secrets: %w", err)
 	}
 	r.metrics.secretCount.Record(ctx, int64(secrets.Len()), envAttrs)
@@ -515,7 +537,15 @@ func (r *Resolver[T]) fresh() T {
 // loadAndParse pulls bytes for ref, decrypts if encrypted, and parses
 // PXF into msg. Returns (nil, nil) when the layer is optional and the
 // source reports ErrNotFound — caller treats that as "skip".
-func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, dec sops.Decrypter, msg proto.Message) (*pxf.Result, error) {
+//
+// secrets receives every scalar-shorthand pxf.Secret value discovered
+// during decode via protowire-go's UnmarshalOptions.OnSecretField
+// hook (since v0.76.0). The hook seals each value into a memguard
+// Enclave on the fly so plaintext never lands on the regular Go heap
+// — closing the gap that previously existed between PXF decode and
+// the post-decode parse.Move walker. Block-form Secrets still land
+// on the proto message and are collected by parse.MoveInto upstream.
+func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, dec sops.Decrypter, msg proto.Message, secrets *secret.Map) (*pxf.Result, error) {
 	rc, err := src.Open(ctx, ref.Path)
 	if err != nil {
 		if errors.Is(err, source.ErrNotFound) {
@@ -559,12 +589,27 @@ func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, de
 	// value) and reject base layers that legitimately omit a required
 	// field a higher layer provides.
 	//
+	// OnSecretField (protowire-go v0.76.0+) seals every scalar-
+	// shorthand pxf.Secret value into a memguard Enclave during decode
+	// rather than letting it land on Secret.value as an immutable Go
+	// string. Hint and fingerprint metadata are always empty for
+	// scalar shorthand by construction, so secret.FromString(v, "",
+	// "") is the right shape; block-form Secrets retain their
+	// hint/fingerprint on the proto message and parse.MoveInto picks
+	// them up afterward.
+	//
 	// Any leading `@header chameleon.v1.LayerHeader { ... }` preamble
 	// is collected by the PXF decoder (since protowire-go v0.72.0) and
 	// surfaced on res.Directives(). chameleon's HandleDirectives runs
 	// the sanity checks (id / environment / encrypted) against the
 	// chain entry the layer was loaded for.
-	res, err := pxf.UnmarshalOptions{SkipPostDecode: true}.UnmarshalFull(data, msg)
+	res, err := pxf.UnmarshalOptions{
+		SkipPostDecode: true,
+		OnSecretField: func(path, value string) error {
+			secrets.Set(path, secret.FromString(value, "", ""))
+			return nil
+		},
+	}.UnmarshalFull(data, msg)
 	if err != nil {
 		return nil, fmt.Errorf("resolver: parse layer %q: %w", ref.EntryID, err)
 	}
