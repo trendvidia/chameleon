@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/bufbuild/protocompile"
 	"google.golang.org/protobuf/proto"
@@ -100,18 +101,16 @@ func ParseSpec(data []byte) (proto.Message, error) {
 }
 
 // chainSpecDescriptor compiles chainProtoSrc once per process and
-// caches the descriptor.
-var (
-	cachedDesc protoreflect.MessageDescriptor
-	cachedErr  error
-	cachedSet  bool
-)
-
-func chainSpecDescriptor() (protoreflect.MessageDescriptor, error) {
-	if cachedSet {
-		return cachedDesc, cachedErr
-	}
-	cachedSet = true
+// caches the descriptor. Safe for concurrent first-callers — the
+// prior unsynchronized-package-variable cache (cachedDesc /
+// cachedErr / cachedSet) had two races on first-use: (1) two
+// concurrent callers could both run the expensive protocompile pass,
+// and (2) a caller that observed cachedSet=true before the writer's
+// assignment to cachedDesc had been flushed could return (nil, nil).
+// sync.OnceValues handles both: exactly one call runs the body,
+// concurrent callers block on it, and the (desc, err) tuple is
+// published atomically.
+var chainSpecDescriptor = sync.OnceValues(func() (protoreflect.MessageDescriptor, error) {
 	comp := protocompile.Compiler{
 		Resolver: protocompile.WithStandardImports(
 			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(
@@ -121,19 +120,15 @@ func chainSpecDescriptor() (protoreflect.MessageDescriptor, error) {
 	}
 	files, err := comp.Compile(context.Background(), "chain.proto")
 	if err != nil {
-		cachedErr = fmt.Errorf("chain: compile descriptor: %w", err)
-		return nil, cachedErr
+		return nil, fmt.Errorf("chain: compile descriptor: %w", err)
 	}
 	d, err := files.AsResolver().FindDescriptorByName("chameleon.v1.ChainSpec")
 	if err != nil {
-		cachedErr = fmt.Errorf("chain: resolve ChainSpec descriptor: %w", err)
-		return nil, cachedErr
+		return nil, fmt.Errorf("chain: resolve ChainSpec descriptor: %w", err)
 	}
 	md, ok := d.(protoreflect.MessageDescriptor)
 	if !ok {
-		cachedErr = fmt.Errorf("chain: ChainSpec is not a message descriptor")
-		return nil, cachedErr
+		return nil, fmt.Errorf("chain: ChainSpec is not a message descriptor")
 	}
-	cachedDesc = md
-	return cachedDesc, nil
-}
+	return md, nil
+})
