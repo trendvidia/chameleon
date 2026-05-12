@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-11
+
+Observability + memory-residency hardening. Closes Milestone 1 of
+[#9](https://github.com/trendvidia/chameleon/issues/9) (the
+plaintext-in-heap meta-issue): chameleon now adopts the trendvidia/sops
+fork v3.13.2 so plaintext flows from sops directly into mlocked
+memory, and adds per-Open runtime metrics so operators can detect
+secret-buffer leaks at runtime. WKT-metadata clobber detection lands
+to catch a separate footgun where higher layers silently drop
+lower-layer Secret metadata.
+
+### Added
+
+- **Per-`Secret.Open()` OTel observability** ([#3](https://github.com/trendvidia/chameleon/issues/3)). Three new instruments:
+  - `chameleon.secret.opens` — counter, keyed by `chameleon.path` + `chameleon.env`.
+  - `chameleon.secret.active` — up-down counter / gauge keyed by `chameleon.path`. Answers "is any goroutine holding this secret open right now?".
+  - `chameleon.secret.open.duration` — histogram (seconds) keyed by `chameleon.path`.
+
+  Wired via the existing `resolver.WithMeterProvider`. Without it, the noop provider makes every record cheap. See the new README "Debugging: pairing resolve-time provenance with runtime state" section for production query examples.
+
+- **`Secret.Open()` returns `*OpenedBuffer`**. New wrapper type with `Bytes()` / `Locked()` / `Destroy()` methods. `Destroy()` records the duration histogram + decrements the active gauge before destroying the underlying memguard buffer. **Breaking-ish**: callers using type inference (`buf, _ := s.Open()`) work unchanged; callers that explicitly typed the variable as `*memguard.LockedBuffer` need to switch to `*secret.OpenedBuffer` (or call `buf.Locked()` for the underlying type).
+
+- **WKT-metadata clobber warning** ([#2](https://github.com/trendvidia/chameleon/issues/2)). When a higher layer's atomic-WKT write whose own metadata is empty would replace a lower layer's value with non-empty metadata (e.g. `env/dev.pxf`'s `db_password = "y"` dropping `base.pxf`'s `hint`), the resolver records:
+  - `Resolution.Trace.ClobberedMetadata []ClobberRecord` (when `WithTrace()`).
+  - `chameleon.merge.clobbered_metadata` OTel counter increment.
+  - With new `resolver.WithStrictMetadata()` option, the clobber is upgraded to a hard `Resolve` error.
+
+  Currently detects only `pxf.Secret` metadata (`hint`, `fingerprint`); other atomic WKTs have no metadata concept.
+
+- **`secret.NewMap` accepts options**. `secret.WithInstruments(i, env)` is the load-bearing one; wired by the resolver to thread the per-Open instruments through `parse.MoveWithOptions`. Backward compat preserved: `secret.NewMap()` with no args still works.
+
+- **`parse.MoveWithOptions(msg, opts ...secret.MapOption)`** — sibling of `parse.Move` that takes Map options. Existing `parse.Move` still works.
+
+### Changed
+
+- **Adopt trendvidia/sops v3.13.2 fork** ([#11](https://github.com/trendvidia/chameleon/pull/11)). `go.mod` adds:
+
+  ```
+  replace github.com/getsops/sops/v3 => github.com/trendvidia/sops/v3 v3.13.2
+  ```
+
+  `chameleon/sops/decrypt.go` switches from `decrypt.Data` + `memguard.NewBufferFromBytes` to the fork's `decrypt.DataIntoWriterContext` + a new internal `memguardWriter`. **Closes the largest plaintext-in-heap window** (Window A of [#9](https://github.com/trendvidia/chameleon/issues/9) phase 1): plaintext now lands directly in mlocked memory without a transient `[]byte` on the regular Go heap. `context.Context` threads end-to-end through the sops keyservice + KMS layers; a deadlined ctx aborts in-flight KMS round-trips for AWS/GCP/Azure/Vault natively, HuaweiCloud KMS via a goroutine shim.
+
+- **ROADMAP**: "Sops `context.Context` mid-call cancellation" moves from "tracked upstream" to **CLOSED via fork**. `getsops/sops#2179` remains open as an upstream PR candidate; until merged, chameleon consumes via the `replace` directive.
+
+### Not yet closed (chameleon#9 follow-up phases)
+
+- **Window B** (per-field secret strings during PXF parse) — [chameleon#7](https://github.com/trendvidia/chameleon/issues/7), protowire-go work.
+- **Window C** (`Secret.Value` field on cfg struct until `parse.Move` clears it) — partially closed by phase 2; fully closed by phase 3.
+- **Footgun D** (`cfg.X.Value` exists at the type level) — [chameleon#6](https://github.com/trendvidia/chameleon/issues/6) phase 2 codegen field-replacement.
+
 ## [0.5.0] — 2026-05-11
 
 Upstream-handoff release. `@header` preamble parsing moves from
