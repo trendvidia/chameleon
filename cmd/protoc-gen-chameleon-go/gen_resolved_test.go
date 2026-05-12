@@ -74,11 +74,13 @@ func TestResolved_DefaultOff(t *testing.T) {
 }
 
 // TestResolved_TopLevelScalarMethod — top-level scalar Secret yields
-// a no-param method named after the PascalCase path.
+// a no-param method named after the PascalCase path. Body uses
+// `r.prefix + ...` so the same method works correctly when the
+// wrapper is reached via a parent's chained accessor.
 func TestResolved_TopLevelScalarMethod(t *testing.T) {
 	out := runPluginWithResolved(t)
 	assert.Contains(t, out, "func (r *AppConfigResolved) DbPassword() *")
-	assert.Contains(t, out, `r.secrets.Get("db_password")`)
+	assert.Contains(t, out, `r.secrets.Get(r.prefix + "db_password")`)
 }
 
 // TestResolved_NestedScalarMethod — nested Secret yields a PascalCase
@@ -86,7 +88,7 @@ func TestResolved_TopLevelScalarMethod(t *testing.T) {
 func TestResolved_NestedScalarMethod(t *testing.T) {
 	out := runPluginWithResolved(t)
 	assert.Contains(t, out, "func (r *AppConfigResolved) PrimaryAuthToken() *")
-	assert.Contains(t, out, `r.secrets.Get("primary.auth_token")`)
+	assert.Contains(t, out, `r.secrets.Get(r.prefix + "primary.auth_token")`)
 }
 
 // TestResolved_RepeatedSecretMethod — repeated Secret leaf gets an
@@ -210,6 +212,107 @@ func TestWrapperMethodName(t *testing.T) {
 			assert.Equal(t, c.want, wrapperMethodName(c.path))
 		})
 	}
+}
+
+// TestResolved_PrefixFieldOnWrapper — every wrapper has a prefix
+// field for chained-access support. Top-level construction sets it
+// to "" via the NewXResolved constructor; nested wrappers set it
+// when chained off a parent's method.
+func TestResolved_PrefixFieldOnWrapper(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "type AppConfigResolved struct {")
+	assert.Contains(t, out, "\tprefix  string")
+	// Constructor sets the unexported prefix to its zero value (empty
+	// string) implicitly — Go's composite-literal default. We don't
+	// emit `prefix: ""` explicitly to keep the constructor body
+	// minimal. Just assert the constructor body shape.
+	assert.Contains(t, out, "return &AppConfigResolved{m: m, secrets: secrets}")
+}
+
+// TestResolved_ChainMethod_ScalarMessageField — for a scalar-message
+// field whose target is wrapper-bearing, the parent gets a chain
+// method that returns the nested wrapper with an extended prefix.
+func TestResolved_ChainMethod_ScalarMessageField(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// AppConfig.primary is a scalar Endpoint field, Endpoint has Secrets.
+	assert.Contains(t, out, "func (r *AppConfigResolved) Primary() *EndpointResolved {")
+	assert.Contains(t, out, "\t\tm:       r.m.GetPrimary(),")
+	assert.Contains(t, out, "\t\tsecrets: r.secrets,")
+	assert.Contains(t, out, "\t\tprefix:  r.prefix + \"primary.\",")
+}
+
+// TestResolved_ChainMethod_NestedThroughCluster — AppConfig has
+// primary_cluster (scalar Cluster, where Cluster has Secrets only
+// transitively through repeated nodes). The chain method still
+// emits because Cluster is wrapper-bearing.
+func TestResolved_ChainMethod_NestedThroughCluster(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) PrimaryCluster() *ClusterResolved {")
+	assert.Contains(t, out, "\t\tprefix:  r.prefix + \"primary_cluster.\",")
+}
+
+// TestResolved_ChainMethod_NotEmittedForContainers — repeated /
+// map<*, msg> fields do NOT get chain methods in PR1. Container
+// chained access (Replicas().At(i).AuthToken()) requires accessor
+// helper types and lands in a follow-up. The flat methods on the
+// parent (ReplicasAuthTokenAt) still cover those paths.
+func TestResolved_ChainMethod_NotEmittedForContainers(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// `replicas` is repeated Endpoint — must NOT have a chain method.
+	assert.NotContains(t, out, "func (r *AppConfigResolved) Replicas() *")
+	// `sites` is map<string, Endpoint> — must NOT have a chain method.
+	assert.NotContains(t, out, "func (r *AppConfigResolved) Sites() *")
+	// But the flat methods must still be present for those paths.
+	assert.Contains(t, out, "ReplicasAuthTokenAt")
+	assert.Contains(t, out, "SitesAuthToken")
+}
+
+// TestResolved_ChainMethod_NotEmittedForSecretField — pxf.Secret is
+// itself a message field. Its containing Resolved wrapper has a
+// typed method already (DbPassword); a chain method here would be
+// nonsense (the Secret has no inner Secrets).
+func TestResolved_ChainMethod_NotEmittedForSecretField(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// Must not emit a chain method for db_password (which is scalar
+	// pxf.Secret on AppConfig). pxf.Secret is the leaf, not a
+	// wrapper-bearing message in the chameleon sense.
+	assert.NotContains(t, out, "func (r *AppConfigResolved) DbPassword() *Secret {")
+	// The Secret access method exists and returns *secret.Secret.
+	assert.Contains(t, out, "func (r *AppConfigResolved) DbPassword() *")
+	assert.Contains(t, out, "r.secrets.Get(r.prefix + \"db_password\")")
+}
+
+// TestResolved_NestedWrapperMethodsUsePrefix — the EndpointResolved
+// wrapper's own Secret methods reference r.prefix in the body, so
+// chain access (cfg.Primary().AuthToken()) and direct construction
+// (NewEndpointResolved with prefix="") produce the right paths.
+func TestResolved_NestedWrapperMethodsUsePrefix(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// EndpointResolved.AuthToken's body: r.secrets.Get(r.prefix + "auth_token")
+	idx := strings.Index(out, "func (r *EndpointResolved) AuthToken()")
+	require.Greater(t, idx, 0, "EndpointResolved should have an AuthToken method")
+	tail := out[idx:]
+	end := strings.Index(tail, "}")
+	require.Greater(t, end, 0)
+	body := tail[:end]
+	assert.Contains(t, body, "r.secrets.Get(r.prefix + \"auth_token\")")
+}
+
+// TestMessageContainsSecret covers the small recursive helper that
+// decides whether a message gets a chain method targeted at it. The
+// helper is purely descriptor-driven; pure-Go tests would need a
+// fixture, so we exercise it through the codegen end-to-end here.
+// (Direct unit testing is constrained by protogen requiring a real
+// CodeGeneratorRequest.)
+func TestMessageContainsSecret_ViaCodegen(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// Endpoint contains a Secret directly → wrapper-bearing → chain
+	// method emitted on AppConfigResolved.Primary().
+	assert.Contains(t, out, "Primary() *EndpointResolved")
+	// Cluster contains Secrets only through repeated nodes → still
+	// wrapper-bearing → chain method emitted on
+	// AppConfigResolved.PrimaryCluster().
+	assert.Contains(t, out, "PrimaryCluster() *ClusterResolved")
 }
 
 // TestResolved_GeneratedCodeShape — assert the wrapper block sits

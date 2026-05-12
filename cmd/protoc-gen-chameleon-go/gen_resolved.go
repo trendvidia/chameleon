@@ -104,9 +104,15 @@ func emitOneResolvedWrapper(gf *protogen.GeneratedFile, root *protogen.Message, 
 	gf.P("// *secret.Secret keyed by the dotted PXF path the parse.Move")
 	gf.P("// walker assigned at resolve time — no direct access to")
 	gf.P("// pxfv1.Secret.Value is necessary.")
+	gf.P("//")
+	gf.P("// prefix scopes secret.Map lookups when this wrapper is reached")
+	gf.P("// through a parent's chained accessor (e.g. cfg.Primary() returns")
+	gf.P("// an EndpointResolved with prefix=\"primary.\"). Top-level")
+	gf.P("// construction via ", ctorName, " sets prefix=\"\".")
 	gf.P("type ", typeName, " struct {")
 	gf.P("\tm       *", rootIdent)
 	gf.P("\tsecrets *", mapIdent)
+	gf.P("\tprefix  string")
 	gf.P("}")
 	gf.P()
 
@@ -142,6 +148,13 @@ func emitOneResolvedWrapper(gf *protogen.GeneratedFile, root *protogen.Message, 
 		emitWrapperMethod(gf, typeName, s, secretIdent, strconvPkg)
 		gf.P()
 	}
+
+	// Phase 2b PR1: emit chain methods for scalar-message fields whose
+	// target is itself wrapper-bearing. Lets consumers chain like
+	// cfg.Primary().AuthToken() in place of cfg.PrimaryAuthToken().
+	// Both shapes coexist; the chain form is the path forward, the
+	// flat form stays for back-compat with Phase 2a consumers.
+	emitChainMethods(gf, typeName, root)
 }
 
 // emitWrapperMethod writes one accessor method on the wrapper for
@@ -170,7 +183,130 @@ func emitWrapperMethod(gf *protogen.GeneratedFile, typeName string, s secretSite
 	gf.P("// ", methodName, " returns the *secret.Secret at PXF path ", strconv.Quote(docPath), ",")
 	gf.P("// or nil if absent or destroyed.")
 	gf.P("func (r *", typeName, ") ", methodName, "(", paramsList(params), ") *", secretIdent, " {")
-	gf.P("\treturn r.secrets.Get(", joinFragmentRefs(gf, frags, strconvPkg), ")")
+	gf.P("\treturn r.secrets.Get(r.prefix + ", joinFragmentRefs(gf, frags, strconvPkg), ")")
+	gf.P("}")
+}
+
+// emitChainMethods emits one chained-access method per scalar-message
+// field on parent whose target message contains a Secret transitively.
+// The method returns a new wrapper for that target with the path
+// prefix extended by the field's proto name. The target's wrapper is
+// emitted elsewhere by emitOneResolvedWrapper — Phase 2a already
+// emits a wrapper per top-level message, and at the .proto grammar
+// level a "nested" message reachable via scalar access IS just
+// another top-level message declaration (`message Endpoint { ... }`
+// next to AppConfig), so it gets a wrapper too.
+//
+// Container fields (repeated / map<*, msg>) are deliberately skipped
+// in this PR — chained access through them requires accessor helper
+// types (Replicas().At(i).AuthToken()) and lands in a follow-up.
+// The flat-method emit on the parent (e.g. ReplicasAuthTokenAt) still
+// covers those paths.
+func emitChainMethods(gf *protogen.GeneratedFile, parentTypeName string, parent *protogen.Message) {
+	for _, f := range parent.Fields {
+		if !isScalarMessageField(f) {
+			continue
+		}
+		target := f.Message
+		if !messageContainsSecret(target) {
+			continue
+		}
+		emitOneChainMethod(gf, parentTypeName, f, target)
+		gf.P()
+	}
+}
+
+// isScalarMessageField reports whether f is a single (not repeated,
+// not map) message-typed field. Used by the chain-method emitter to
+// pick which subfields get chained access in PR1.
+func isScalarMessageField(f *protogen.Field) bool {
+	if f.Desc.IsMap() || f.Desc.IsList() {
+		return false
+	}
+	return f.Desc.Kind() == protoreflect.MessageKind && f.Message != nil
+}
+
+// messageContainsSecret reports whether msg has a pxf.Secret field
+// transitively, with a cycle guard. Used to decide whether to emit a
+// chain method (or, in the wrapper emitter, whether to wrap at all).
+func messageContainsSecret(msg *protogen.Message) bool {
+	return messageContainsSecretWith(msg, map[protoreflect.FullName]bool{})
+}
+
+func messageContainsSecretWith(msg *protogen.Message, seen map[protoreflect.FullName]bool) bool {
+	if msg == nil {
+		return false
+	}
+	if seen[msg.Desc.FullName()] {
+		return false
+	}
+	seen[msg.Desc.FullName()] = true
+	defer delete(seen, msg.Desc.FullName())
+
+	for _, f := range msg.Fields {
+		switch {
+		case f.Desc.IsMap():
+			valFd := f.Desc.MapValue()
+			if valFd.Kind() != protoreflect.MessageKind {
+				continue
+			}
+			if isSecret(valFd.Message()) {
+				return true
+			}
+			if mv := mapValueMessage(f); mv != nil && messageContainsSecretWith(mv, seen) {
+				return true
+			}
+		case f.Desc.IsList():
+			if f.Desc.Kind() != protoreflect.MessageKind {
+				continue
+			}
+			if isSecret(f.Desc.Message()) {
+				return true
+			}
+			if messageContainsSecretWith(f.Message, seen) {
+				return true
+			}
+		case f.Desc.Kind() == protoreflect.MessageKind:
+			if isSecret(f.Desc.Message()) {
+				return true
+			}
+			if messageContainsSecretWith(f.Message, seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// emitOneChainMethod writes one chained-access method for a single
+// scalar-message field whose target is wrapper-bearing.
+//
+//	func (r *AppConfigResolved) Primary() *EndpointResolved {
+//		return &EndpointResolved{
+//			m:       r.m.GetPrimary(),
+//			secrets: r.secrets,
+//			prefix:  r.prefix + "primary.",
+//		}
+//	}
+//
+// GetX rather than direct field access: protogen's GetX accessor
+// is nil-safe (returns zero-value when the parent is nil) which
+// matches the wrapper's "never panic on absent layer" posture.
+func emitOneChainMethod(gf *protogen.GeneratedFile, parentTypeName string, f *protogen.Field, target *protogen.Message) {
+	methodName := f.GoName
+	targetType := target.GoIdent.GoName + "Resolved"
+	protoName := string(f.Desc.Name())
+
+	gf.P("// ", methodName, " returns a ", targetType, " scoped to the ",
+		strconv.Quote(protoName+"."), " path prefix. Use the typed methods")
+	gf.P("// on the returned wrapper to reach Secrets without touching")
+	gf.P("// *pxfv1.Secret.Value on the underlying proto.")
+	gf.P("func (r *", parentTypeName, ") ", methodName, "() *", targetType, " {")
+	gf.P("\treturn &", targetType, "{")
+	gf.P("\t\tm:       r.m.Get", methodName, "(),")
+	gf.P("\t\tsecrets: r.secrets,")
+	gf.P("\t\tprefix:  r.prefix + ", strconv.Quote(protoName+"."), ",")
+	gf.P("\t}")
 	gf.P("}")
 }
 
