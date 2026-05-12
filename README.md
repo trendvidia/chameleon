@@ -420,7 +420,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 | Dep | Version |
 |---|---|
-| Go | 1.25+ |
+| Go | 1.26+ |
 | `github.com/trendvidia/protowire-go` | `>= v0.77.0` (block-form `OnSecretField` routing; v0.76.0+ covers scalar shorthand) |
 | `github.com/getsops/sops/v3` | `>= v3.13.0` |
 | `github.com/awnumar/memguard` | `>= v0.22.5` |
