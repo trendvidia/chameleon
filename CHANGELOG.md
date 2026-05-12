@@ -380,7 +380,7 @@ Combined with v0.8.0's wrapper API + v0.7.0's chameleon-lint:
 
 Compile-time safety release. Closes [chameleon#6](https://github.com/trendvidia/chameleon/issues/6) end-to-end: with the new `with_resolved=true` plugin mode, the codegen now emits a `<Root>Resolved` wrapper per Secret-bearing message that exposes every field through typed accessor methods. The wrapper has no `Value` field, no public `*pxfv1.Secret`, and chained access for nested submessages / repeated / map containers. The remaining escape hatch (`Underlying()`) carries Go's standard `Deprecated:` marker so `staticcheck` / `golangci-lint` flag any consumer that still bypasses it. Combined with chameleon-lint (v0.7.0), `cfg.X.Value` is now caught at the typed-API tier (compile error) and at the CI tier (lint).
 
-Phase 2b of chameleon#6 shipped across four incremental PRs ([#20](https://github.com/trendvidia/chameleon/pull/20), [#21](https://github.com/trendvidia/chameleon/pull/21), [#22](https://github.com/trendvidia/chameleon/pull/22), [#23](https://github.com/trendvidia/chameleon/pull/23)) on top of Phase 2a's scaffold ([#19](https://github.com/trendvidia/chameleon/pull/19)).
+Phase 2b of [chameleon#6](https://github.com/trendvidia/chameleon/issues/6) shipped across four incremental PRs ([#20](https://github.com/trendvidia/chameleon/pull/20), [#21](https://github.com/trendvidia/chameleon/pull/21), [#22](https://github.com/trendvidia/chameleon/pull/22), [#23](https://github.com/trendvidia/chameleon/pull/23)) on top of Phase 2a's scaffold ([#19](https://github.com/trendvidia/chameleon/pull/19)).
 
 ### Added
 
@@ -588,7 +588,7 @@ lower-layer Secret metadata.
 
 - **ROADMAP**: "Sops `context.Context` mid-call cancellation" moves from "tracked upstream" to **CLOSED via fork**. `getsops/sops#2179` remains open as an upstream PR candidate; until merged, chameleon consumes via the `replace` directive.
 
-### Not yet closed (chameleon#9 follow-up phases)
+### Not yet closed ([chameleon#9](https://github.com/trendvidia/chameleon/issues/9) follow-up phases)
 
 - **Window B** (per-field secret strings during PXF parse) — [chameleon#7](https://github.com/trendvidia/chameleon/issues/7), protowire-go work.
 - **Window C** (`Secret.Value` field on cfg struct until `parse.Move` clears it) — partially closed by phase 2; fully closed by phase 3.
@@ -819,3 +819,16 @@ Documented in `README.md`:
 - Sidecar plugin doesn't hide `*pxfv1.Secret.Value` on the proto-generated struct (discipline-based protection; field-replacement plugin variant pending).
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
+
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/trendvidia/chameleon/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/trendvidia/chameleon/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/trendvidia/chameleon/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/trendvidia/chameleon/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/trendvidia/chameleon/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/trendvidia/chameleon/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/trendvidia/chameleon/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/trendvidia/chameleon/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/trendvidia/chameleon/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/trendvidia/chameleon/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/trendvidia/chameleon/releases/tag/v0.1.0
