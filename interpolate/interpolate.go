@@ -69,6 +69,21 @@ var ErrMalformedTemplate = errors.New("interpolate: malformed template")
 // field on the way to its target, or terminates on a non-string field.
 var ErrInvalidReference = errors.New("interpolate: invalid reference")
 
+// ErrDepthExceeded indicates a `${...}` reference chain exceeded
+// [MaxResolveDepth]. The chain isn't necessarily cyclic — a linear
+// `a -> b -> c -> ... -> z[N]` of depth N also trips this limit.
+// Defense against pathological templates that burn CPU and stack
+// without an obvious cycle.
+var ErrDepthExceeded = errors.New("interpolate: reference chain too deep")
+
+// MaxResolveDepth caps the depth of `${...}` reference chains. A chain
+// that exceeds this returns [ErrDepthExceeded] with the offending
+// path in the wrapped diagnostic. Realistic templates chain 2-3 deep;
+// the 64-frame cap is comfortably above any legitimate use and well
+// below the stack-burning territory of an attacker-crafted linear
+// chain.
+const MaxResolveDepth = 64
+
 // Option configures Apply.
 type Option func(*options)
 
@@ -258,6 +273,10 @@ func (w *walker) expand(template string, stack []string) (string, error) {
 // resolve looks up path against the root message and recursively
 // expands its value if it contains further `${...}` tokens.
 func (w *walker) resolve(path string, stack []string) (string, error) {
+	if len(stack) >= MaxResolveDepth {
+		return "", fmt.Errorf("%w: %d frames at %s -> %s (limit %d)",
+			ErrDepthExceeded, len(stack), strings.Join(stack, " -> "), path, MaxResolveDepth)
+	}
 	for _, p := range stack {
 		if p == path {
 			return "", fmt.Errorf("%w: %s -> %s", ErrCycle, strings.Join(stack, " -> "), path)
@@ -319,5 +338,3 @@ func joinFieldPath(parent, name string) string {
 	}
 	return parent + "." + name
 }
-
-
