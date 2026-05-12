@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-12
+
+Compile-time safety release. Closes [chameleon#6](https://github.com/trendvidia/chameleon/issues/6) end-to-end: with the new `with_resolved=true` plugin mode, the codegen now emits a `<Root>Resolved` wrapper per Secret-bearing message that exposes every field through typed accessor methods. The wrapper has no `Value` field, no public `*pxfv1.Secret`, and chained access for nested submessages / repeated / map containers. The remaining escape hatch (`Underlying()`) carries Go's standard `Deprecated:` marker so `staticcheck` / `golangci-lint` flag any consumer that still bypasses it. Combined with chameleon-lint (v0.7.0), `cfg.X.Value` is now caught at the typed-API tier (compile error) and at the CI tier (lint).
+
+Phase 2b of chameleon#6 shipped across four incremental PRs ([#20](https://github.com/trendvidia/chameleon/pull/20), [#21](https://github.com/trendvidia/chameleon/pull/21), [#22](https://github.com/trendvidia/chameleon/pull/22), [#23](https://github.com/trendvidia/chameleon/pull/23)) on top of Phase 2a's scaffold ([#19](https://github.com/trendvidia/chameleon/pull/19)).
+
+### Added
+
+- **`protoc-gen-chameleon-go` wrapper mode** ([#6](https://github.com/trendvidia/chameleon/issues/6) Phase 2). Opt-in via `--chameleon-go_opt=with_resolved=true`. For every top-level message containing a `pxf.Secret` transitively, the plugin emits a `<Root>Resolved` struct with:
+
+  - **Typed Secret accessors** for every Secret-bearing path. Returns `*secret.Secret` directly; the `.Value` field of `*pxfv1.Secret` is never exposed:
+
+    ```go
+    cfg := pkg.NewAppConfigResolved(res.Config, res.Secrets)
+    buf, _ := cfg.DbPassword().Open()
+    ```
+
+  - **Chained nested access** through scalar message subfields ([#20](https://github.com/trendvidia/chameleon/pull/20)) and through repeated / map containers ([#21](https://github.com/trendvidia/chameleon/pull/21)). Each wrapper-bearing nested type gets its own `<Nested>Resolved` plus, for containers, a `<Parent><Field>Resolved` accessor with `Len()` and `At(i)` (repeated) or `Get(key)` (map). Out-of-range / absent key returns nil:
+
+    ```go
+    cfg.Primary().AuthToken().Open()                    // scalar nested
+    cfg.Replicas().At(0).AuthToken().Open()             // repeated
+    cfg.Sites().Get("acme").AuthToken().Open()          // map
+    cfg.PrimaryCluster().Nodes().At(0).AuthToken().Open()  // mixed
+    ```
+
+  - **Field-by-field getters** for every non-Secret, non-chain-bearing field ([#22](https://github.com/trendvidia/chameleon/pull/22)): scalar primitives, bytes, enums, repeated, map, non-wrapper-bearing messages. Bodies delegate to protoc-gen-go's nil-safe `GetX()` accessors so the wrapper never panics on absent fields:
+
+    ```go
+    cfg.BaseUrl()         // string
+    cfg.Enabled()         // bool
+    cfg.MaxReplicas()     // int32
+    cfg.FeatureFlags()    // []string
+    cfg.Labels()          // map[string]string
+    cfg.Mode()            // AppConfig_Mode enum
+    cfg.Metadata()        // *Metadata (no Secrets inside)
+    ```
+
+  - **Function-form accessors stay emitted** alongside the wrapper — callers that prefer the standalone `AppConfigSecret_DbPassword(s *secret.Map)` form aren't disrupted.
+
+- **`secret.Map.Delete(path)`** (already shipped in v0.7.0's parse.MoveInto; documenting here for completeness).
+
+### Changed
+
+- **`Underlying()` on every generated wrapper is now Deprecated** ([#23](https://github.com/trendvidia/chameleon/pull/23)). The method is still emitted — callers that pass the wrapper's payload to `proto.Marshal` / `proto.Equal` / other reflection-driven APIs still need it. But `staticcheck` (`SA1019`) and `golangci-lint`'s deprecation linters now flag any consumer that reads `cfg.Underlying().<Field>` in place of the typed accessor. Hard removal is gated on a future PR that delegates `proto.Message` onto the wrapper itself.
+
+### Notes for upgraders
+
+- **No breaking changes.** Wrapper mode is opt-in (`with_resolved=true`); existing generated files don't change shape until consumers add the flag. The existing function-form accessors (`AppConfigSecret_DbPassword(s)`) stay emitted regardless.
+- **Plugin runtime unchanged.** Same protoc invocation pattern; the new flag is the only delta.
+- **Consumers adopting wrapper mode** should treat `Underlying()` as the discouraged path even though it compiles. Use the typed accessors for routine reads; reach for `Underlying()` only when a third-party API genuinely needs `proto.Message`.
+
+### Coordination
+
+- No protowire-go bump required (v0.76.0 still the minimum).
+- chameleon-lint (v0.7.0) continues to provide the CI-tier check for consumers who don't yet adopt wrapper mode.
+
 ## [0.7.0] — 2026-05-12
 
 Plaintext-in-heap closure + Milestone 2 tooling. The headline change
