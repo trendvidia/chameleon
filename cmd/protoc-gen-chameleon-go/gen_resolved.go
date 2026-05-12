@@ -130,20 +130,32 @@ func emitOneResolvedWrapper(gf *protogen.GeneratedFile, root *protogen.Message, 
 	gf.P("}")
 	gf.P()
 
-	gf.P("// Underlying returns the raw resolved proto message.")
-	gf.P("//")
-	gf.P("// Deprecated: prefer the typed accessor methods on this wrapper —")
-	gf.P("// every field that protoc-gen-go exposes has a corresponding")
-	gf.P("// getter here (scalar, repeated, map, enum, bytes, message),")
-	gf.P("// plus *secret.Secret accessors for Secret-bearing paths. The")
-	gf.P("// Underlying escape hatch re-exposes *pxfv1.Secret.Value on any")
-	gf.P("// Secret subfield — the chameleon-lint footgun this wrapper")
-	gf.P("// exists to close. Kept for callers that need to pass the raw")
-	gf.P("// proto to proto.Marshal, proto.Equal, or other reflection-")
-	gf.P("// driven APIs; consumers reading individual fields should not")
-	gf.P("// reach for it. Slated for removal once a proto.Message")
-	gf.P("// delegating implementation lands on the wrapper itself.")
-	gf.P("func (r *", typeName, ") Underlying() *", rootIdent, " { return r.m }")
+	// proto.Message implementation by delegation. The wrapper IS a
+	// proto.Message; callers passing the resolved config to
+	// proto.Marshal / proto.Equal / proto.Clone / any reflection-
+	// driven API hand the wrapper directly. The legacy Underlying()
+	// escape hatch was removed in v0.9.0 — typed accessors cover
+	// every field shape, and the proto.Message delegation here
+	// covers every reflection-driven use case that Underlying()
+	// previously enabled.
+	protoreflectMsg := protogen.GoImportPath("google.golang.org/protobuf/reflect/protoreflect").Ident("Message")
+
+	gf.P("// Reset zeroes the underlying proto message. Implements the")
+	gf.P("// proto.Message interface; delegates to the inner *", rootIdent.GoName, ".")
+	gf.P("func (r *", typeName, ") Reset() { r.m.Reset() }")
+	gf.P()
+	gf.P("// String renders the underlying proto via its protoc-gen-go")
+	gf.P("// implementation. Implements the proto.Message interface.")
+	gf.P("// Note: protoc-gen-go's String output may include the inner")
+	gf.P("// Secret.value field; chameleon clears those during resolve,")
+	gf.P("// so the rendering shows the post-Move empty-value form.")
+	gf.P("func (r *", typeName, ") String() string { return r.m.String() }")
+	gf.P()
+	gf.P("// ProtoReflect returns the underlying proto's reflection view.")
+	gf.P("// Implements the proto.Message interface. The wrapper is fully")
+	gf.P("// substitutable for *", rootIdent.GoName, " in proto.Marshal,")
+	gf.P("// proto.Equal, and other reflection-driven APIs.")
+	gf.P("func (r *", typeName, ") ProtoReflect() ", protoreflectMsg, " { return r.m.ProtoReflect() }")
 	gf.P()
 
 	gf.P("// Secrets returns the underlying secret.Map. Exposed for callers")
@@ -170,6 +182,15 @@ func emitOneResolvedWrapper(gf *protogen.GeneratedFile, root *protogen.Message, 
 	// non-chain-bearing field on this wrapper's message. Lets
 	// consumers drop Underlying() for routine reads.
 	emitFieldGetters(gf, typeName, root)
+
+	// Compile-time guarantee: the wrapper implements proto.Message.
+	// Catches drift if a future emit path forgets one of the three
+	// required methods (Reset / String / ProtoReflect). The
+	// assertion runs at the CONSUMER's go build, not at this
+	// plugin's test compile — generated code is the unit of truth.
+	protoMsg := protogen.GoImportPath("google.golang.org/protobuf/proto").Ident("Message")
+	gf.P("var _ ", protoMsg, " = (*", typeName, ")(nil)")
+	gf.P()
 }
 
 // emitWrapperMethod writes one accessor method on the wrapper for
