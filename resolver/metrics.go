@@ -14,10 +14,11 @@ import (
 // no [WithMeterProvider] option the noop provider is used and every
 // call is a cheap no-op.
 type instruments struct {
-	resolveDuration metric.Float64Histogram
-	resolveErrors   metric.Int64Counter
-	layerCount      metric.Int64Histogram
-	secretCount     metric.Int64Histogram
+	resolveDuration    metric.Float64Histogram
+	resolveErrors      metric.Int64Counter
+	layerCount         metric.Int64Histogram
+	secretCount        metric.Int64Histogram
+	clobberedMetadata  metric.Int64Counter
 }
 
 const meterName = "github.com/trendvidia/chameleon/resolver"
@@ -50,12 +51,17 @@ func newInstruments(mp metric.MeterProvider) *instruments {
 		"chameleon.resolve.secrets",
 		metric.WithDescription("Number of pxf.Secret values extracted into memguard Enclaves per Resolve."),
 	)
+	cm, _ := m.Int64Counter(
+		"chameleon.merge.clobbered_metadata",
+		metric.WithDescription("Number of WKT-metadata clobbers detected during merge. A higher layer's atomic-WKT write whose own metadata is empty silently dropped non-empty metadata from a lower layer (currently surfaces only for pxf.Secret hint/fingerprint)."),
+	)
 
 	return &instruments{
-		resolveDuration: rd,
-		resolveErrors:   re,
-		layerCount:      lc,
-		secretCount:     sc,
+		resolveDuration:   rd,
+		resolveErrors:     re,
+		layerCount:        lc,
+		secretCount:       sc,
+		clobberedMetadata: cm,
 	}
 }
 

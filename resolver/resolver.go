@@ -82,23 +82,25 @@ var ErrRequiredLayerMissing = errors.New("resolver: required layer missing")
 // Resolver is safe for concurrent Resolve calls; each call produces an
 // independent Resolution that owns its own secret.Map.
 type Resolver[T proto.Message] struct {
-	sample             T
-	spec               proto.Message
-	sources            map[string]source.Source
-	dec                sops.Decrypter
-	trace              bool
-	metrics            *instruments
-	secretInstruments  *secret.Instruments
+	sample            T
+	spec              proto.Message
+	sources           map[string]source.Source
+	dec               sops.Decrypter
+	trace             bool
+	strictMetadata    bool
+	metrics           *instruments
+	secretInstruments *secret.Instruments
 }
 
 // Option configures a Resolver at construction.
 type Option func(*config)
 
 type config struct {
-	sources map[string]source.Source
-	dec     sops.Decrypter
-	trace   bool
-	mp      metric.MeterProvider
+	sources        map[string]source.Source
+	dec            sops.Decrypter
+	trace          bool
+	strictMetadata bool
+	mp             metric.MeterProvider
 }
 
 // WithSource registers a Source under a logical name. The name must
@@ -127,6 +129,24 @@ func WithDecrypter(d sops.Decrypter) Option {
 // default.
 func WithTrace() Option {
 	return func(c *config) { c.trace = true }
+}
+
+// WithStrictMetadata upgrades WKT-metadata clobber detection from a
+// warning (recorded on [Trace.ClobberedMetadata] + the
+// chameleon.merge.clobbered_metadata counter) to a hard error: when a
+// higher layer's atomic-WKT write would silently drop metadata from
+// a lower layer's value, Resolve returns the clobber as a fatal
+// error.
+//
+// Use this when your authoring discipline says "always re-declare
+// metadata if you override a Secret" — strict mode makes accidental
+// metadata loss fail-loud at resolve time rather than waiting for a
+// production surprise.
+//
+// Without this option, clobbers are observable via Trace + metrics
+// but do not abort resolution.
+func WithStrictMetadata() Option {
+	return func(c *config) { c.strictMetadata = true }
 }
 
 // WithMeterProvider installs an OpenTelemetry [metric.MeterProvider]
@@ -185,6 +205,7 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 		sources:           cfg.sources,
 		dec:               cfg.dec,
 		trace:             cfg.trace,
+		strictMetadata:    cfg.strictMetadata,
 		metrics:           newInstruments(cfg.mp),
 		secretInstruments: secret.NewInstruments(cfg.mp),
 	}, nil
@@ -249,6 +270,31 @@ func (r *Resolution[T]) Destroy() {
 // constructed with [WithTrace]; nil otherwise.
 type Trace struct {
 	Entries map[string]TraceEntry
+
+	// ClobberedMetadata records WKT-metadata losses that happened
+	// during the merge — a higher layer's atomic-WKT write whose own
+	// metadata was empty silently dropped non-empty metadata from a
+	// lower layer. Currently surfaced only for pxf.Secret (hint /
+	// fingerprint); see [merge.ClobberInfo]. Empty when no clobber
+	// occurred. Surfaced by `chameleon explain` as a separate
+	// section.
+	ClobberedMetadata []ClobberRecord
+}
+
+// ClobberRecord describes a single WKT-metadata clobber detected at
+// merge time, attributed to the layer that performed the write.
+type ClobberRecord struct {
+	// Path is the dotted field path that was clobbered.
+	Path string
+	// Type is the WKT's FullName (e.g. "pxf.Secret").
+	Type string
+	// LostFields names the metadata sub-fields that were dropped.
+	LostFields []string
+	// ClobberingLayerID is the LayerEntry.id of the layer whose write
+	// dropped the metadata. The lower layer that owned the metadata
+	// is not tracked here — `chameleon explain --field=<path>` shows
+	// the full layer history.
+	ClobberingLayerID string
 }
 
 // Get returns the entry at path, or the zero TraceEntry if absent.
@@ -361,7 +407,25 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 			// Optional missing layer; nothing to merge.
 			continue
 		}
-		if err := merge.Merge(dst, layer, result); err != nil {
+		clobberCb := func(c merge.ClobberInfo) error {
+			r.metrics.clobberedMetadata.Add(ctx, 1, envAttrs)
+			if trace != nil {
+				trace.ClobberedMetadata = append(trace.ClobberedMetadata, ClobberRecord{
+					Path:              c.Path,
+					Type:              c.Type,
+					LostFields:        c.LostFields,
+					ClobberingLayerID: ref.EntryID,
+				})
+			}
+			if r.strictMetadata {
+				return fmt.Errorf("resolver: layer %q clobbered metadata at %q (lost fields: %v)",
+					ref.EntryID, c.Path, c.LostFields)
+			}
+			return nil
+		}
+		if err := merge.MergeWithOptions(dst, layer, result, merge.Options{
+			OnClobberedMetadata: clobberCb,
+		}); err != nil {
 			return nil, fmt.Errorf("resolver: merge layer %q: %w", ref.EntryID, err)
 		}
 		for _, p := range result.PresentFields() {
