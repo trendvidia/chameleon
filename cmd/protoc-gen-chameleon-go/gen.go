@@ -59,16 +59,20 @@ func generateSidecar(p *protogen.Plugin, f *protogen.File, sites []secretSite) e
 		emitSiteFunc(gf, s, secretIdent, mapIdent, strconvPkg)
 		gf.P()
 	}
+
+	if pluginState.withResolved {
+		emitResolvedWrappers(gf, sites, secretIdent, mapIdent, strconvPkg)
+	}
 	return nil
 }
 
 // funcParam describes one parameter of a generated accessor:
 // the index into a repeated container, or the key into a map.
 type funcParam struct {
-	Name    string             // "i", "key", "key2", etc.
-	GoType  string             // "int", "string", "int32", etc.
-	Step    int                // index into secretSite.Path
-	KeyKind protoreflect.Kind  // for map params
+	Name    string            // "i", "key", "key2", etc.
+	GoType  string            // "int", "string", "int32", etc.
+	Step    int               // index into secretSite.Path
+	KeyKind protoreflect.Kind // for map params
 }
 
 // assignParams walks the path and produces one param per non-scalar
@@ -147,8 +151,8 @@ func goTypeForMapKey(k protoreflect.Kind) string {
 // string at runtime.
 type pathFragment struct {
 	IsParam bool
-	Static  string             // Go source, with quotes — emitted verbatim.
-	Param   funcParam          // for runtime-expr fragments
+	Static  string    // Go source, with quotes — emitted verbatim.
+	Param   funcParam // for runtime-expr fragments
 }
 
 // buildPathFragments walks path + params and produces the list of

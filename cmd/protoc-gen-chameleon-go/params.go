@@ -9,7 +9,8 @@ import "fmt"
 // protogen handles `paths=` itself; we only need to capture the
 // chameleon-specific options.
 type state struct {
-	secretPkg string
+	secretPkg    string
+	withResolved bool
 }
 
 var pluginState = state{secretPkg: defaultSecretPkg}
@@ -23,6 +24,22 @@ func parseParams(name, value string) error {
 			return fmt.Errorf("chameleon-go: secret_pkg cannot be empty")
 		}
 		pluginState.secretPkg = value
+		return nil
+	case "with_resolved":
+		// Opt-in: emit a `<Message>Resolved` wrapper alongside the
+		// standalone accessor functions. Wrapper methods are the
+		// recommended consumer API — they centralize the
+		// secret.Map argument and make the chameleon-lint
+		// `cfg.X.Value` footgun harder to reach (consumers go through
+		// the wrapper instead of poking at the raw proto type).
+		switch value {
+		case "true", "1", "":
+			pluginState.withResolved = true
+		case "false", "0":
+			pluginState.withResolved = false
+		default:
+			return fmt.Errorf("chameleon-go: with_resolved must be true or false; got %q", value)
+		}
 		return nil
 	case "paths", "module", "M", "default_api_level":
 		// Recognized by protogen; let it handle them.
