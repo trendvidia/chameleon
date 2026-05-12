@@ -255,11 +255,16 @@ Chameleon detects this and surfaces it three ways:
 
 Currently only `pxf.Secret` has a metadata concept (`hint`, `fingerprint`). Other atomic WKTs replace whole without checks.
 
-### `chameleon explain` CLI
+### `chameleon` CLI
 
-### `chameleon explain` CLI
+Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/chameleon@latest`. Subcommands:
 
-Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/chameleon@latest`:
+- `chameleon explain` — resolve a chain spec and print per-field provenance (which layer set the value, whether a default was applied, whether interpolation rewrote it, whether the field is sensitive).
+- `chameleon verify` — check `@header.content_sha256` on every layer the chain resolves to. Encrypted layers are skipped (sops already authenticates them).
+- `chameleon migrate` — bulk-edit layer files in a chain spec. Decrypts encrypted layers, applies an AST-level transform (add-field / delete-field / rename-field), re-encrypts preserving the original key set.
+- `chameleon hash` — print the canonical body SHA-256 of a single layer file. Use this value as the `@header.content_sha256` on the layer.
+
+Example: `explain` against a checked-in chain spec:
 
 ```sh
 chameleon explain \
@@ -465,7 +470,8 @@ A goroutine-leak guard test runs Load+Destroy in a tight 500-iteration loop and 
 
 ```
 chain/                  ChainSpec expansion + LoadSpec/ParseSpec runtime helpers
-cmd/chameleon/          CLI: `chameleon explain` for per-field provenance
+cmd/chameleon/          CLI: explain (per-field provenance) / verify (@header.content_sha256) / migrate (bulk layer edits) / hash
+cmd/chameleon-lint/     go/analysis-style linter flagging *pxfv1.Secret.Value reads
 cmd/protoc-gen-chameleon-go/   protoc plugin emitting typed Secret accessors
 defaults/               (pxf.default) post-merge pass
 examples/buf/           working buf.gen.yaml + sample schema
