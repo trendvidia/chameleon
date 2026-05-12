@@ -7,6 +7,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-12
+
+Plaintext-in-heap closure + Milestone 2 tooling. The headline change
+is the resolver's adoption of protowire-go v0.76.0's
+`UnmarshalOptions.OnSecretField` hook ([#7](https://github.com/trendvidia/chameleon/issues/7)),
+which closes the heap-residency window for scalar-shorthand secrets
+end-to-end: plaintext flows from the PXF lexer into a memguard
+`Enclave` without an intermediate `*pxfv1.Secret.Value` Go string.
+Alongside, this release ships the `chameleon migrate` CLI for bulk
+schema-evolution edits across plaintext and encrypted layers
+([#5](https://github.com/trendvidia/chameleon/issues/5)) and the
+`chameleon-lint` static analyzer for catching `cfg.X.Value` reads
+that v0.6.0 made silently observable
+([#6](https://github.com/trendvidia/chameleon/issues/6) phase 1).
+
+This release also rolls in v0.6.0's content — that section was
+CHANGELOG'd in the v0.6.0 prep commit but never tagged as a separate
+release, mirroring protowire-go's v0.73 / v0.74 / v0.75 rollup
+pattern. The [0.6.0] section below is retained verbatim as the
+historical record.
+
+### Added
+
+- **Memguard-direct decode for scalar-shorthand secrets** ([#7](https://github.com/trendvidia/chameleon/issues/7)). The resolver now wires
+  protowire-go v0.76.0's `UnmarshalOptions.OnSecretField` hook on
+  every per-layer decode. Each scalar-shorthand `pxf.Secret` value
+  (`pw = "x"`, list elements, map values) is sealed into a memguard
+  `Enclave` mid-decode and never assigned to `*pxfv1.Secret.Value`
+  on the proto message. Closes the plaintext-in-heap window for the
+  common secret form — see the rewritten "Plaintext-in-heap window"
+  entry in README's Limitations section for the precise scope (block
+  form still rides the post-decode walker, with the window now
+  scoped to `[decode, MoveInto]` and limited to one form rather than
+  every Secret-bearing assignment).
+
+  New `parse.MoveInto(msg, *secret.Map) error` — walker that writes
+  into a caller-owned `secret.Map`, tracks every Secret-typed path
+  it reaches, and `Delete()`s any hook-routed entries whose path is
+  no longer in the merged message. The orphan-cleanup pass is the
+  load-bearing security check for the null-override case (lower
+  layer scalar-shorthand secret + higher layer `null` = secret
+  dropped). `parse.Move` / `MoveWithOptions` retain their existing
+  signatures for consumers outside the resolver.
+
+  New `(*secret.Map).Delete(path)` — destroys + removes one entry.
+  Used by `MoveInto`'s orphan sweep.
+
+- **`chameleon migrate` CLI** ([#5](https://github.com/trendvidia/chameleon/issues/5)). Walks a chain spec,
+  decrypts each encrypted layer (via the v3.13.2 sops fork's
+  `encrypt.UsingSameKeysAsWithContext`), applies a transform at the
+  PXF AST level, re-encrypts preserving the original key set, and
+  writes back:
+
+  ```sh
+  chameleon migrate \
+      --chain=chain.pxf --layers=./layers --env=dev \
+      --transform=add-field --path=feature_flag --bool=true
+
+  chameleon migrate ... --transform=delete-field --path=feature_flag
+  chameleon migrate ... --transform=rename-field --from=db.user --to=db.username
+  ```
+
+  Dotted paths navigate nested `Block`s for all three transforms.
+  Auto-creation of intermediate blocks is deliberately out of scope
+  for v0.7.0; missing parent on `add-field` is an error, and missing
+  parent on `delete-field` / `rename-field` is treated as
+  idempotent skip (lets fleet-wide runs proceed without per-layer
+  guards). `--dry-run`, `--only=<id>` for single-layer targeting,
+  and the full encrypted-layer round-trip are all in.
+
+- **`chameleon-lint` static analyzer** ([#6](https://github.com/trendvidia/chameleon/issues/6) phase 1). `go/analysis`
+  vet-like tool that flags `cfg.X.Value` reads and writes on
+  `*pxfv1.Secret`-typed fields in consumer code. The v0.6.0
+  per-Open observability made `cfg.X.Value == ""` after `Resolve`
+  silently observable; the linter makes it a compile-time signal
+  instead of a runtime surprise:
+
+  ```sh
+  go run github.com/trendvidia/chameleon/cmd/chameleon-lint ./...
+  ```
+
+  Phase 2 (codegen field-replacement so the field doesn't exist on
+  the generated type at all) is deferred to a later milestone.
+
+### Changed
+
+- **`protowire-go` minimum bumped to `>= v0.76.0`** (was `>= v0.71.0`).
+  Required for `UnmarshalOptions.OnSecretField`. Transitive consumers
+  inherit the bump.
+
+- **README Limitations entry rewritten** for the plaintext-in-heap
+  window — scoped to block-form secrets, with a documented
+  workaround (normalize layer secrets to scalar shorthand).
+  Pipeline diagram updated to mention `MoveInto` + the hook.
+
+### Notes for upgraders
+
+- No breaking changes for resolver consumers — `Resolver.Resolve`'s
+  contract is unchanged, `res.Secrets` has the same shape; only the
+  residency of the underlying bytes changed.
+- If you call `parse.Move` directly outside the resolver, nothing
+  changes — `Move` / `MoveWithOptions` still work exactly as before.
+  The new `MoveInto` is the resolver-internal variant that
+  participates in the hook handshake.
+- If you wrote tests that asserted on `*pxfv1.Secret.Value`'s
+  contents AFTER `Resolve` (which already returned `""` since v0.6.0
+  due to `parse.Move`), nothing changes either — the value is still
+  `""` after Resolve; it just got there a step earlier in the
+  pipeline.
+
 ## [0.6.0] — 2026-05-11
 
 Observability + memory-residency hardening. Closes Milestone 1 of
