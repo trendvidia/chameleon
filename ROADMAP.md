@@ -47,23 +47,87 @@ When v1.0 cuts, the [public API surface freeze](#public-api-surface-at-v10) sect
 
 These packages and types are stable at v1.0; consumers may rely on their signatures across the 1.x line:
 
-- `github.com/trendvidia/chameleon/resolver` — `New`, `Resolver[T]`, `Resolve`, `Resolution[T]`, `Request`, `Trace`, the `With*` option set.
-- `github.com/trendvidia/chameleon/chain` — `Spec`, `LayerRef`, `LoadSpec`, `Expand`.
-- `github.com/trendvidia/chameleon/secret` — `Secret`, `Map`, `FromString`, `FromLockedBytes`, `OpenedBuffer`, `Instruments`, `MapOption`, `WithInstruments`.
-- `github.com/trendvidia/chameleon/parse` — `Move`, `MoveWithOptions`, `MoveInto`.
-- `github.com/trendvidia/chameleon/merge` — `Merge`, `MergeWithOptions`, `Options`, `ClobberInfo`.
-- `github.com/trendvidia/chameleon/sops` — `Decrypter`, `Default`, `Format*`, `FormatForPath`.
-- `github.com/trendvidia/chameleon/source` — `Source`, `FS`, `ErrNotFound`.
-- `github.com/trendvidia/chameleon/internal/header` — internal; not covered.
-- `github.com/trendvidia/chameleon/internal/upstream` — internal; not covered.
+Enumeration is exhaustive — `go doc <pkg>` at the v1.0 tag should produce the same set. `internal/*` packages are excluded by Go's compiler-enforced rule and aren't listed.
 
-CLI commands (stable):
-- `chameleon explain` / `verify` / `migrate` / `hash`.
-- `chameleon-lint`.
+### `github.com/trendvidia/chameleon` (top-level convenience)
 
-Codegen output (stable):
-- `protoc-gen-chameleon-go` function-form accessors (`<Root>Secret_<Path>`).
-- `protoc-gen-chameleon-go` wrapper mode (`<Root>Resolved` + chained access + field getters + `proto.Message` delegation).
+- **Functions**: `Load[T proto.Message](sample T, spec proto.Message, layersFS fs.FS, env string) (*resolver.Resolution[T], error)` — shorthand wrapper around `resolver.New` + `Resolve` for the common "load a single config" use case.
+
+### `github.com/trendvidia/chameleon/resolver`
+
+- **Functions**: `New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolver[T], error)`, `WithDecrypter`, `WithMeterProvider`, `WithSource`, `WithStrictMetadata`, `WithTrace`.
+- **Types**: `Resolver[T proto.Message]`, `Resolution[T proto.Message]`, `Request`, `Trace`, `TraceEntry`, `ClobberRecord`, `Option`.
+- **Errors**: `ErrNoSource`, `ErrNoDecrypter`, `ErrRequiredLayerMissing`.
+- **Methods**: `(*Resolver[T]).Resolve(ctx, Request) (*Resolution[T], error)`, `(*Resolution[T]).Destroy()`.
+
+### `github.com/trendvidia/chameleon/chain`
+
+- **Functions**: `LoadSpec(path)`, `ParseSpec(data)`, `Expand(spec, env, ctx)`.
+- **Types**: `LayerRef`, `Options`.
+- **Methods**: `(Options).Expand(spec, env, ctx) ([]LayerRef, error)`.
+- **Errors**: `ErrUnknownEnvironment`, `ErrCyclicAncestry`, `ErrUnknownContextKey`, `ErrMissingRequiredContext`, `ErrContextValueNotAllowed`, `ErrUnresolvedRequiredLayer`.
+
+### `github.com/trendvidia/chameleon/secret`
+
+- **Functions**: `NewMap(opts ...MapOption)`, `NewInstruments(mp metric.MeterProvider)`, `WithInstruments(i, env)`, `FromString(s, hint, fingerprint)`, `FromLockedBytes(buf, hint, fingerprint)`.
+- **Types**: `Secret`, `Map`, `MapOption`, `Instruments`, `OpenedBuffer`.
+- **Methods on `*Secret`**: `Open() (*OpenedBuffer, error)`, `Destroy()`, `IsSet() bool`, `Hint() string`, `Fingerprint() string`, `SetMetadata(hint, fingerprint string)`.
+- **Methods on `*Map`**: `Get(path)`, `Has(path)`, `Len()`, `Set(path, s)`, `Delete(path)`, `Range(fn)`, `Destroy()`.
+- **Methods on `*OpenedBuffer`**: `Bytes() []byte`, `Locked() *memguard.LockedBuffer`, `Destroy()`.
+- **Errors**: `ErrDestroyed`, `ErrUnset`.
+
+### `github.com/trendvidia/chameleon/parse`
+
+- **Functions**: `Move(msg) (*secret.Map, error)`, `MoveWithOptions(msg, opts ...secret.MapOption) (*secret.Map, error)`, `MoveInto(msg, secrets *secret.Map) error`.
+- **Errors**: `ErrInvalidSecret`.
+
+### `github.com/trendvidia/chameleon/merge`
+
+- **Functions**: `Merge(dst, src, srcPresence) error`, `MergeWithOptions(dst, src, srcPresence, opts Options) error`.
+- **Types**: `Options`, `ClobberInfo`.
+
+### `github.com/trendvidia/chameleon/interpolate`
+
+- **Functions**: `Apply(msg, opts ...Option) error`, `OnApplied(fn) Option`.
+- **Types**: `Option`.
+- **Errors**: `ErrCycle`, `ErrInvalidReference`, `ErrMalformedTemplate`, `ErrUnknownReference`.
+
+### `github.com/trendvidia/chameleon/defaults`
+
+- **Functions**: `Apply(msg, present, opts ...Option) error`, `OnApplied(fn) Option`.
+- **Types**: `Option`.
+
+### `github.com/trendvidia/chameleon/validate`
+
+- **Functions**: `Validate(msg, present) error`.
+- **Errors**: `ErrMissingRequired`.
+
+### `github.com/trendvidia/chameleon/sops`
+
+- **Functions**: `Default() Decrypter`, `FormatForPath(path) Format`.
+- **Types**: `Decrypter`, `Format` (with `String()` method).
+- **Constants**: `FormatAuto`, `FormatProtowire`, `FormatBinary`, `FormatDotenv`, `FormatINI`, `FormatJSON`, `FormatYAML`.
+- **Errors**: `ErrEmptyCiphertext`.
+
+### `github.com/trendvidia/chameleon/source`
+
+- **Functions**: `FS(fsys fs.FS) Source`.
+- **Types**: `Source`, `Info`.
+- **Errors**: `ErrNotFound`.
+
+### `github.com/trendvidia/chameleon/wkt`
+
+- **Functions**: `Atomic(d protoreflect.MessageDescriptor) bool`.
+
+### CLI binaries (stable)
+
+- `chameleon` with subcommands: `explain`, `verify`, `migrate`, `hash`.
+- `chameleon-lint` — `go/analysis`-shaped analyzer; usable via `go vet -vettool` or `golangci-lint`.
+
+### Codegen output (stable)
+
+- `protoc-gen-chameleon-go` function-form accessors (`<Root>Secret_<Path>(s *secret.Map, ...)`).
+- `protoc-gen-chameleon-go` wrapper mode (`<Root>Resolved` + chained access + field-by-field getters + `proto.Message` delegation). Opt-in via `--chameleon-go_opt=with_resolved=true`.
 
 ---
 
