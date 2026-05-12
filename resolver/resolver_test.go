@@ -1171,3 +1171,117 @@ func TestResolve_HeaderOptionalAbsent(t *testing.T) {
 	fd := res.Config.Descriptor().Fields().ByName("base_url")
 	assert.Equal(t, "dev.x.com", res.Config.Get(fd).String())
 }
+
+// --- WKT clobber warning ---
+
+// clobberSpec returns a minimal chain spec with two layers (base, env)
+// for clobber-detection tests.
+func clobberSpec(t *testing.T, chainDesc protoreflect.MessageDescriptor) proto.Message {
+	t.Helper()
+	return parseSpec(t, chainDesc, `
+version = "1.0.0"
+default_environment = "dev"
+environments = [
+  { name = "prod" }
+  { name = "dev" extends = "prod" }
+]
+layers = [
+  { id = "base" path = "base.pxf" for_each = ONCE required = true }
+  { id = "env"  path = "env/${env}.pxf" for_each = PER_ENV }
+]
+`)
+}
+
+// TestClobber_RecordedOnTrace — env layer drops base's hint; the
+// resolver's Trace should carry one ClobberRecord attributing the
+// loss to the env layer.
+func TestClobber_RecordedOnTrace(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := clobberSpec(t, chainDesc)
+
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(
+			`db_password { value = "x"  hint = "Postgres primary" }` + "\n",
+		)},
+		"env/dev.pxf": &fstest.MapFile{Data: []byte(
+			`db_password = "y"` + "\n",
+		)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+		resolver.WithTrace(),
+	)
+	require.NoError(t, err)
+
+	res, err := r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.NoError(t, err)
+	defer res.Destroy()
+
+	require.NotNil(t, res.Trace)
+	require.Len(t, res.Trace.ClobberedMetadata, 1, "expected one clobber recorded")
+	rec := res.Trace.ClobberedMetadata[0]
+	assert.Equal(t, "db_password", rec.Path)
+	assert.Equal(t, "pxf.Secret", rec.Type)
+	assert.Equal(t, []string{"hint"}, rec.LostFields)
+	assert.Equal(t, "env", rec.ClobberingLayerID)
+}
+
+// TestClobber_StrictModeErrors — same setup as above, but
+// WithStrictMetadata upgrades the warning to a hard resolve error.
+func TestClobber_StrictModeErrors(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := clobberSpec(t, chainDesc)
+
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(
+			`db_password { value = "x"  hint = "Postgres primary" }` + "\n",
+		)},
+		"env/dev.pxf": &fstest.MapFile{Data: []byte(
+			`db_password = "y"` + "\n",
+		)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+		resolver.WithStrictMetadata(),
+	)
+	require.NoError(t, err)
+
+	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.Error(t, err, "strict mode must abort resolution on metadata clobber")
+	assert.Contains(t, err.Error(), "clobbered metadata")
+	assert.Contains(t, err.Error(), "db_password")
+	assert.Contains(t, err.Error(), "hint")
+}
+
+// TestClobber_NoneWhenUpperPreservesMetadata — env layer re-declares
+// the hint, no clobber.
+func TestClobber_NoneWhenUpperPreservesMetadata(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := clobberSpec(t, chainDesc)
+
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(
+			`db_password { value = "x"  hint = "Postgres primary" }` + "\n",
+		)},
+		"env/dev.pxf": &fstest.MapFile{Data: []byte(
+			`db_password { value = "y"  hint = "Postgres primary" }` + "\n",
+		)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+		resolver.WithTrace(),
+	)
+	require.NoError(t, err)
+	res, err := r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.NoError(t, err)
+	defer res.Destroy()
+
+	require.NotNil(t, res.Trace)
+	assert.Empty(t, res.Trace.ClobberedMetadata, "upper layer preserved metadata; no clobber expected")
+}
