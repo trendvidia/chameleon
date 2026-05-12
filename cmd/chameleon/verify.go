@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -42,6 +43,9 @@ Flags:`)
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if *chainPath == "" {
@@ -181,6 +185,9 @@ Usage:
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if fs.NArg() != 1 {
