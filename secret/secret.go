@@ -176,12 +176,29 @@ func (s *Secret) Fingerprint() string { return s.fingerprint }
 // fingerprint }` carries — the protowire-go OnSecretField hook
 // (since v0.77.0) routes value through the hook but assigns hint
 // and fingerprint to the proto message normally, so the resolver
-// folds them back onto the Secret after decode. Empty values
-// overwrite (the caller is responsible for skip-when-empty
-// semantics).
+// folds them back onto the Secret after decode.
 //
-// Safe to call on a Secret already inserted into a [Map]; hint and
-// fingerprint are plain Go strings, not memguard-backed.
+// Semantics:
+//
+//   - Both arguments overwrite unconditionally. A caller that wants
+//     "skip when both empty" semantics must implement that itself
+//     (see parse.MoveInto.takeSecret for the canonical pattern).
+//
+//   - SetMetadata is goroutine-safe ONLY while the Secret is being
+//     constructed by parse.MoveInto, before the containing [Map]
+//     escapes to consumer code. Once the Map is returned from
+//     [parse.MoveInto] or [parse.Move] (i.e. once parse.Move's
+//     walker has finished), no further SetMetadata calls are safe
+//     because consumer goroutines may now hold the *Secret and
+//     race on the hint/fingerprint field reads. This is the same
+//     window as the rest of [Secret]'s "NOT goroutine-safe for
+//     mutation" invariant; calling SetMetadata after Map escape
+//     would race with consumer Hint() / Fingerprint() reads with
+//     no synchronization.
+//
+//   - Hint and fingerprint are plain Go strings (not memguard-
+//     backed); the bytes live on the regular GC heap. Calling
+//     SetMetadata does not allocate mlocked memory.
 func (s *Secret) SetMetadata(hint, fingerprint string) {
 	if s == nil {
 		return
