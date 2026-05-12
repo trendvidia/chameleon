@@ -7,6 +7,117 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-05-12
+
+Low-priority polish + tooling sweep on top of v0.11.0. Six items from
+the post-v0.11.0 review, plus one ROADMAP-deferred (P2). One internal
+type swap that's invisible through the public API surface but worth
+a soak cycle before locking in v1.0.
+
+### Added
+
+- **First CI workflow on the repo**
+  ([#51](https://github.com/trendvidia/chameleon/pull/51)).
+  `.github/workflows/ci.yml` — runs build + vet + race-test +
+  golangci-lint on push to main and every PR. Pinned Go 1.26.x.
+
+- **`.golangci.yml` — golangci-lint v2 config**
+  ([#51](https://github.com/trendvidia/chameleon/pull/51)). 18
+  linters beyond the stdlib defaults: gosec, bodyclose,
+  contextcheck, copyloopvar, durationcheck, errorlint, gocritic,
+  intrange, misspell, nilerr, nilnesserr, noctx, nolintlint,
+  prealloc, revive, unconvert, usestdlibvars, wastedassign,
+  whitespace. Exclusions documented per file pattern (no
+  blanket-disable). `golangci-lint run ./...` reports 0 issues.
+
+- **Benchmark regression gate**
+  ([#52](https://github.com/trendvidia/chameleon/pull/52)). Six
+  benchmarks across `resolver` (TwoLayers / FiveLayers /
+  WithSecret) and `interpolate` (NoTemplates / ShallowSubstitution
+  / ThreeFieldChain). New `bench` CI job runs them on every PR and
+  prints a `benchstat` diff vs main — non-blocking until a baseline
+  range stabilizes.
+
+- **`chameleon version` and `chameleon completion` subcommands**
+  ([#53](https://github.com/trendvidia/chameleon/pull/53)).
+  `version` prints the module version, Go toolchain, and VCS
+  commit/timestamp via `runtime/debug.ReadBuildInfo()`.
+  `completion <bash|zsh|fish>` emits hand-rolled completion scripts
+  with subcommand + per-flag completion (no cobra dep).
+
+- **Real-sops round-trip integration test**
+  ([#55](https://github.com/trendvidia/chameleon/pull/55)). New
+  `sops/integration_test.go` gated behind `//go:build integration`.
+  Generates an age X25519 keypair in-process via `filippo.io/age`,
+  encrypts a canonical PXF plaintext via sops's `encrypt.Data`,
+  decrypts through chameleon's `Decrypter`, asserts byte-for-byte
+  round-trip. Wired into CI; failure blocks merge. Closes the
+  "Skipped — low value vs. cost" item in ROADMAP per explicit user
+  opt-in.
+
+- **Keep-a-Changelog version comparison footer**
+  ([#50](https://github.com/trendvidia/chameleon/pull/50)). Each
+  release header (`[0.12.0]`, `[0.11.0]`, …) is now a clickable diff
+  link against its predecessor. Two stale bare `chameleon#N`
+  references promoted to issue links.
+
+### Changed
+
+- **`chain` package uses typed `*chameleonv1.ChainSpec` access**
+  ([#54](https://github.com/trendvidia/chameleon/pull/54), ROADMAP
+  P2). Descriptor-driven `Fields().ByName("name")` reflection
+  replaced with typed getters everywhere in `chain/expand.go`.
+  Typos in expand.go now fail at compile time instead of returning
+  nil silently. `chain/load.go` drops the `bufbuild/protocompile`
+  runtime descriptor compile + `sync.OnceValues` cache; `ParseSpec`
+  is 3 lines. Net **-113 lines** across the two files.
+
+  The public API (`LoadSpec` / `ParseSpec` / `Expand`) is unchanged
+  — same `proto.Message` interface contract — but the underlying
+  concrete type returned from `LoadSpec` / `ParseSpec` switches from
+  `*dynamicpb.Message` to `*chameleonv1.ChainSpec`. Callers passing
+  dynamicpb-backed messages into `Expand` keep working via a
+  marshal/unmarshal bridge at entry.
+
+- **`--help` on every CLI subcommand exits 0**
+  ([#53](https://github.com/trendvidia/chameleon/pull/53)). Was
+  exit 1 with the awkward `chameleon explain: flag: help requested`
+  line — `flag.ErrHelp` is now intercepted and returned as `nil`.
+
+### Added — codegen
+
+- **`proto/buf.yaml` + `proto/buf.gen.yaml`** — `cd proto && buf
+  generate` regenerates the bindings.
+  `proto/pxf/annotations.proto` is vendored with a `go_package`
+  option (the runtime extension impl still lives in protowire-go).
+  `proto/generate.go` carries a `//go:generate buf generate`
+  directive.
+- **`proto/chameleon/v1/{chain,layer}.pb.go` + `proto/pxf/annotations.pb.go`**
+  checked in; no consumer-side codegen step required.
+
+### Notes for upgraders
+
+- **No breaking changes to library APIs.** The `chain` type swap is
+  internal — `proto.Message` callers see no difference; type-assert
+  consumers (rare) switch from `*dynamicpb.Message` to
+  `*chameleonv1.ChainSpec`.
+- **`bufbuild/protocompile`** is no longer a runtime dep of the
+  `chain` package (still used by `cmd/chameleon/explain` for the
+  user's app schema and by test fixtures).
+- The new CI / lint / bench / integration jobs run automatically on
+  PRs against `main`; no consumer action required.
+
+### v1.0 readiness — soak status
+
+| Criterion | v0.12.0 status |
+|---|---|
+| One release cycle of soak | v0.11.0 ran clean; v0.12.0 starts another |
+| No open enhancement issues blocking core flows | Zero |
+| README + godoc cross-checked | Yes (CLI section updated for new subcommands) |
+| Cross-repo pins documented | Yes |
+
+v1.0.0 follows after this soak if no API-shaped feedback surfaces.
+
 ## [0.11.0] — 2026-05-12
 
 Medium-priority polish from the v1.0 readiness review. v0.10.0
@@ -820,7 +931,8 @@ Documented in `README.md`:
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
 
-[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/trendvidia/chameleon/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/trendvidia/chameleon/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/trendvidia/chameleon/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/trendvidia/chameleon/compare/v0.8.0...v0.9.0
