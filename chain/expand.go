@@ -22,10 +22,12 @@
 //   - Required context keys are present (or have a default).
 //   - Required layer entries resolve to non-empty paths.
 //
-// The package operates on a generic [proto.Message] via protoreflect
-// rather than a typed *chameleonv1.ChainSpec so it works before the
-// generated bindings exist. When bindings land, callers can keep using
-// the same entry point.
+// The package accepts any [proto.Message] with the
+// chameleon.v1.ChainSpec shape — either the typed
+// *chameleonv1.ChainSpec (preferred; what [LoadSpec] / [ParseSpec]
+// return) or a dynamicpb-backed message with the same field numbers.
+// Non-typed inputs round-trip through proto.Marshal/Unmarshal once
+// at entry; the per-call cost is one extra alloc cycle.
 package chain
 
 import (
@@ -34,10 +36,9 @@ import (
 	"strings"
 
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
-)
 
-const chainSpecFullName protoreflect.FullName = "chameleon.v1.ChainSpec"
+	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
+)
 
 // LayerRef identifies one concrete layer file in the resolved chain.
 // The resolver passes Source + Path through the registered Source
@@ -94,22 +95,21 @@ func (o Options) Expand(spec proto.Message, env string, ctx map[string]string) (
 	if spec == nil {
 		return nil, errors.New("chain: nil spec")
 	}
-	r := spec.ProtoReflect()
-	if got := r.Descriptor().FullName(); got != chainSpecFullName {
-		return nil, fmt.Errorf("chain: expected %s, got %s", chainSpecFullName, got)
+	cs, err := toChainSpec(spec)
+	if err != nil {
+		return nil, err
 	}
-	desc := r.Descriptor()
 
 	// 1. Resolve effective environment.
 	if env == "" {
-		env = readString(r, desc, "default_environment")
+		env = cs.GetDefaultEnvironment()
 		if env == "" {
 			return nil, errors.New("chain: no environment supplied and no default_environment in spec")
 		}
 	}
 
 	// 2. Parse environments map.
-	envs, declOrder, err := readEnvironments(r, desc)
+	envs, declOrder, err := readEnvironments(cs)
 	if err != nil {
 		return nil, err
 	}
@@ -122,58 +122,58 @@ func (o Options) Expand(spec proto.Message, env string, ctx map[string]string) (
 	}
 
 	// 4. Normalize and validate context.
-	normCtx, err := o.normalizeContext(r, desc, ctx)
+	normCtx, err := o.normalizeContext(cs, ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// 5. Walk layer entries; produce LayerRefs in declared order.
-	refs, err := expandLayers(r, desc, ancestry, normCtx)
+	refs, err := expandLayers(cs, ancestry, normCtx)
 	if err != nil {
 		return nil, err
 	}
 	return refs, nil
 }
 
-// --- helpers ---
-
-func readString(r protoreflect.Message, d protoreflect.MessageDescriptor, name string) string {
-	fd := d.Fields().ByName(protoreflect.Name(name))
-	if fd == nil {
-		return ""
+// toChainSpec accepts any proto.Message with the chameleon.v1.ChainSpec
+// shape and returns a typed *chameleonv1.ChainSpec. Typed inputs are
+// returned directly; dynamicpb-backed messages round-trip through
+// proto.Marshal/Unmarshal. Mismatched schemas fail fast on the
+// FullName check (cheaper than serialization).
+func toChainSpec(spec proto.Message) (*chameleonv1.ChainSpec, error) {
+	if cs, ok := spec.(*chameleonv1.ChainSpec); ok {
+		return cs, nil
 	}
-	return r.Get(fd).String()
-}
-
-func readBool(r protoreflect.Message, d protoreflect.MessageDescriptor, name string) bool {
-	fd := d.Fields().ByName(protoreflect.Name(name))
-	if fd == nil {
-		return false
+	const want = "chameleon.v1.ChainSpec"
+	if got := string(spec.ProtoReflect().Descriptor().FullName()); got != want {
+		return nil, fmt.Errorf("chain: expected %s, got %s", want, got)
 	}
-	return r.Get(fd).Bool()
+	data, err := proto.Marshal(spec)
+	if err != nil {
+		return nil, fmt.Errorf("chain: marshal spec: %w", err)
+	}
+	cs := &chameleonv1.ChainSpec{}
+	if err := proto.Unmarshal(data, cs); err != nil {
+		return nil, fmt.Errorf("chain: unmarshal spec into typed form: %w", err)
+	}
+	return cs, nil
 }
 
 // readEnvironments returns (name → extends) and the declared order of
 // names. `extends == ""` means root. Duplicate names error.
-func readEnvironments(r protoreflect.Message, d protoreflect.MessageDescriptor) (map[string]string, []string, error) {
-	fd := d.Fields().ByName("environments")
-	if fd == nil {
-		return nil, nil, errors.New("chain: spec missing environments field")
-	}
-	list := r.Get(fd).List()
-	envs := make(map[string]string, list.Len())
-	order := make([]string, 0, list.Len())
-	for i, n := 0, list.Len(); i < n; i++ {
-		e := list.Get(i).Message()
-		ed := e.Descriptor()
-		name := e.Get(ed.Fields().ByName("name")).String()
+func readEnvironments(cs *chameleonv1.ChainSpec) (map[string]string, []string, error) {
+	envList := cs.GetEnvironments()
+	envs := make(map[string]string, len(envList))
+	order := make([]string, 0, len(envList))
+	for i, e := range envList {
+		name := e.GetName()
 		if name == "" {
 			return nil, nil, fmt.Errorf("chain: environment at index %d missing name", i)
 		}
 		if _, dup := envs[name]; dup {
 			return nil, nil, fmt.Errorf("chain: duplicate environment %q", name)
 		}
-		envs[name] = e.Get(ed.Fields().ByName("extends")).String()
+		envs[name] = e.GetExtends()
 		order = append(order, name)
 	}
 	if len(envs) == 0 {
@@ -210,51 +210,45 @@ func ancestryChain(envs map[string]string, leaf string) ([]string, error) {
 
 // normalizeContext applies defaults, validates allowed_values, and
 // (unless relaxed) rejects unknown keys.
-func (o Options) normalizeContext(r protoreflect.Message, d protoreflect.MessageDescriptor, caller map[string]string) (map[string]string, error) {
+func (o Options) normalizeContext(cs *chameleonv1.ChainSpec, caller map[string]string) (map[string]string, error) {
 	out := make(map[string]string)
 	declared := make(map[string]bool)
 
-	keysFd := d.Fields().ByName("context_keys")
-	if keysFd != nil {
-		keysList := r.Get(keysFd).List()
-		for i, n := 0, keysList.Len(); i < n; i++ {
-			ck := keysList.Get(i).Message()
-			cd := ck.Descriptor()
-			name := ck.Get(cd.Fields().ByName("name")).String()
-			if name == "" {
-				return nil, fmt.Errorf("chain: context_key at index %d missing name", i)
-			}
-			declared[name] = true
-
-			defaultVal := ck.Get(cd.Fields().ByName("default")).String()
-			required := ck.Get(cd.Fields().ByName("required")).Bool()
-			allowedList := ck.Get(cd.Fields().ByName("allowed_values")).List()
-
-			val, present := caller[name]
-			if !present {
-				if required && defaultVal == "" {
-					return nil, fmt.Errorf("%w: %q", ErrMissingRequiredContext, name)
-				}
-				if defaultVal != "" {
-					out[name] = defaultVal
-				}
-				continue
-			}
-
-			if allowedList.Len() > 0 {
-				ok := false
-				for j, m := 0, allowedList.Len(); j < m; j++ {
-					if allowedList.Get(j).String() == val {
-						ok = true
-						break
-					}
-				}
-				if !ok {
-					return nil, fmt.Errorf("%w: key=%q value=%q", ErrContextValueNotAllowed, name, val)
-				}
-			}
-			out[name] = val
+	for i, ck := range cs.GetContextKeys() {
+		name := ck.GetName()
+		if name == "" {
+			return nil, fmt.Errorf("chain: context_key at index %d missing name", i)
 		}
+		declared[name] = true
+
+		defaultVal := ck.GetDefault()
+		required := ck.GetRequired()
+		allowed := ck.GetAllowedValues()
+
+		val, present := caller[name]
+		if !present {
+			if required && defaultVal == "" {
+				return nil, fmt.Errorf("%w: %q", ErrMissingRequiredContext, name)
+			}
+			if defaultVal != "" {
+				out[name] = defaultVal
+			}
+			continue
+		}
+
+		if len(allowed) > 0 {
+			ok := false
+			for _, a := range allowed {
+				if a == val {
+					ok = true
+					break
+				}
+			}
+			if !ok {
+				return nil, fmt.Errorf("%w: key=%q value=%q", ErrContextValueNotAllowed, name, val)
+			}
+		}
+		out[name] = val
 	}
 
 	if !o.AllowUnknownContextKeys {
@@ -278,28 +272,21 @@ func (o Options) normalizeContext(r protoreflect.Message, d protoreflect.Message
 
 // expandLayers walks LayerEntry list, applying for_each and template
 // substitution, producing ordered LayerRefs.
-func expandLayers(r protoreflect.Message, d protoreflect.MessageDescriptor, ancestry []string, ctx map[string]string) ([]LayerRef, error) {
-	fd := d.Fields().ByName("layers")
-	if fd == nil {
-		return nil, errors.New("chain: spec missing layers field")
-	}
-	list := r.Get(fd).List()
-	if list.Len() == 0 {
+func expandLayers(cs *chameleonv1.ChainSpec, ancestry []string, ctx map[string]string) ([]LayerRef, error) {
+	layers := cs.GetLayers()
+	if len(layers) == 0 {
 		return nil, errors.New("chain: spec declares no layers")
 	}
 
 	leaf := ancestry[len(ancestry)-1]
 	var refs []LayerRef
 
-	for i, n := 0, list.Len(); i < n; i++ {
-		entry := list.Get(i).Message()
-		ed := entry.Descriptor()
-
-		id := entry.Get(ed.Fields().ByName("id")).String()
-		path := entry.Get(ed.Fields().ByName("path")).String()
-		required := readBool(entry, ed, "required")
-		encrypted := readBool(entry, ed, "encrypted")
-		source := entry.Get(ed.Fields().ByName("source")).String()
+	for i, entry := range layers {
+		id := entry.GetId()
+		path := entry.GetPath()
+		required := entry.GetRequired()
+		encrypted := entry.GetEncrypted()
+		source := entry.GetSource()
 		if source == "" {
 			source = "default"
 		}
@@ -311,13 +298,8 @@ func expandLayers(r protoreflect.Message, d protoreflect.MessageDescriptor, ance
 			return nil, fmt.Errorf("chain: layer %q missing path", id)
 		}
 
-		// Determine envs to iterate based on for_each.
-		perEnv, err := isPerEnv(entry, ed)
-		if err != nil {
-			return nil, err
-		}
 		envIter := []string{leaf}
-		if perEnv {
+		if entry.GetForEach() == chameleonv1.LayerEntry_PER_ENV {
 			envIter = ancestry
 		}
 
@@ -347,25 +329,6 @@ func expandLayers(r protoreflect.Message, d protoreflect.MessageDescriptor, ance
 		}
 	}
 	return refs, nil
-}
-
-// isPerEnv reads the for_each enum and returns true iff it equals
-// PER_ENV. Lookup is by name so the test is stable across enum
-// renumbering.
-func isPerEnv(entry protoreflect.Message, ed protoreflect.MessageDescriptor) (bool, error) {
-	feFd := ed.Fields().ByName("for_each")
-	if feFd == nil {
-		return false, nil
-	}
-	enumDesc := feFd.Enum()
-	if enumDesc == nil {
-		return false, fmt.Errorf("chain: for_each not an enum")
-	}
-	perEnvDecl := enumDesc.Values().ByName("PER_ENV")
-	if perEnvDecl == nil {
-		return false, nil
-	}
-	return entry.Get(feFd).Enum() == perEnvDecl.Number(), nil
 }
 
 // substitute replaces `${name}` and `${ctx.x}` tokens against vars.
