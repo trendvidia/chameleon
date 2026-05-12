@@ -37,17 +37,28 @@
 // Plugin parameters (--chameleon-go_opt=KEY=VALUE,...):
 //
 //	paths=source_relative   pass-through to protogen, mirrors protoc-gen-go's option.
-//	secret_pkg=IMPORT_PATH  override the runtime secret package
-//	                        (default: github.com/trendvidia/chameleon/secret).
+//	secret_pkg=IMPORT_PATH   override the runtime secret package
+//	                         (default: github.com/trendvidia/chameleon/secret).
+//	with_resolved=true|false emit a `<Root>Resolved` wrapper per root
+//	                         message with at least one Secret, alongside
+//	                         the function-form accessors. Wrapper methods
+//	                         encapsulate the secret.Map argument and steer
+//	                         callers away from the `cfg.X.Value` footgun;
+//	                         chameleon-lint stays the load-bearing
+//	                         compile-time check until Phase 2b ships the
+//	                         field-replacement variant.
+//	                         (default: false; opt-in.)
 //
 // Limitation. The proto-generated type's Secret field still has a public
 // Value string — `cfg.DbPassword.Value` reads the plaintext directly,
 // bypassing memguard. That's a property of protoc-gen-go's emit shape;
 // fully closing it requires either forking protoc-gen-go or wrapping
-// its output. The sidecar emits the *correct* path constants so user
-// code goes through secret.Map (which holds memguard Enclaves), but a
-// determined caller can still read the raw field. Discipline + lint
-// rule territory; the tooling firewall is on the roadmap.
+// its output. The `with_resolved` mode (above) narrows the surface by
+// giving callers a typed wrapper they should use in place of the raw
+// proto type, but a determined caller can still go through
+// `Wrapper.Underlying().DbPassword.Value`. chameleon-lint
+// catches that pattern at CI-time; field-replacement codegen
+// (chameleon#6 Phase 2b) is the eventual hard fix.
 package main
 
 import (
