@@ -82,11 +82,23 @@ func MoveWithOptions(msg proto.Message, opts ...secret.MapOption) (*secret.Map, 
 
 // MoveInto walks msg and folds its block-form pxf.Secret values into
 // secrets — a caller-managed [secret.Map] already populated with
-// scalar-shorthand secrets via [pxf.UnmarshalOptions.OnSecretField].
-// Used by the chameleon resolver to close the plaintext-in-heap window
-// for the scalar-shorthand case while keeping the block-form path
-// (where `value` is set via a regular `value = "x"` assignment inside
-// a Secret block) covered by the same final secret.Map.
+// hook-routed secrets via [pxf.UnmarshalOptions.OnSecretField]. Used
+// by the chameleon resolver as a defensive walker that (a) catches
+// any leftover block-form `value` bytes on the proto message
+// (none in practice with protowire-go v0.77+ since the hook routes
+// block form too), (b) folds hint/fingerprint metadata from the
+// proto message onto hook-populated Map entries via
+// [secret.Secret.SetMetadata], and (c) drops orphan entries whose
+// path was nulled by a higher layer.
+//
+// MoveInto narrows the residency of plaintext on `*pxfv1.Secret.Value`
+// to "zero" (with the hook wired). It does NOT close the transient
+// Go heap window that the PXF lexer string + the hook closure's
+// `value` parameter occupy from token construction through the next
+// GC — those bytes live on an immutable Go string and cannot be
+// wiped. Closing that requires either a byte-slice hook variant or
+// a lexer-level Secret-aware path; both are protowire-go-side work
+// tracked separately.
 //
 // Semantics:
 //

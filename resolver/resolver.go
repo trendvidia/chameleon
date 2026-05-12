@@ -385,12 +385,15 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 
 	// Secrets accumulator. Constructed before the layer loop so each
 	// layer's OnSecretField hook (wired in loadAndParse) can fold its
-	// scalar-shorthand pxf.Secret values into it directly during PXF
-	// decode — closing the plaintext-in-heap window for the common
-	// secret form. Block-form Secrets (`pw { value = "x", hint =
-	// "h" }`) still ride the post-decode walker via parse.MoveInto
-	// below, which also runs an orphan-cleanup sweep for any hook
-	// entry whose path a higher layer subsequently nulled.
+	// pxf.Secret values into it directly during PXF decode — both
+	// scalar shorthand (protowire-go v0.76+) and block form
+	// (protowire-go v0.77+) route through the hook so the value
+	// never lands on `*pxfv1.Secret.Value` on the proto message. A
+	// transient heap window remains on the lexer string + hook
+	// closure value (immutable Go strings, wiped by GC pacing).
+	// parse.MoveInto below runs as a defensive sweep that folds
+	// block-form hint/fingerprint metadata onto Map entries and
+	// drops orphans (paths a higher layer subsequently nulled).
 	secrets := secret.NewMap(secret.WithInstruments(r.secretInstruments, req.Environment))
 	defer func() {
 		// On error: tear down any partially-populated secrets so we
@@ -538,13 +541,20 @@ func (r *Resolver[T]) fresh() T {
 // PXF into msg. Returns (nil, nil) when the layer is optional and the
 // source reports ErrNotFound — caller treats that as "skip".
 //
-// secrets receives every scalar-shorthand pxf.Secret value discovered
-// during decode via protowire-go's UnmarshalOptions.OnSecretField
-// hook (since v0.76.0). The hook seals each value into a memguard
-// Enclave on the fly so plaintext never lands on the regular Go heap
-// — closing the gap that previously existed between PXF decode and
-// the post-decode parse.Move walker. Block-form Secrets still land
-// on the proto message and are collected by parse.MoveInto upstream.
+// secrets receives every pxf.Secret value discovered during decode
+// via protowire-go's UnmarshalOptions.OnSecretField hook (scalar
+// shorthand since v0.76.0; block form since v0.77.0). The hook
+// seals each value into a memguard Enclave on the fly so the value
+// never lands on `*pxfv1.Secret.Value` on the proto message —
+// closing the gap that previously existed between PXF decode and
+// the post-decode parse.Move walker. A transient window remains on
+// the regular Go heap: the PXF lexer string + the hook closure's
+// `value` parameter are immutable Go strings that live until the
+// next GC after the lexer advances past the token; closing that
+// requires a byte-slice hook variant or a Secret-aware lexer path,
+// tracked as future protowire-go work. Block-form hint/fingerprint
+// metadata still flows through the proto message and is folded
+// onto the Map entry by parse.MoveInto.
 func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, dec sops.Decrypter, msg proto.Message, secrets *secret.Map) (*pxf.Result, error) {
 	rc, err := src.Open(ctx, ref.Path)
 	if err != nil {

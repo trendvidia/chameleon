@@ -88,10 +88,19 @@ func FromLockedBytes(buf *memguard.LockedBuffer, hint, fingerprint string) *Secr
 	}
 }
 
-// FromString is a convenience constructor for tests and programmatic
-// construction. Avoid in production code paths that handle real
-// secrets: the input string lives in the Go heap as an immutable value
-// and cannot be wiped.
+// FromString constructs a Secret from a Go string. NewBufferFromBytes
+// copies the bytes into mlocked memory and wipes the transient
+// []byte, but the input string itself is immutable and lives on the
+// regular Go heap until GC reclaims it. The chameleon resolver uses
+// FromString from its OnSecretField hook closure, accepting this
+// transient heap window because the alternative — passing a
+// byte-slice through the protowire-go hook — requires deeper codec
+// changes that haven't shipped. Tests and programmatic construction
+// share the same trade-off.
+//
+// Callers building Secrets from already-mlocked bytes should reach
+// for [FromLockedBytes] instead — that path is the only one that
+// never touches the regular Go heap.
 func FromString(s, hint, fingerprint string) *Secret {
 	buf := memguard.NewBufferFromBytes([]byte(s))
 	return FromLockedBytes(buf, hint, fingerprint)
