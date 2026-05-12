@@ -49,13 +49,34 @@ const (
 	// FormatAuto defers to sops's own auto-detection. Useful when
 	// neither the path nor an explicit format is known.
 	FormatAuto Format = iota
+
+	// FormatBinary is sops's opaque-byte-string store. The plaintext
+	// is treated as a single value; layers using this format produce
+	// raw bytes, not field-structured PXF.
 	FormatBinary
+
+	// FormatDotenv is the `KEY=VALUE` newline-delimited store. Layer
+	// content is a flat key-value list; sops encrypts the values.
 	FormatDotenv
+
+	// FormatINI is the classic `[section]\nkey=value` store. Sops
+	// encrypts string values; sections and keys stay clear.
 	FormatINI
+
+	// FormatJSON is sops's JSON store. Layer content is a JSON
+	// object; sops encrypts leaf string values and any field
+	// matching the encrypted_regex / encrypted_suffix rules.
 	FormatJSON
+
+	// FormatYAML is sops's YAML store. Same encryption semantics as
+	// FormatJSON; comment-preserving round-trip via sops's YAML
+	// codec.
 	FormatYAML
+
 	// FormatProtowire is the PXF text format (recognized by sops as
-	// "protowire" or "pxf").
+	// "protowire" or "pxf"). The canonical store for chameleon
+	// layers; provides field-typed encryption with PXF's
+	// presence-aware grammar.
 	FormatProtowire
 )
 
