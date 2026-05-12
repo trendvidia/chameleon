@@ -18,9 +18,20 @@
 //	    authenticates them). Pass --strict to fail on layers without
 //	    a hash.
 //
+//	chameleon migrate --chain=chain.pxf --transform=add-field ...
+//	    Walk a chain spec and apply a field-level transform
+//	    (add-field / delete-field / rename-field) to every layer.
+//
 //	chameleon hash <file>
 //	    Print the canonical body SHA-256 of a single layer file —
 //	    the value to paste into @header.content_sha256.
+//
+//	chameleon version
+//	    Print chameleon's module version, Go toolchain, and commit.
+//
+//	chameleon completion <bash|zsh|fish>
+//	    Print a shell completion script. Source the output in your
+//	    shell init file for subcommand + flag completion.
 package main
 
 import (
@@ -54,6 +65,16 @@ func main() {
 			fmt.Fprintln(os.Stderr, "chameleon hash:", err)
 			os.Exit(1)
 		}
+	case "version", "--version":
+		if err := versionCmd(os.Stdout, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon version:", err)
+			os.Exit(1)
+		}
+	case "completion":
+		if err := completionCmd(os.Stdout, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon completion:", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		usage(os.Stdout)
 	default:
@@ -70,11 +91,13 @@ Usage:
     chameleon <subcommand> [flags]
 
 Subcommands:
-    explain    Resolve a config and print per-field provenance.
-    verify     Check @header.content_sha256 of every layer in a chain.
-    migrate    Bulk-edit layer files in a chain spec (add/rename/delete fields).
-    hash       Print the canonical body SHA-256 of a single layer file.
-    help       Show this message.
+    explain     Resolve a config and print per-field provenance.
+    verify      Check @header.content_sha256 of every layer in a chain.
+    migrate     Bulk-edit layer files in a chain spec (add/rename/delete fields).
+    hash        Print the canonical body SHA-256 of a single layer file.
+    version     Print chameleon version, Go toolchain, and commit.
+    completion  Print shell completion script (bash|zsh|fish).
+    help        Show this message.
 
 Run 'chameleon <subcommand> --help' for subcommand flags.`)
 }

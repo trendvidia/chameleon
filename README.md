@@ -263,6 +263,8 @@ Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/ch
 - `chameleon verify` — check `@header.content_sha256` on every layer the chain resolves to. Encrypted layers are skipped (sops already authenticates them).
 - `chameleon migrate` — bulk-edit layer files in a chain spec. Decrypts encrypted layers, applies an AST-level transform (add-field / delete-field / rename-field), re-encrypts preserving the original key set.
 - `chameleon hash` — print the canonical body SHA-256 of a single layer file. Use this value as the `@header.content_sha256` on the layer.
+- `chameleon version` — print the installed chameleon version, Go toolchain, and commit (from VCS-aware module info).
+- `chameleon completion <bash|zsh|fish>` — print a shell completion script. Source the output in your shell init file for subcommand + flag completion (e.g. `chameleon completion fish > ~/.config/fish/completions/chameleon.fish`).
 
 Example: `explain` against a checked-in chain spec:
 
