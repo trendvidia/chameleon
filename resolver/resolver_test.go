@@ -776,7 +776,7 @@ feature_flags = ["fast_path", "new_dashboard"]
 	errs := make([]error, n)
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		go func(i int) {
 			defer wg.Done()
 			// Alternate environments so the resolver exercises both
@@ -883,7 +883,7 @@ db_password = "shh"
 	// would re-enter the destroy closure and double-Destroy the
 	// memguard Enclaves backing the Secrets — memguard panics on that.
 	var wg sync.WaitGroup
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

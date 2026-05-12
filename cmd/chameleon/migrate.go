@@ -204,7 +204,9 @@ func migrateOne(ctx context.Context, w io.Writer, ref chain.LayerRef, layersDir 
 	} else {
 		newBytes = newPlain
 	}
-	if err := os.WriteFile(full, newBytes, 0o644); err != nil {
+	// 0o644 is conventional for layer files; encrypted bytes are
+	// ciphertext (sops-protected), plaintext layers are not secret.
+	if err := os.WriteFile(full, newBytes, 0o644); err != nil { //nolint:gosec // see comment above
 		return migrateSkipped, fmt.Errorf("write %q: %w", full, err)
 	}
 	fmt.Fprintf(w, "CHANGED\t%s\t(%s)\n", tag, t.describe())

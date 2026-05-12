@@ -123,12 +123,12 @@ func TestMap_RangeEarlyExit(t *testing.T) {
 
 func TestMap_ConcurrentDestroyIsSafe(t *testing.T) {
 	m := secret.NewMap()
-	for i := 0; i < 32; i++ {
+	for i := range 32 {
 		m.Set(string(rune('a'+i)), secret.FromString("x", "", ""))
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 16; i++ {
+	for range 16 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -142,16 +142,16 @@ func TestMap_ConcurrentDestroyIsSafe(t *testing.T) {
 
 func TestMap_ConcurrentReadDuringDestroy(t *testing.T) {
 	m := secret.NewMap()
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		m.Set(string(rune('a'+i%26))+string(rune('A'+i%26)), secret.FromString("x", "", ""))
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 100; j++ {
+			for range 100 {
 				_ = m.Get("aA")
 				_ = m.Has("bB")
 				_ = m.Len()
@@ -175,12 +175,11 @@ func TestMap_ConcurrentSetAndDestroy(t *testing.T) {
 	m := secret.NewMap()
 
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		i := i
+	for i := range 8 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < 50; j++ {
+			for j := range 50 {
 				m.Set(string(rune('a'+i))+string(rune('0'+j%10)),
 					secret.FromString("v", "", ""))
 			}

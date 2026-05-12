@@ -78,7 +78,8 @@ message ContextKey {
 // is required. This is the convenience entry point for callers that
 // don't already have a parsed spec.
 func LoadSpec(path string) (proto.Message, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is a documented API parameter
+
 	if err != nil {
 		return nil, fmt.Errorf("chain: read %s: %w", path, err)
 	}

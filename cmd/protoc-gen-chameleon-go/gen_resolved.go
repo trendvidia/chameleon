@@ -750,7 +750,7 @@ func goTypeForField(gf *protogen.GeneratedFile, f *protogen.Field) string {
 		keyKind := f.Desc.MapKey().Kind()
 		keyGo := goPrimitiveType(keyKind)
 		valFd := f.Desc.MapValue()
-		valGo := ""
+		var valGo string
 		switch valFd.Kind() {
 		case protoreflect.MessageKind:
 			vm := mapValueMessage(f)

@@ -31,7 +31,7 @@ func chainProtoSource(n int) string {
 package depth_test.v1;
 message Chain {
 `)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		fmt.Fprintf(&b, "  string f%d = %d;\n", i, i+1)
 	}
 	b.WriteString("}\n")
@@ -62,7 +62,7 @@ func compileChain(t *testing.T, n int) protoreflect.MessageDescriptor {
 // full chain.
 func buildLinearChain(n int) string {
 	var b strings.Builder
-	for i := 0; i < n-1; i++ {
+	for i := range n - 1 {
 		fmt.Fprintf(&b, "f%d = \"${f%d}\"\n", i, i+1)
 	}
 	fmt.Fprintf(&b, "f%d = \"leaf\"\n", n-1)

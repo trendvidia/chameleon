@@ -21,7 +21,8 @@ import (
 // process stays standing.
 //
 // Run with:
-//   go test ./interpolate/ -fuzz=FuzzApply -fuzztime=30s
+//
+//	go test ./interpolate/ -fuzz=FuzzApply -fuzztime=30s
 //
 // The seed corpus hits the categories the existing tests already
 // cover plus a few cute pathologies (nested ${}, lone $, lone {,
@@ -35,17 +36,17 @@ func FuzzApply(f *testing.F) {
 		"${base_url}",
 		"prefix-${api_url}-suffix",
 		"${a}.${b}.${c}",
-		"${api_url}",                  // depends on the seed for api_url
-		"${nonexistent}",              // unknown ref
-		"${}",                         // empty path
-		"unterminated ${",             // malformed
-		"$",                           // lone dollar
-		"$$",                          // double dollar
-		"${.}",                        // empty segments
-		"${a.b.c.d.e.f.g}",            // deep path
-		"${api_url with spaces}",      // unusual identifier
-		"${api​url}",             // zero-width joiner
-		"\xff\xfe\xfd",                // invalid UTF-8 bytes
+		"${api_url}",             // depends on the seed for api_url
+		"${nonexistent}",         // unknown ref
+		"${}",                    // empty path
+		"unterminated ${",        // malformed
+		"$",                      // lone dollar
+		"$$",                     // double dollar
+		"${.}",                   // empty segments
+		"${a.b.c.d.e.f.g}",       // deep path
+		"${api_url with spaces}", // unusual identifier
+		"${api\u200burl}",        // zero-width joiner inside identifier
+		"\xff\xfe\xfd",           // invalid UTF-8 bytes
 		"${" + string([]byte{0}) + "}",
 	}
 	for _, s := range seeds {

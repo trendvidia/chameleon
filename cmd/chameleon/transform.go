@@ -39,7 +39,7 @@ func resolvePath(root *[]pxf.Entry, segs []string) (parent *[]pxf.Entry, idx int
 		return nil, -1, errors.New("empty path")
 	}
 	cur := root
-	for i := 0; i < len(segs)-1; i++ {
+	for i := range len(segs) - 1 {
 		seg := segs[i]
 		var found *pxf.Block
 		for _, e := range *cur {
@@ -112,7 +112,7 @@ func (t *deleteField) apply(doc *pxf.Document) (bool, error) {
 		// Treat that as an idempotent skip rather than a hard error so
 		// `chameleon migrate --transform=delete-field` can be run
 		// against a fleet of layers without per-layer guards.
-		return false, nil
+		return false, nil //nolint:nilerr // intentional idempotent skip on missing-parent path
 	}
 	if idx < 0 {
 		return false, nil
@@ -142,7 +142,7 @@ func (t *renameField) apply(doc *pxf.Document) (bool, error) {
 	if len(fromSegs) != len(toSegs) {
 		return false, fmt.Errorf("rename-field: from and to must have the same depth (%q vs %q)", t.from, t.to)
 	}
-	for i := 0; i < len(fromSegs)-1; i++ {
+	for i := range len(fromSegs) - 1 {
 		if fromSegs[i] != toSegs[i] {
 			return false, fmt.Errorf("rename-field: cross-container rename not supported (%q vs %q)", t.from, t.to)
 		}
@@ -150,7 +150,7 @@ func (t *renameField) apply(doc *pxf.Document) (bool, error) {
 	parent, idx, err := resolvePath(&doc.Entries, fromSegs)
 	if err != nil {
 		// Source parent missing → source field absent → idempotent skip.
-		return false, nil
+		return false, nil //nolint:nilerr // intentional idempotent skip on missing-parent path
 	}
 	if idx < 0 {
 		return false, nil
