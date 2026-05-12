@@ -414,7 +414,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 - **Sops API has no `ctx.Context` hook** — slow KMS round-trips can't be interrupted mid-decrypt. The chameleon Decrypter checks `ctx.Err()` before invoking sops but cannot cancel in-flight calls.
 
-- **Forked `protobuf-go`** — `protowire-go` `replace`s `google.golang.org/protobuf` with `trendvidia/protobuf-go` for the `dynamicpb` fast path. Transitive consumers of chameleon inherit that. See protowire-go's README for the rationale.
+- **Forked dependencies require explicit `replace` directives in consumer `go.mod`.** Chameleon depends on two upstream-incompatible forks (`trendvidia/sops/v3`, `trendvidia/protobuf-go`); Go's `replace` directive is non-transitive so the chameleon repo's `replace` does NOT propagate to consumers. See **Compatibility → Replace directives** above for the exact lines to copy into your own `go.mod`.
 
 ## Compatibility
 
@@ -422,8 +422,31 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 |---|---|
 | Go | 1.26+ |
 | `github.com/trendvidia/protowire-go` | `>= v0.77.0` (block-form `OnSecretField` routing; v0.76.0+ covers scalar shorthand) |
-| `github.com/getsops/sops/v3` | `>= v3.13.0` |
+| `github.com/getsops/sops/v3` | `>= v3.13.0` upstream surface, **consumed via `github.com/trendvidia/sops/v3 v3.13.2` fork** (see below) |
 | `github.com/awnumar/memguard` | `>= v0.22.5` |
+
+### Replace directives — required in your `go.mod`
+
+Go module `replace` directives **only apply to the main module's build** — they do **NOT** propagate from a dependency's `go.mod` to your binary's resolution. Chameleon depends on two forks whose `replace` directives you must copy into your own `go.mod` for the build to succeed against the function set chameleon calls:
+
+```go
+// In your project's go.mod:
+replace (
+    github.com/getsops/sops/v3       => github.com/trendvidia/sops/v3 v3.13.2
+    google.golang.org/protobuf       => github.com/trendvidia/protobuf-go v1.36.12
+)
+```
+
+If you omit these, `go build` fails — chameleon calls into functions that don't exist on the upstream packages.
+
+| Replace | Required by | Why the fork | Tracking upstream |
+|---|---|---|---|
+| **`github.com/trendvidia/sops/v3 v3.13.2`** | chameleon's `sops` wrapper, `chameleon migrate` | `decrypt.DataIntoWriterContext`, the `encrypt` package, end-to-end `context.Context` across AWS / GCP / Azure / Vault. PXF store + comment directives. | upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) for the ctx-threading work; rest are smaller standalone PRs. |
+| **`github.com/trendvidia/protobuf-go v1.36.12`** | protowire-go's `dynamicpb` fast path | unexported `SetUnsafe` / `AppendUnsafe` / map `SetUnsafe` on `*dynamicpb.Message`. Saves the per-call typecheck box-alloc on the PXF unmarshal hot path. | upstream protobuf-go has not yet accepted; the fork tracks the upstream `v1.36` line. |
+
+Both forks keep their upstream module paths, so any code that imports the upstream namespace compiles against the fork unchanged. The fork repos publish CHANGELOGs against the upstream tag they ride on.
+
+When upstream eventually merges the relevant parts, drop the matching `replace` from your `go.mod` and bump the chameleon minimum to the merged upstream tag.
 
 ## Test status
 
