@@ -44,6 +44,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "chameleon verify:", err)
 			os.Exit(1)
 		}
+	case "migrate":
+		if err := migrateCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon migrate:", err)
+			os.Exit(1)
+		}
 	case "hash":
 		if err := hashCmd(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon hash:", err)
@@ -67,6 +72,7 @@ Usage:
 Subcommands:
     explain    Resolve a config and print per-field provenance.
     verify     Check @header.content_sha256 of every layer in a chain.
+    migrate    Bulk-edit layer files in a chain spec (add/rename/delete fields).
     hash       Print the canonical body SHA-256 of a single layer file.
     help       Show this message.
 
