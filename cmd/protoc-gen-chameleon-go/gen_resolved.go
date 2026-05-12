@@ -760,12 +760,18 @@ func goTypeForField(gf *protogen.GeneratedFile, f *protogen.Field) string {
 				valGo = "*" + string(valFd.Message().Name())
 			}
 		case protoreflect.EnumKind:
-			// map<*, enum> is a rare shape (proto doesn't even
-			// support it everywhere). Render as int32 — the closest
-			// well-typed default; if a real use case lands, swap
-			// for the enum's GoIdent via a similar protogen lookup
-			// to mapValueMessage.
-			valGo = "int32"
+			// Look up the enum's *protogen.Enum via the same
+			// entry-message trick mapValueMessage uses for messages,
+			// then render the qualified Go ident so cross-package
+			// imports are protogen-managed. Fallback to int32 (the
+			// underlying storage type) if the lookup fails — shouldn't
+			// happen for a well-formed map<*, enum> but keeps the
+			// renderer total.
+			if ve := mapValueEnum(f); ve != nil {
+				valGo = gf.QualifiedGoIdent(ve.GoIdent)
+			} else {
+				valGo = "int32"
+			}
 		default:
 			valGo = goPrimitiveType(valFd.Kind())
 		}

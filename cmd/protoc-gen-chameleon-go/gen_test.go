@@ -56,6 +56,7 @@ message AppConfig {
   map<uint32, Endpoint> sites_by_port = 25;    // FormatUint(uint64(v), 10) [wrapper chain]
   map<uint64, Endpoint> sites_by_uid = 26;     // FormatUint(v, 10)         [wrapper chain]
   map<bool, Endpoint> sites_by_flag = 27;      // FormatBool(v)             [wrapper chain]
+  map<string, Mode> mode_by_name = 28;         // map<*, enum> — exercises mapValueEnum lookup
 
   // Recursion cases — the original sidecar plugin skipped these.
   repeated Endpoint replicas = 7;             // repeated user-msg with inner Secret
