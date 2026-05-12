@@ -35,22 +35,22 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "explain":
-		if err := explainCmd(os.Args[2:]); err != nil {
+		if err := explainCmd(os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon explain:", err)
 			os.Exit(1)
 		}
 	case "verify":
-		if err := verifyCmd(os.Args[2:]); err != nil {
+		if err := verifyCmd(os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon verify:", err)
 			os.Exit(1)
 		}
 	case "migrate":
-		if err := migrateCmd(os.Args[2:]); err != nil {
+		if err := migrateCmd(os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon migrate:", err)
 			os.Exit(1)
 		}
 	case "hash":
-		if err := hashCmd(os.Args[2:]); err != nil {
+		if err := hashCmd(os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon hash:", err)
 			os.Exit(1)
 		}

@@ -19,7 +19,7 @@ import (
 	chsops "github.com/trendvidia/chameleon/sops"
 )
 
-func migrateCmd(args []string) error {
+func migrateCmd(out io.Writer, args []string) error {
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	var (
 		chainPath = fs.String("chain", "", "path to chain.pxf (required)")
@@ -96,7 +96,7 @@ Flags:`)
 		if *only != "" && ref.EntryID != *only {
 			continue
 		}
-		status, err := migrateOne(context.Background(), os.Stdout, ref, *layersDir, t, *dryRun, dec)
+		status, err := migrateOne(context.Background(), out, ref, *layersDir, t, *dryRun, dec)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR\t%s\t%s\t%v\n", ref.EntryID, ref.Path, err)
 			return err
@@ -114,7 +114,7 @@ Flags:`)
 	if *dryRun {
 		verb = "would migrate"
 	}
-	fmt.Fprintf(os.Stdout, "summary: %s %d layer(s); unchanged %d; skipped %d\n",
+	fmt.Fprintf(out, "summary: %s %d layer(s); unchanged %d; skipped %d\n",
 		verb, changed, unchanged, skipped)
 	return nil
 }

@@ -156,24 +156,11 @@ func TestHashCmd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// hashCmd writes to stdout via fmt.Println — capture by swapping
-	// os.Stdout for the duration.
-	orig := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	err := hashCmd([]string{path})
-	w.Close()
-	os.Stdout = orig
-
-	if err != nil {
+	var out bytes.Buffer
+	if err := hashCmd(&out, []string{path}); err != nil {
 		t.Fatalf("hashCmd: %v", err)
 	}
-	out, _ := os.ReadFile("/dev/stdin") // not actually used; read from pipe
-	_ = out
-	buf := make([]byte, 1024)
-	n, _ := r.Read(buf)
-	got := strings.TrimSpace(string(buf[:n]))
+	got := strings.TrimSpace(out.String())
 	want := sha256hex([]byte(body))
 	if got != want {
 		t.Errorf("hash = %q, want %q", got, want)
