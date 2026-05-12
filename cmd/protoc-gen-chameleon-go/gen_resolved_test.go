@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/compiler/protogen"
 	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/pluginpb"
 )
@@ -404,6 +405,157 @@ func TestResolved_MapKeyRuntimeExpr_StringKind(t *testing.T) {
 	// check that the schema in sample.proto uses map<string, Endpoint>.
 	out := runPluginWithResolved(t)
 	assert.Contains(t, out, "Get(key string)")
+}
+
+// --- Phase 2b PR3: field-by-field getters for non-Secret fields ---
+
+// TestResolved_FieldGetter_ScalarString — top-level scalar string
+// field gets a thin delegating getter. Body uses the nil-safe GetX
+// accessor so consumers don't panic on absent fields.
+func TestResolved_FieldGetter_ScalarString(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) BaseUrl() string {")
+	assert.Contains(t, out, "return r.m.GetBaseUrl()")
+}
+
+// TestResolved_FieldGetter_ScalarPrimitives — int32, bool, float64,
+// bytes all render to the canonical Go types.
+func TestResolved_FieldGetter_ScalarPrimitives(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) MaxReplicas() int32 {")
+	assert.Contains(t, out, "func (r *AppConfigResolved) Enabled() bool {")
+	assert.Contains(t, out, "func (r *AppConfigResolved) RateLimitPerSec() float64 {")
+	assert.Contains(t, out, "func (r *AppConfigResolved) Signature() []byte {")
+}
+
+// TestResolved_FieldGetter_Enum — enum field returns the enum type
+// (qualified ident managed by protogen). For the inline fixture's
+// AppConfig_Mode, the GoIdent is `AppConfig_Mode` in the same
+// package, so the rendered return type is just `AppConfig_Mode`.
+func TestResolved_FieldGetter_Enum(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) Mode() AppConfig_Mode {")
+	assert.Contains(t, out, "return r.m.GetMode()")
+}
+
+// TestResolved_FieldGetter_ScalarMessage_NoSecrets — scalar message
+// field whose target has NO Secrets gets a getter that returns the
+// raw *MsgType. The chain-method emit deliberately skips these
+// (nothing to chain into).
+func TestResolved_FieldGetter_ScalarMessage_NoSecrets(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) Metadata() *Metadata {")
+	assert.Contains(t, out, "return r.m.GetMetadata()")
+	// And the chain emit must NOT have produced a wrapper for this
+	// field — Metadata has no Secrets.
+	assert.NotContains(t, out, "type AppConfigMetadataResolved struct {")
+}
+
+// TestResolved_FieldGetter_RepeatedScalar — repeated string renders
+// as []string.
+func TestResolved_FieldGetter_RepeatedScalar(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) FeatureFlags() []string {")
+	assert.Contains(t, out, "return r.m.GetFeatureFlags()")
+}
+
+// TestResolved_FieldGetter_RepeatedMessage_NoSecrets — repeated
+// Metadata renders as []*Metadata. No chain helper emitted.
+func TestResolved_FieldGetter_RepeatedMessage_NoSecrets(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) History() []*Metadata {")
+	assert.NotContains(t, out, "type AppConfigHistoryResolved struct {")
+}
+
+// TestResolved_FieldGetter_MapScalar — map<string, string> renders
+// as map[string]string. No chain helper.
+func TestResolved_FieldGetter_MapScalar(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) Labels() map[string]string {")
+}
+
+// TestResolved_FieldGetter_MapMessage_NoSecrets — map<string,
+// Metadata> renders as map[string]*Metadata. No chain helper.
+func TestResolved_FieldGetter_MapMessage_NoSecrets(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *AppConfigResolved) Annotations() map[string]*Metadata {")
+	assert.NotContains(t, out, "type AppConfigAnnotationsResolved struct {")
+}
+
+// TestResolved_FieldGetter_NotEmittedForSecretLeaves — pxf.Secret in
+// any shape (scalar / repeated / map<*, Secret>) is covered by the
+// typed Secret accessor methods. The generic field-getter emit must
+// skip them to avoid exposing *pxfv1.Secret with .Value.
+func TestResolved_FieldGetter_NotEmittedForSecretLeaves(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// Scalar pxf.Secret — DbPassword exists as a typed method
+	// returning *secret.Secret. There must NOT be a duplicate
+	// getter returning *pxfv1.Secret.
+	idx := strings.Index(out, "func (r *AppConfigResolved) DbPassword() *")
+	require.Greater(t, idx, 0)
+	tail := out[idx:]
+	endLine := strings.IndexByte(tail, '\n')
+	require.Greater(t, endLine, 0)
+	header := tail[:endLine]
+	// The typed Secret accessor returns *secret.Secret; the
+	// hypothetical wrong getter would return *pxfv1.Secret.
+	assert.NotContains(t, header, "pxfv1")
+	// Repeated/map Secret getters must not exist as field-getter
+	// shape (zero-arg parameterless).
+	assert.NotContains(t, out, "func (r *AppConfigResolved) BackupKeys() []*")
+	assert.NotContains(t, out, "func (r *AppConfigResolved) TenantKeys() map[")
+	assert.NotContains(t, out, "func (r *AppConfigResolved) PortKeys() map[")
+}
+
+// TestResolved_FieldGetter_NotEmittedForWrapperBearingFields —
+// scalar / repeated / map message fields where the target IS
+// wrapper-bearing are covered by the chain-method emit. The
+// field-getter emit must skip them so consumers always reach for
+// the typed chain.
+func TestResolved_FieldGetter_NotEmittedForWrapperBearingFields(t *testing.T) {
+	out := runPluginWithResolved(t)
+	// Primary is *Endpoint (wrapper-bearing) — chain method
+	// `Primary() *EndpointResolved` exists, the generic getter
+	// `Primary() *Endpoint` must not.
+	assert.NotContains(t, out, "func (r *AppConfigResolved) Primary() *Endpoint {")
+	// Replicas / Sites / PrimaryCluster similarly covered by chain.
+	assert.NotContains(t, out, "func (r *AppConfigResolved) Replicas() []*Endpoint {")
+	assert.NotContains(t, out, "func (r *AppConfigResolved) Sites() map[string]*Endpoint {")
+	assert.NotContains(t, out, "func (r *AppConfigResolved) PrimaryCluster() *Cluster {")
+}
+
+// TestResolved_FieldGetter_OnNestedWrapper — getter emit runs on
+// every Resolved wrapper, not just the top-level. Endpoint has a
+// non-Secret `url` field; EndpointResolved should expose Url() string.
+func TestResolved_FieldGetter_OnNestedWrapper(t *testing.T) {
+	out := runPluginWithResolved(t)
+	assert.Contains(t, out, "func (r *EndpointResolved) Url() string {")
+	assert.Contains(t, out, "return r.m.GetUrl()")
+}
+
+// TestGoPrimitiveType covers the kind→Go-type mapping. The helper
+// is pure; testing it directly catches regressions when adding new
+// kinds (e.g. if proto editions introduces a new primitive).
+func TestGoPrimitiveType(t *testing.T) {
+	cases := []struct {
+		kind protoreflect.Kind
+		want string
+	}{
+		{protoreflect.StringKind, "string"},
+		{protoreflect.BoolKind, "bool"},
+		{protoreflect.Int32Kind, "int32"},
+		{protoreflect.Int64Kind, "int64"},
+		{protoreflect.Uint32Kind, "uint32"},
+		{protoreflect.Uint64Kind, "uint64"},
+		{protoreflect.FloatKind, "float32"},
+		{protoreflect.DoubleKind, "float64"},
+		{protoreflect.BytesKind, "[]byte"},
+		{protoreflect.Sint32Kind, "int32"},
+		{protoreflect.Sfixed64Kind, "int64"},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, goPrimitiveType(c.kind))
+	}
 }
 
 // TestResolved_GeneratedCodeShape — assert the wrapper block sits

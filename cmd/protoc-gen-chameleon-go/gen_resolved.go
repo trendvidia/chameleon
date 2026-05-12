@@ -156,6 +156,11 @@ func emitOneResolvedWrapper(gf *protogen.GeneratedFile, root *protogen.Message, 
 	// runtime prefix. Both shapes coexist with the existing flat
 	// top-level methods for back-compat.
 	emitChainMethods(gf, typeName, root, strconvPkg)
+
+	// Phase 2b PR3 — field-by-field getters for every non-Secret,
+	// non-chain-bearing field on this wrapper's message. Lets
+	// consumers drop Underlying() for routine reads.
+	emitFieldGetters(gf, typeName, root)
 }
 
 // emitWrapperMethod writes one accessor method on the wrapper for
@@ -532,6 +537,169 @@ func mapKeyRuntimeExpr(gf *protogen.GeneratedFile, kind protoreflect.Kind, param
 	default:
 		return gf.QualifiedGoIdent(strconvPkg.Ident("Itoa")) + "(" + paramName + ")"
 	}
+}
+
+// emitFieldGetters writes one delegating getter per field on parent
+// where the field is neither a pxf.Secret leaf (already covered by
+// the flat-method emit) nor a wrapper-bearing message container
+// (already covered by the chain-method emit). Lets consumers reach
+// scalar primitives, bytes, enums, non-Secret messages, and
+// non-Secret message containers without touching Underlying().
+//
+//	func (r *AppConfigResolved) BaseUrl() string { return r.m.GetBaseUrl() }
+//	func (r *AppConfigResolved) MaxReplicas() int32 { return r.m.GetMaxReplicas() }
+//	func (r *AppConfigResolved) Metadata() *Metadata { return r.m.GetMetadata() }
+//	func (r *AppConfigResolved) Labels() map[string]string { return r.m.GetLabels() }
+//
+// The plugin defers to protoc-gen-go's nil-safe GetX accessors so
+// the wrapper never panics on absent fields, matching the
+// chameleon-wide "absent never panics" posture.
+func emitFieldGetters(gf *protogen.GeneratedFile, parentTypeName string, parent *protogen.Message) {
+	for _, f := range parent.Fields {
+		if isSecretField(f) || isWrapperBearingField(f) {
+			continue
+		}
+		emitOneFieldGetter(gf, parentTypeName, f)
+		gf.P()
+	}
+}
+
+// isSecretField reports whether f's terminal type is pxf.Secret in
+// any shape (scalar / repeated / map<*, Secret>). Those are leaves
+// covered by the typed Secret-accessor methods (DbPassword,
+// BackupKeysAt, TenantKeys) — emitting a generic getter for them
+// would be a footgun (return *pxfv1.Secret with .Value exposed
+// again).
+func isSecretField(f *protogen.Field) bool {
+	switch {
+	case f.Desc.IsMap():
+		vfd := f.Desc.MapValue()
+		return vfd.Kind() == protoreflect.MessageKind && isSecret(vfd.Message())
+	case f.Desc.IsList():
+		return f.Desc.Kind() == protoreflect.MessageKind && isSecret(f.Desc.Message())
+	case f.Desc.Kind() == protoreflect.MessageKind:
+		return isSecret(f.Desc.Message())
+	}
+	return false
+}
+
+// isWrapperBearingField reports whether f targets a user message
+// (scalar / repeated / map) that contains a Secret transitively.
+// Those fields are covered by the chain-method emit
+// (emitChainMethods): scalar → Primary() *EndpointResolved;
+// repeated → Replicas() *AppConfigReplicasResolved with At(i);
+// map → Sites() *AppConfigSitesResolved with Get(key).
+func isWrapperBearingField(f *protogen.Field) bool {
+	switch {
+	case isScalarMessageField(f):
+		return messageContainsSecret(f.Message)
+	case isRepeatedUserMessageField(f):
+		return messageContainsSecret(f.Message)
+	case isMapUserMessageField(f):
+		return messageContainsSecret(mapValueMessage(f))
+	}
+	return false
+}
+
+// emitOneFieldGetter writes a single delegating getter. The method
+// name is the protoc-gen-go GoName (already PascalCase) and the body
+// is `return r.m.Get<GoName>()` which is nil-safe on the proto type.
+func emitOneFieldGetter(gf *protogen.GeneratedFile, parentTypeName string, f *protogen.Field) {
+	goType := goTypeForField(gf, f)
+	protoName := strconv.Quote(string(f.Desc.Name()))
+	gf.P("// ", f.GoName, " returns the resolved ", protoName, " field.")
+	gf.P("// Nil-safe via the proto-generated Get", f.GoName, " accessor.")
+	gf.P("func (r *", parentTypeName, ") ", f.GoName, "() ", goType, " {")
+	gf.P("\treturn r.m.Get", f.GoName, "()")
+	gf.P("}")
+}
+
+// goTypeForField renders the Go type the field's getter should
+// return. Mirrors protoc-gen-go's emit shape so the wrapper's
+// getter signatures match what consumers expect from a vanilla
+// proto type. For map / list fields, the element/value type is
+// recursively rendered with the same rules.
+func goTypeForField(gf *protogen.GeneratedFile, f *protogen.Field) string {
+	switch {
+	case f.Desc.IsMap():
+		keyKind := f.Desc.MapKey().Kind()
+		keyGo := goPrimitiveType(keyKind)
+		valFd := f.Desc.MapValue()
+		valGo := ""
+		switch valFd.Kind() {
+		case protoreflect.MessageKind:
+			vm := mapValueMessage(f)
+			if vm != nil {
+				valGo = "*" + gf.QualifiedGoIdent(vm.GoIdent)
+			} else {
+				valGo = "*" + string(valFd.Message().Name())
+			}
+		case protoreflect.EnumKind:
+			// map<*, enum> is a rare shape (proto doesn't even
+			// support it everywhere). Render as int32 — the closest
+			// well-typed default; if a real use case lands, swap
+			// for the enum's GoIdent via a similar protogen lookup
+			// to mapValueMessage.
+			valGo = "int32"
+		default:
+			valGo = goPrimitiveType(valFd.Kind())
+		}
+		return "map[" + keyGo + "]" + valGo
+
+	case f.Desc.IsList():
+		return "[]" + scalarOrUserGoType(gf, f.Desc, f.Message, f.Enum)
+
+	default:
+		return scalarOrUserGoType(gf, f.Desc, f.Message, f.Enum)
+	}
+}
+
+// scalarOrUserGoType renders a single Go type for one field-element
+// kind. Message kind returns "*FQName"; enum kind returns the
+// enum's FQName; primitives return the canonical Go type name.
+func scalarOrUserGoType(gf *protogen.GeneratedFile, fd protoreflect.FieldDescriptor, msg *protogen.Message, enum *protogen.Enum) string {
+	switch fd.Kind() {
+	case protoreflect.MessageKind:
+		if msg != nil {
+			return "*" + gf.QualifiedGoIdent(msg.GoIdent)
+		}
+		return "*" + string(fd.Message().Name())
+	case protoreflect.EnumKind:
+		if enum != nil {
+			return gf.QualifiedGoIdent(enum.GoIdent)
+		}
+		return "int32"
+	default:
+		return goPrimitiveType(fd.Kind())
+	}
+}
+
+// goPrimitiveType returns the canonical Go type name for a
+// protobuf primitive kind. Bytes → []byte; everything else maps
+// to a Go scalar. Caller is responsible for not asking about
+// Message/Enum/Group kinds.
+func goPrimitiveType(kind protoreflect.Kind) string {
+	switch kind {
+	case protoreflect.StringKind:
+		return "string"
+	case protoreflect.BoolKind:
+		return "bool"
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return "int32"
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return "int64"
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		return "uint32"
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return "uint64"
+	case protoreflect.FloatKind:
+		return "float32"
+	case protoreflect.DoubleKind:
+		return "float64"
+	case protoreflect.BytesKind:
+		return "[]byte"
+	}
+	return "interface{}"
 }
 
 // wrapperMethodName builds the method name from a path.
