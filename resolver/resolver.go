@@ -74,6 +74,20 @@ var ErrNoDecrypter = errors.New("resolver: encrypted layer without Decrypter")
 // required but the source returned ErrNotFound.
 var ErrRequiredLayerMissing = errors.New("resolver: required layer missing")
 
+// ErrLayerTooLarge is returned when a layer's raw bytes (before
+// decrypt) exceed the configured cap. See [WithMaxLayerBytes].
+// Diagnostic is wrapped with the layer id, path, and the active
+// limit so consumers can act on the failure.
+var ErrLayerTooLarge = errors.New("resolver: layer exceeds size limit")
+
+// defaultMaxLayerBytes caps each layer's raw bytes when
+// [WithMaxLayerBytes] isn't passed. Defense against pathological
+// Sources that return huge files or hang on a slow reader without
+// a deadline. 10 MiB covers everything observed in the wild by
+// orders of magnitude; raise it explicitly if your authoring
+// pipeline genuinely produces larger layers.
+const defaultMaxLayerBytes int64 = 10 << 20 // 10 MiB
+
 // Resolver materializes typed config snapshots. T is the consumer's
 // config message; pass it as a pointer type — Resolver[*AppConfig], not
 // Resolver[AppConfig] — because proto.Message is satisfied by pointer
@@ -88,6 +102,7 @@ type Resolver[T proto.Message] struct {
 	dec               sops.Decrypter
 	trace             bool
 	strictMetadata    bool
+	maxLayerBytes     int64
 	metrics           *instruments
 	secretInstruments *secret.Instruments
 }
@@ -100,6 +115,7 @@ type config struct {
 	dec            sops.Decrypter
 	trace          bool
 	strictMetadata bool
+	maxLayerBytes  int64
 	mp             metric.MeterProvider
 }
 
@@ -169,6 +185,24 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 	return func(c *config) { c.mp = mp }
 }
 
+// WithMaxLayerBytes caps the size of each layer's raw bytes read
+// from a Source. Defense against pathological Sources that return
+// huge files or hang on a slow reader without a deadline. The cap
+// applies to the bytes BEFORE decrypt; ciphertext size is
+// approximately plaintext size, so a single cap covers both
+// encrypted and plaintext layers.
+//
+// The default (with this option unset) is 10 MiB. Pass a larger
+// value if your authoring pipeline genuinely produces larger
+// layers, or math.MaxInt64 to disable the cap entirely (not
+// recommended for untrusted Sources).
+//
+// A negative value fails [New] with an error; pass 0 to fall back
+// to the default.
+func WithMaxLayerBytes(n int64) Option {
+	return func(c *config) { c.maxLayerBytes = n }
+}
+
 // New constructs a Resolver. `sample` is a fresh empty instance of the
 // consumer's typed config (e.g. `&AppConfig{}`); it serves as both the
 // type witness and the descriptor source. `spec` is a parsed
@@ -198,6 +232,12 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 		// fall through to "unregistered source" later.
 		return nil, errors.New(`resolver: "default" source required (use WithSource("default", ...))`)
 	}
+	if cfg.maxLayerBytes < 0 {
+		return nil, fmt.Errorf("resolver: WithMaxLayerBytes must be >= 0; got %d", cfg.maxLayerBytes)
+	}
+	if cfg.maxLayerBytes == 0 {
+		cfg.maxLayerBytes = defaultMaxLayerBytes
+	}
 
 	return &Resolver[T]{
 		sample:            sample,
@@ -206,6 +246,7 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 		dec:               cfg.dec,
 		trace:             cfg.trace,
 		strictMetadata:    cfg.strictMetadata,
+		maxLayerBytes:     cfg.maxLayerBytes,
 		metrics:           newInstruments(cfg.mp),
 		secretInstruments: secret.NewInstruments(cfg.mp),
 	}, nil
@@ -421,7 +462,7 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 		}
 
 		layer := r.fresh()
-		result, err := loadAndParse(ctx, ref, src, r.dec, layer, secrets)
+		result, err := loadAndParse(ctx, ref, src, r.dec, layer, secrets, r.maxLayerBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -555,7 +596,7 @@ func (r *Resolver[T]) fresh() T {
 // tracked as future protowire-go work. Block-form hint/fingerprint
 // metadata still flows through the proto message and is folded
 // onto the Map entry by parse.MoveInto.
-func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, dec sops.Decrypter, msg proto.Message, secrets *secret.Map) (*pxf.Result, error) {
+func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, dec sops.Decrypter, msg proto.Message, secrets *secret.Map, maxBytes int64) (*pxf.Result, error) {
 	rc, err := src.Open(ctx, ref.Path)
 	if err != nil {
 		if errors.Is(err, source.ErrNotFound) {
@@ -568,9 +609,19 @@ func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, de
 	}
 	defer rc.Close()
 
-	raw, err := io.ReadAll(rc)
+	// Cap the read at maxBytes+1 so we can detect overflow: if the
+	// resulting buffer is larger than maxBytes, the layer was
+	// truncated and we reject it. Bounded memory regardless of how
+	// large the underlying file is — defense against pathological
+	// Sources returning huge files (or hanging on a slow reader
+	// without a ctx deadline).
+	raw, err := io.ReadAll(io.LimitReader(rc, maxBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("resolver: read layer %q: %w", ref.EntryID, err)
+	}
+	if int64(len(raw)) > maxBytes {
+		return nil, fmt.Errorf("%w: layer=%q path=%q limit=%d",
+			ErrLayerTooLarge, ref.EntryID, ref.Path, maxBytes)
 	}
 
 	var data []byte
