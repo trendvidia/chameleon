@@ -19,6 +19,7 @@ import (
 
 	"github.com/trendvidia/chameleon/internal/pathfmt"
 	"github.com/trendvidia/chameleon/secret"
+	"github.com/trendvidia/protowire-go/encoding/pxf"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -128,6 +129,45 @@ func MoveWithOptions(msg proto.Message, opts ...secret.MapOption) (*secret.Map, 
 // A nil msg returns nil without touching secrets. A nil secrets
 // returns an error — the caller must own a Map to fold into.
 func MoveInto(msg proto.Message, secrets *secret.Map) error {
+	return MoveIntoWithOptions(msg, secrets, MoveOptions{})
+}
+
+// MoveOptions configures [MoveIntoWithOptions]. The zero value is
+// equivalent to calling [MoveInto] without options.
+type MoveOptions struct {
+	// LayerResults is the per-layer [pxf.Result] list in layer order
+	// (lowest-priority layer first, terminal layer last). When set,
+	// MoveIntoWithOptions distinguishes "hook-routed Secret value"
+	// from "WKT atomic-merge wholesale replacement" by consulting
+	// the most-recent layer that touched each Secret-typed path:
+	//
+	//   - If the most-recent layer marked `<path>.value` present,
+	//     the hook routed the value into the Map. Keep the existing
+	//     entry; this is the scalar-shorthand or block-form-with-
+	//     value case.
+	//
+	//   - If the most-recent layer set the Secret field itself
+	//     (e.g. `pw { hint = "h" }` or `pw { }`) but did NOT mark
+	//     `<path>.value` present, the merge was a WKT atomic-merge
+	//     wholesale replacement. Per the documented semantics —
+	//     "higher layer replaces the Secret as a unit" — the prior
+	//     hook entry is cleared via [secret.Map.Delete].
+	//
+	// Without LayerResults (the [MoveInto] zero-options shim), the
+	// walker preserves prior hook entries when the merged Secret
+	// has an empty value. This matches pre-v0.11 behavior and is
+	// what consumers calling [MoveInto] directly should expect.
+	LayerResults []*pxf.Result
+}
+
+// MoveIntoWithOptions is [MoveInto] with caller-supplied
+// [MoveOptions]. Used by the chameleon resolver to thread per-layer
+// [pxf.Result] data through to the walker, enabling the WKT
+// atomic-merge clear semantics described on [MoveOptions.LayerResults].
+//
+// All [MoveInto] semantics carry over verbatim; this entry point
+// is purely additive.
+func MoveIntoWithOptions(msg proto.Message, secrets *secret.Map, opts MoveOptions) error {
 	if msg == nil {
 		return nil
 	}
@@ -135,7 +175,7 @@ func MoveInto(msg proto.Message, secrets *secret.Map) error {
 		return errors.New("parse: MoveInto requires a non-nil *secret.Map")
 	}
 	visited := make(map[string]struct{})
-	w := walker{secrets: secrets, visited: visited}
+	w := walker{secrets: secrets, visited: visited, layerResults: opts.LayerResults}
 	if err := w.message(msg.ProtoReflect(), ""); err != nil {
 		return err
 	}
@@ -163,6 +203,58 @@ type walker struct {
 	// Nil for the legacy [Move] / [MoveWithOptions] entry points,
 	// which have no hook-routed entries to reconcile.
 	visited map[string]struct{}
+	// layerResults is the per-layer [pxf.Result] list passed via
+	// [MoveOptions.LayerResults]. Nil for legacy entry points and
+	// for [MoveInto] (zero-options shim); non-nil only when the
+	// caller wants WKT atomic-merge clearing semantics on
+	// empty-value Secrets. See [lastWriterDidNotSetValue].
+	layerResults []*pxf.Result
+}
+
+// lastWriterDidNotSetValue reports whether the most-recent layer
+// that touched the Secret at path set the Secret field itself but
+// NOT the `.value` subfield. That is the "WKT atomic-merge
+// wholesale replacement" case: a layer wrote `pw { }` or
+// `pw { hint = "h" }`, replacing any prior `pw` as a unit — and
+// since the hook didn't fire (no value subfield), the prior
+// hook-routed entry in the Map represents stale state.
+//
+// Returns false when:
+//
+//   - layerResults is nil (caller opted out of atomic-merge
+//     clearing semantics);
+//   - no layer touched path (shouldn't happen for a path the
+//     walker is visiting — the path is on the merged dst, so SOME
+//     layer must have set it);
+//   - the most-recent toucher set `.value` (hook-routed; keep
+//     entry).
+//
+// Returns true when the most-recent toucher set the Secret field
+// itself but not its value subfield — the cleared case.
+func (w *walker) lastWriterDidNotSetValue(path string) bool {
+	if w.layerResults == nil {
+		return false
+	}
+	for i := len(w.layerResults) - 1; i >= 0; i-- {
+		r := w.layerResults[i]
+		if r == nil {
+			continue
+		}
+		// Did THIS layer touch any subfield of path? A Secret block
+		// `pw { ... }` markPresents `pw` itself plus any inner
+		// subfields it sets; the hook-routed value also calls
+		// markInnerPresent for `pw.value`. So we ask: is the parent
+		// `pw` set in this layer's result? If not, this layer didn't
+		// write the Secret message itself, and we should look at
+		// earlier layers.
+		if !r.IsSet(path) {
+			continue
+		}
+		// This layer set the Secret field. Did it also set value?
+		// If yes → hook-routed, keep. If no → atomic-merge clear.
+		return !r.IsSet(path + ".value")
+	}
+	return false
 }
 
 func (w *walker) message(m protoreflect.Message, path string) error {
@@ -286,15 +378,30 @@ func (w *walker) takeSecret(secMsg protoreflect.Message, path string) error {
 		fingerprint = secMsg.Get(ff).String()
 	}
 	if plaintext == "" {
-		// Unset secret (or already-moved or hook-routed). Don't
-		// insert an empty Secret. But — if this was hook-routed
-		// (value empty because protowire-go's OnSecretField took the
-		// bytes mid-decode, while hint/fingerprint were assigned to
-		// the proto message normally — true for block-form Secrets
-		// since protowire-go v0.77.0), fold the metadata back onto
-		// the Map's existing hook entry so consumers reading
-		// Secret.Hint() / Fingerprint() see what the source supplied.
+		// Empty inner `value`. Three sub-cases:
 		//
+		//   1) Hook-routed value (scalar shorthand, or block-form
+		//      with `value`): the most-recent layer touching path
+		//      marked `<path>.value` present, and the hook took the
+		//      bytes. Existing Map entry stays; if the same layer
+		//      also supplied hint/fingerprint, fold them in.
+		//
+		//   2) WKT atomic-merge wholesale replacement: the most-
+		//      recent layer wrote `pw { hint = "h" }` or `pw { }` —
+		//      the Secret was set as a unit but `value` was not.
+		//      Per the documented "higher layer replaces the Secret
+		//      as a unit" semantic, drop the prior hook entry.
+		//      Detected via [MoveOptions.LayerResults]; without
+		//      that, fall through to case (1)'s behavior.
+		//
+		//   3) Genuinely-unset Secret (never written). No
+		//      Map entry to touch; no-op.
+		if w.lastWriterDidNotSetValue(path) {
+			if w.secrets != nil {
+				w.secrets.Delete(path)
+			}
+			return nil
+		}
 		// Skip-when-both-empty is intentional: a layer that doesn't
 		// supply hint/fingerprint must NOT clobber whatever a lower
 		// layer (or an earlier hook call at the same path) already

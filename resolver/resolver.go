@@ -418,6 +418,15 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 	r.metrics.layerCount.Record(ctx, int64(len(refs)), envAttrs)
 
 	dst := r.fresh()
+	// layerResults captures each layer's pxf.Result in order. Passed
+	// to parse.MoveIntoWithOptions so the walker can distinguish a
+	// hook-routed empty-value Secret (most-recent layer marked
+	// .value present) from a WKT atomic-merge wholesale replacement
+	// (most-recent layer wrote `pw { }` / `pw { hint = "h" }` but
+	// no value) — the latter clears the Map entry per the atomic-
+	// merge semantic.
+	var layerResults []*pxf.Result
+
 	// presenceUnion accumulates every field path any layer mentioned
 	// (set or null). It's the input to the post-merge defaults +
 	// validate passes — proto3 implicit-presence scalars can't be told
@@ -502,6 +511,7 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 				trace.Entries[p] = e
 			}
 		}
+		layerResults = append(layerResults, result)
 	}
 
 	// Defaults BEFORE interpolation: a default value may itself be a
@@ -547,7 +557,12 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 	// scalar-shorthand ones are already in the Map via the per-layer
 	// hook above) into the same secrets accumulator, and drop any
 	// hook-routed entries whose path was nulled by a higher layer.
-	if err := parse.MoveInto(dst, secrets); err != nil {
+	// LayerResults lets the walker also enforce WKT atomic-merge
+	// clearing on empty-value Secrets that were wholesale-replaced
+	// by a higher layer's `pw { }` / `pw { hint = "h" }` block.
+	if err := parse.MoveIntoWithOptions(dst, secrets, parse.MoveOptions{
+		LayerResults: layerResults,
+	}); err != nil {
 		return nil, fmt.Errorf("resolver: extract secrets: %w", err)
 	}
 	r.metrics.secretCount.Record(ctx, int64(secrets.Len()), envAttrs)

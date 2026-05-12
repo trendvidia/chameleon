@@ -413,6 +413,52 @@ layers = [
 	assert.Equal(t, 0, res.Secrets.Len())
 }
 
+// TestResolve_BlockFormWithoutValueClearsHookEntry — companion to
+// TestResolve_NullOverridesHookEntry. base layer writes
+// `db_password = "base-secret"` (scalar shorthand, hook routes the
+// value); dev layer writes `db_password { hint = "rotated" }` (block
+// form, NO value subfield). WKT atomic-merge says dev's block
+// replaces base's Secret wholesale — the prior value must be
+// dropped per the v0.11 clearing semantic.
+//
+// Without this, the hook-routed base value would survive dev's
+// "block-form replacement" and the consumer would see a secret the
+// merged config never intended to keep.
+func TestResolve_BlockFormWithoutValueClearsHookEntry(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [
+  { name = "prod" }
+  { name = "dev" extends = "prod" }
+]
+layers = [
+  { id = "base"    path = "base.pxf"            for_each = ONCE required = true }
+  { id = "env-pwd" path = "env/${env}.pwd.pxf" for_each = ONCE }
+]
+`)
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`db_password = "base-secret"`)},
+		// dev's block form: hint only, no value. Atomic-merge clear.
+		"env/dev.pwd.pxf": &fstest.MapFile{Data: []byte(`db_password { hint = "rotated 2026" }`)},
+	}
+
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+	)
+	require.NoError(t, err)
+
+	res, err := r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+	require.NoError(t, err)
+	defer res.Destroy()
+
+	assert.Nil(t, res.Secrets.Get("db_password"),
+		"block-form-without-value is a wholesale replace; base's hook entry must be cleared")
+	assert.Equal(t, 0, res.Secrets.Len())
+}
+
 // --- error paths ---
 
 func TestResolve_RequiredLayerMissing(t *testing.T) {
