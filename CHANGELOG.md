@@ -7,6 +7,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-05-12
+
+Medium-priority polish from the v1.0 readiness review. v0.10.0
+shipped the criticals + highs; this release closes the remaining
+mediums and tightens a documented-but-undelivered WKT atomic-merge
+semantic. One small behavior change for ``resolver.Resolve``
+consumers — called out below; everything else is doc / test /
+opt-in API addition.
+
+### Added
+
+- **`interpolate.MaxResolveDepth` + `ErrDepthExceeded`**
+  ([#39](https://github.com/trendvidia/chameleon/pull/39), shipped in
+  v0.10.0 — listed here for completeness). Hard cap on `${...}`
+  reference chain depth (64). Defense against pathological
+  non-cyclic chains.
+
+- **`parse.MoveOptions` + `parse.MoveIntoWithOptions`**
+  ([#48](https://github.com/trendvidia/chameleon/pull/48)). New
+  opt-in API for callers that want WKT atomic-merge clearing
+  semantics on empty-value Secrets. Carries per-layer
+  `[]*pxf.Result`; the walker uses it to detect "most-recent
+  layer wrote the Secret field but not `.value`" and clear the
+  corresponding Map entry per the documented atomic-merge
+  contract. `parse.MoveInto` becomes a zero-options shim with
+  the pre-v0.11 behavior — direct callers see no change.
+
+- **5 testable examples** ([#46](https://github.com/trendvidia/chameleon/pull/46)).
+  ``chameleon.ExampleLoad``, ``secret.ExampleSecret_Open``,
+  ``secret.ExampleMap_Range``, ``chain.ExampleParseSpec``,
+  ``wkt.ExampleAtomic``. Each has a `// Output:` line so
+  ``go test`` verifies the documented behavior against the
+  rendered API. pkg.go.dev surfaces these prominently.
+
+- **`internal/header.FuzzParse`**
+  ([#45](https://github.com/trendvidia/chameleon/pull/45)). 20-seed
+  fuzz harness covering legitimate / weird-but-valid /
+  adversarial header bodies. Properties: ``Parse`` never panics;
+  successful Parse returns non-nil; subsequent ``Check`` doesn't
+  panic. A 5-second 16-worker fuzz pass found 447 newly-
+  interesting inputs with zero failures.
+
+- **9 new CLI subcommand smoke tests + `io.Writer` plumbing**
+  ([#47](https://github.com/trendvidia/chameleon/pull/47)). Each
+  `*Cmd` (`explainCmd`, `verifyCmd`, `migrateCmd`, `hashCmd`)
+  gained an `out io.Writer` parameter so tests can drive it with
+  a `bytes.Buffer` instead of an `os.Pipe` swap. End-to-end
+  smokes assert against output substrings for the common code
+  paths.
+
+### Changed
+
+- **WKT atomic-merge clear for block-form-without-value Secrets**
+  ([#48](https://github.com/trendvidia/chameleon/pull/48)).
+  Previously, a higher layer's `pw { hint = "h" }` or `pw { }`
+  (block form without `value`) ATOMICALLY replaced the proto
+  message's `pw` field, but the lower layer's hook-routed value
+  survived in `res.Secrets` — inconsistent with the documented
+  "higher layer replaces the Secret as a unit" semantic. Now
+  the value is cleared per atomic-merge. To preserve the value
+  while updating hint, re-supply value
+  (`pw { value = "..." hint = "h" }`); to clear explicitly,
+  `pw = null` remains the unambiguous primitive.
+
+  This is the **one behavior change in this release**. Affects
+  only consumers using `resolver.Resolve` (not direct
+  `parse.MoveInto` callers — which get the legacy behavior
+  unless they opt in via `MoveIntoWithOptions`).
+
+- **`protoc-gen-chameleon-go` renders `map<*, enum>` value type
+  with the enum's `GoIdent`** ([#43](https://github.com/trendvidia/chameleon/pull/43))
+  rather than punning to `int32`. Wrapper-getter signature for a
+  `map<string, MyEnum>` field changes from `map[string]int32`
+  to `map[string]<EnumGoIdent>`. Values are type-compatible at
+  the proto-wire level so existing call sites continue to
+  compile, but new code can pattern-match against the enum's
+  constants directly.
+
+- **`secret.SetMetadata` concurrency invariant tightened in docs**
+  ([#44](https://github.com/trendvidia/chameleon/pull/44)). The
+  godoc previously said "safe to call on a Secret already
+  inserted into a Map" — wider than the actual safety window.
+  Now names it explicitly: goroutine-safe ONLY while the Secret
+  is being constructed by `parse.MoveInto`, before the
+  containing Map escapes to consumer code. Empty-overwrite
+  semantics also reconciled with `parse.MoveInto.takeSecret`:
+  SetMetadata overwrites unconditionally; the skip-when-empty
+  check happens at the call site.
+
+### Tests
+
+- **`cmd/chameleon` coverage 45.6% → 74.8%**
+  ([#47](https://github.com/trendvidia/chameleon/pull/47)).
+  `explainCmd` 0% → 79.4%; `verifyCmd` 0% → 73.3%;
+  `migrateCmd` 0% → 63.4%.
+
+- **`protoc-gen-chameleon-go` map-key formatter coverage**
+  ([#42](https://github.com/trendvidia/chameleon/pull/42)).
+  `joinFragmentRefs` 56.8% → 100%; `mapKeyRuntimeExpr`
+  25.0% → 75%; `goTypeForMapKey` 37.5% → 87.5%. Eight new
+  map-keyed fixture fields cover all six valid proto3 map-key
+  kinds.
+
+- **`secret.Secret.SetMetadata` coverage 0% → 100%**
+  ([#44](https://github.com/trendvidia/chameleon/pull/44)).
+  Three new tests lock the overwrite-unconditional contract +
+  nil-receiver-is-noop + value-untouched invariants.
+
+### Notes for upgraders
+
+- **No breaking changes to library APIs.** The behavior change in
+  `resolver.Resolve` (block-form-without-value now clears) is a
+  documented-but-undelivered semantic finally enforced; the rare
+  schemas that depend on the OLD behavior (lower-layer value
+  surviving a hint-only block) should re-supply value
+  explicitly. The README's "WKT atomic merge" Limitations entry
+  was updated to describe the new behavior + workarounds.
+
+- ``parse.MoveOptions`` is opt-in. Callers of ``parse.MoveInto``
+  see no behavior change.
+
+- Wrapper-mode codegen consumers with `map<*, enum>` fields will
+  see their generated getter signature change (`int32` → enum
+  GoIdent). Values are type-compatible; regenerate and recompile.
+
 ## [0.10.0] — 2026-05-12
 
 v1.0 readiness sweep. v0.9.0 was the planned v1.0 candidate; before
