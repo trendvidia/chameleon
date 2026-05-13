@@ -330,8 +330,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/tjfoc/gmsm v1.4.1 h1:aMe1GlZb+0bLjn+cKTPEvvn9oUEBlJitaZiiBwsbgho=
 github.com/tjfoc/gmsm v1.4.1/go.mod h1:j4INPkHWMrhJb38G+J6W4Tw0AbuN8Thu3PbdVYhVcTE=
-github.com/trendvidia/protowire-go v0.77.0 h1:TiwN9R/ieP1eP00fPmKKCAsuHJuL5/K6oSr6iRsK1ak=
-github.com/trendvidia/protowire-go v0.77.0/go.mod h1:cZsYUs9O8LxRLIl4qNiKumRBzL+PTQhYNHEKRjC4cs0=
+github.com/trendvidia/protowire-go v1.0.0 h1:bDvhbu2tqNTnJMyxc/AtjYg9C5iwemRpHJmYiFtVR/A=
+github.com/trendvidia/protowire-go v1.0.0/go.mod h1:cZsYUs9O8LxRLIl4qNiKumRBzL+PTQhYNHEKRjC4cs0=
 github.com/trendvidia/sops/v3 v3.13.2 h1:GSqflvbCWG20Bd5p75bd1/NPVZ0fBsvPGrGrlPsnRvY=
 github.com/trendvidia/sops/v3 v3.13.2/go.mod h1:JH+PxxbQEeyq+QSK+KzdlE3xp7GbN3KDqEgF+W9100Q=
 github.com/urfave/cli v1.22.17 h1:SYzXoiPfQjHBbkYxbew5prZHS1TOLT3ierW8SYLqtVQ=

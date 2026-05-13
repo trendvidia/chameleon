@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **protoc-gen-chameleon-go: advertise proto3 optional support**.
+  The plugin now sets
+  `CodeGeneratorResponse.supported_features = FEATURE_PROTO3_OPTIONAL`,
+  silencing protoc's `plugin "protoc-gen-chameleon-go" does not support
+  required features. Feature "proto3 optional" is required by N file(s)`
+  warning. The plugin never inspected the proto3-optional bit in the
+  first place (it only walks `pxf.Secret`-typed fields); the
+  acknowledgement is bookkeeping, not a behavior change.
+
+### Changed
+
+- **protowire-go bumped to v1.0.0** (from v0.77.0). No API surface
+  changes on the chameleon side; the dependency reached 1.0.
+
 ## [0.12.0] — 2026-05-12
 
 Low-priority polish + tooling sweep on top of v0.11.0. Six items from

@@ -3,11 +3,12 @@ module github.com/trendvidia/chameleon
 go 1.26.1
 
 require (
+	filippo.io/age v1.3.1
 	github.com/awnumar/memguard v0.22.5
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/getsops/sops/v3 v3.13.0
 	github.com/stretchr/testify v1.11.1
-	github.com/trendvidia/protowire-go v0.77.0
+	github.com/trendvidia/protowire-go v1.0.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
@@ -26,7 +27,6 @@ require (
 	cloud.google.com/go/longrunning v0.11.0 // indirect
 	cloud.google.com/go/monitoring v1.27.0 // indirect
 	cloud.google.com/go/storage v1.62.1 // indirect
-	filippo.io/age v1.3.1 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	filippo.io/hpke v0.4.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.21.1 // indirect
