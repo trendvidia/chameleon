@@ -4,6 +4,7 @@
 package secret_test
 
 import (
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -67,4 +68,32 @@ func TestSetMetadata_DoesNotAffectValue(t *testing.T) {
 	defer buf.Destroy()
 	assert.Equal(t, "supersecret", string(buf.Bytes()),
 		"SetMetadata should leave the enclave-backed value intact")
+}
+
+// TestOpen_RaceWithDestroyDoesNotPanic — concurrent Open / Destroy is
+// documented as racy (Destroy may "win" and subsequent Opens return
+// ErrDestroyed), but the in-flight Open must NEVER nil-deref the
+// enclave. The implementation snapshots s.enclave to a local before
+// calling memguard's Enclave.Open, so a Destroy interleaved between
+// the nil-check and the dereference is safe. Run under -race to catch
+// any reintroduction.
+func TestOpen_RaceWithDestroyDoesNotPanic(t *testing.T) {
+	const goroutines = 32
+	for range goroutines {
+		s := secret.FromString("payload", "", "")
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			buf, err := s.Open()
+			if err == nil {
+				buf.Destroy()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			s.Destroy()
+		}()
+		wg.Wait()
+	}
 }

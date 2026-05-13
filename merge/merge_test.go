@@ -355,7 +355,7 @@ func TestMerge_NilArgs(t *testing.T) {
 	a := newDst(t, desc)
 	_, p := parseLayer(t, desc, `base_url = "x"`)
 
-	require.Error(t, merge.Merge(nil, a, p))
-	require.Error(t, merge.Merge(a, nil, p))
-	require.Error(t, merge.Merge(a, a, nil))
+	require.ErrorContains(t, merge.Merge(nil, a, p), "nil message")
+	require.ErrorContains(t, merge.Merge(a, nil, p), "nil message")
+	require.ErrorContains(t, merge.Merge(a, a, nil), "nil presence")
 }

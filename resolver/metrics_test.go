@@ -5,6 +5,7 @@ package resolver_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"testing/fstest"
 
@@ -97,6 +98,8 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 
 	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, resolver.ErrRequiredLayerMissing),
+		"empty fs + required layer should surface ErrRequiredLayerMissing; got %v", err)
 
 	got := snapshot(t, reader)
 	require.Contains(t, got, "chameleon.resolve.errors")
