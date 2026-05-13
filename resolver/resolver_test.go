@@ -542,7 +542,7 @@ layers = [{ id = "x" path = "x.pxf" for_each = ONCE }]
 
 	// No sources at all.
 	_, err := resolver.New[*dynamicpb.Message](sample, spec)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "no sources registered")
 
 	// Has a non-default source but no "default".
 	_, err = resolver.New[*dynamicpb.Message](sample, spec,

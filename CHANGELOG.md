@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first place (it only walks `pxf.Secret`-typed fields); the
   acknowledgement is bookkeeping, not a behavior change.
 
+- **`secret.Secret`: `Open` / `Destroy` are now goroutine-safe**. An
+  `sync.RWMutex` serializes access to the enclave/destroyed state.
+  Previously the contract was "Destroy is racy with concurrent Open"
+  — observable as either a misleading `ErrUnset` or, worse, a
+  nil-pointer panic inside memguard if a Destroy interleaved between
+  the nil-check and the enclave dereference. Concurrent Opens still
+  parallelize (RLock); the memguard work runs outside the lock. The
+  package godoc updated; the constructor-only contract on
+  `SetMetadata` is unchanged.
+
+- **Tighten loose `require.Error` test assertions**. Six call sites
+  in `merge`, `validate`, and `resolver` tests that asserted "an
+  error happened" without checking which now use `ErrorContains` or
+  `errors.Is(...)` against the relevant sentinel / message. Catches
+  the "test passes for wrong reason" drift where an unrelated error
+  silently satisfies the test.
+
 ### Changed
 
 - **protowire-go bumped to v1.0.0** (from v0.77.0). No API surface
