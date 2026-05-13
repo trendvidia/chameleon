@@ -34,6 +34,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `errors.Is(...)` against the relevant sentinel / message. Catches
   the "test passes for wrong reason" drift where an unrelated error
   silently satisfies the test.
+- **sops: cap memguardWriter growth at 1 GiB; reject overflow**. The
+  growth loop in `memguardWriter.Write` doubled `int` without an
+  overflow guard. On a 64-bit host you'd OOM long before integer wrap
+  in practice, but defense-in-depth now caps any single plaintext at
+  `1 << 30` bytes and returns a new sentinel
+  `sops.ErrPlaintextTooLarge`. The resolver's per-layer ceiling
+  (`ErrLayerTooLarge`) continues to fire first under normal use; the
+  new cap protects direct `Decrypter.Decrypt` callers.
+
+- **examples/buf: vendored `pxf/secret.proto` had a broken
+  `go_package`**. The directive pointed at
+  `github.com/trendvidia/protowire/proto/pxf` — a path the protowire
+  spec repo intentionally publishes no Go code at (real consumers
+  configure `go_package` per-module via buf managed-mode rules). Now
+  points into the example's own `gen/go/pxf` tree, mirroring the
+  pattern that `myapp/v1/config.proto` already uses. Affected anyone
+  copying the example and running `buf generate`; CI did not catch it
+  because `examples/buf/gen/` is gitignored.
 
 ### Changed
 
