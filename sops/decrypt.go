@@ -136,6 +136,13 @@ func FormatForPath(path string) Format {
 // message.
 var ErrEmptyCiphertext = errors.New("sops: empty ciphertext")
 
+// ErrPlaintextTooLarge is returned when decrypted plaintext would
+// exceed the memguard sink's hard ceiling. The resolver caps ciphertext
+// upstream via [resolver.ErrLayerTooLarge]; this is defense-in-depth
+// for direct [Decrypter.Decrypt] callers and guards the growth loop
+// against int overflow.
+var ErrPlaintextTooLarge = errors.New("sops: decrypted plaintext exceeds size limit")
+
 // Decrypter is the in-process sops decryption hook used by the
 // resolver. Implementations must be safe for concurrent use.
 type Decrypter interface {
@@ -192,9 +199,20 @@ type memguardWriter struct {
 	n   int
 }
 
-const initialMemguardSize = 4096
+const (
+	initialMemguardSize = 4096
+	// maxMemguardSize caps a single plaintext at 1 GiB. The doubling
+	// growth loop below would otherwise wrap int on pathological input;
+	// in practice the resolver's per-layer ceiling fires far earlier,
+	// so callers reaching this cap are almost certainly buggy or hostile.
+	maxMemguardSize = 1 << 30
+)
 
 func (w *memguardWriter) Write(p []byte) (int, error) {
+	need := w.n + len(p)
+	if need < w.n || need > maxMemguardSize {
+		return 0, ErrPlaintextTooLarge
+	}
 	if w.buf == nil {
 		size := initialMemguardSize
 		if len(p) > size {
@@ -202,10 +220,13 @@ func (w *memguardWriter) Write(p []byte) (int, error) {
 		}
 		w.buf = memguard.NewBuffer(size)
 	}
-	for w.n+len(p) > w.buf.Size() {
+	for need > w.buf.Size() {
 		newSize := w.buf.Size() * 2
-		for newSize < w.n+len(p) {
+		for newSize < need {
 			newSize *= 2
+		}
+		if newSize > maxMemguardSize {
+			newSize = maxMemguardSize
 		}
 		next := memguard.NewBuffer(newSize)
 		copy(next.Bytes(), w.buf.Bytes()[:w.n])
