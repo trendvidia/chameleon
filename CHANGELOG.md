@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first place (it only walks `pxf.Secret`-typed fields); the
   acknowledgement is bookkeeping, not a behavior change.
 
+- **`secret`: stop flaking `TestOpenDestroy_RecordsDuration` on slow
+  runners**. Bumped the observation sleep from 5ms to 50ms so
+  scheduler jitter and histogram bucket rounding don't push the
+  `dp.Sum >= 0.005` assertion under threshold. 45ms is paid once per
+  test run; the gain is reliability on shared CI.
+
+### Added
+
+- **`examples/simple/README.md`**. Short note explaining that the
+  directory is a chain-spec fixture (`chain.pxf` + layer files, no
+  Go code) used by the CLI walkthrough and smoke tests, with a
+  pointer to `examples/buf/` for the runnable Go setup. The
+  top-level README already labels the directory the same way; this
+  in-directory README catches users who land here from a file
+  browser or GitHub directly.
 - **`secret.Secret`: `Open` / `Destroy` are now goroutine-safe**. An
   `sync.RWMutex` serializes access to the enclave/destroyed state.
   Previously the contract was "Destroy is racy with concurrent Open"

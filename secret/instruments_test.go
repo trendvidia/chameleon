@@ -118,7 +118,11 @@ func TestOpenDestroy_RecordsDuration(t *testing.T) {
 	m.Set("api_key", secret.FromString("k", "", ""))
 	buf, err := m.Get("api_key").Open()
 	require.NoError(t, err)
-	time.Sleep(5 * time.Millisecond) // observable duration > 0
+	// 50ms (not 5ms) leaves comfortable slack on overloaded CI runners
+	// where scheduler jitter or histogram bucket rounding can otherwise
+	// flake the dp.Sum >= 0.005 assertion below. The 45ms cost is paid
+	// once per test run.
+	time.Sleep(50 * time.Millisecond)
 	buf.Destroy()
 
 	got := snapshot(t, r)
