@@ -7,71 +7,123 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [0.13.0] — 2026-05-13
 
-- **protoc-gen-chameleon-go: advertise proto3 optional support**.
-  The plugin now sets
-  `CodeGeneratorResponse.supported_features = FEATURE_PROTO3_OPTIONAL`,
-  silencing protoc's `plugin "protoc-gen-chameleon-go" does not support
-  required features. Feature "proto3 optional" is required by N file(s)`
-  warning. The plugin never inspected the proto3-optional bit in the
-  first place (it only walks `pxf.Secret`-typed fields); the
-  acknowledgement is bookkeeping, not a behavior change.
+Full-codebase audit cycle on top of v0.12.0 — four parallel agents
+swept security, correctness, API/design, and tests/CI; findings
+were verified by hand and shipped in three severity-batched PRs
+([#58](https://github.com/trendvidia/chameleon/pull/58),
+[#59](https://github.com/trendvidia/chameleon/pull/59),
+[#60](https://github.com/trendvidia/chameleon/pull/60)) plus one
+pre-existing fix
+([#57](https://github.com/trendvidia/chameleon/pull/57)).
 
-- **`secret`: stop flaking `TestOpenDestroy_RecordsDuration` on slow
-  runners**. Bumped the observation sleep from 5ms to 50ms so
-  scheduler jitter and histogram bucket rounding don't push the
-  `dp.Sum >= 0.005` assertion under threshold. 45ms is paid once per
-  test run; the gain is reliability on shared CI.
+Two findings turned out to be API-shaped — `sops.ErrPlaintextTooLarge`
+is a new exported error, and `secret.Secret`'s `Open`/`Destroy`
+contract tightened from "documented as racy" to "actually
+goroutine-safe." Both warrant another soak cycle before v1.0 locks
+the public surface, hence v0.13 rather than v1.0.
 
 ### Added
 
-- **`examples/simple/README.md`**. Short note explaining that the
-  directory is a chain-spec fixture (`chain.pxf` + layer files, no
-  Go code) used by the CLI walkthrough and smoke tests, with a
-  pointer to `examples/buf/` for the runnable Go setup. The
-  top-level README already labels the directory the same way; this
-  in-directory README catches users who land here from a file
-  browser or GitHub directly.
-- **`secret.Secret`: `Open` / `Destroy` are now goroutine-safe**. An
-  `sync.RWMutex` serializes access to the enclave/destroyed state.
-  Previously the contract was "Destroy is racy with concurrent Open"
-  — observable as either a misleading `ErrUnset` or, worse, a
-  nil-pointer panic inside memguard if a Destroy interleaved between
-  the nil-check and the enclave dereference. Concurrent Opens still
-  parallelize (RLock); the memguard work runs outside the lock. The
-  package godoc updated; the constructor-only contract on
-  `SetMetadata` is unchanged.
+- **`sops.ErrPlaintextTooLarge`**
+  ([#58](https://github.com/trendvidia/chameleon/pull/58)). New
+  sentinel returned by `Decrypter.Decrypt` (default implementation)
+  when a single plaintext would exceed `1 << 30` bytes.
+  Defense-in-depth — the resolver's `ErrLayerTooLarge` ceiling fires
+  earlier under normal use; this protects direct `sops.Decrypt`
+  callers and guards the memguard growth loop against `int` wrap.
 
-- **Tighten loose `require.Error` test assertions**. Six call sites
-  in `merge`, `validate`, and `resolver` tests that asserted "an
-  error happened" without checking which now use `ErrorContains` or
-  `errors.Is(...)` against the relevant sentinel / message. Catches
-  the "test passes for wrong reason" drift where an unrelated error
-  silently satisfies the test.
-- **sops: cap memguardWriter growth at 1 GiB; reject overflow**. The
-  growth loop in `memguardWriter.Write` doubled `int` without an
-  overflow guard. On a 64-bit host you'd OOM long before integer wrap
-  in practice, but defense-in-depth now caps any single plaintext at
-  `1 << 30` bytes and returns a new sentinel
-  `sops.ErrPlaintextTooLarge`. The resolver's per-layer ceiling
-  (`ErrLayerTooLarge`) continues to fire first under normal use; the
-  new cap protects direct `Decrypter.Decrypt` callers.
-
-- **examples/buf: vendored `pxf/secret.proto` had a broken
-  `go_package`**. The directive pointed at
-  `github.com/trendvidia/protowire/proto/pxf` — a path the protowire
-  spec repo intentionally publishes no Go code at (real consumers
-  configure `go_package` per-module via buf managed-mode rules). Now
-  points into the example's own `gen/go/pxf` tree, mirroring the
-  pattern that `myapp/v1/config.proto` already uses. Affected anyone
-  copying the example and running `buf generate`; CI did not catch it
-  because `examples/buf/gen/` is gitignored.
+- **`examples/simple/README.md`**
+  ([#60](https://github.com/trendvidia/chameleon/pull/60)). Short
+  in-directory note labelling the contents as a chain-spec fixture
+  (no Go code) with a pointer to `examples/buf/` for the runnable
+  Go setup. The top-level README already labels it the same way;
+  this catches users who land in the directory via a file browser
+  or GitHub directly.
 
 ### Changed
 
-- **protowire-go bumped to v1.0.0** (from v0.77.0). No API surface
-  changes on the chameleon side; the dependency reached 1.0.
+- **`secret.Secret`: `Open` / `Destroy` are now goroutine-safe**
+  ([#59](https://github.com/trendvidia/chameleon/pull/59)). An
+  `sync.RWMutex` serializes access to the enclave/destroyed state.
+  Previously documented as racy: observable in the wild as either a
+  misleading `ErrUnset` return or, worse, a nil-pointer panic inside
+  memguard if a `Destroy` interleaved between `Open`'s nil-check
+  and the enclave dereference. Concurrent `Open` calls still
+  parallelize (RLock); the memguard work runs outside the lock.
+  `SetMetadata`'s constructor-only contract is unchanged. Consumers
+  following the old "destroy from the same goroutine that opened"
+  pattern see no behavior change — the new contract is strictly
+  broader.
+
+- **`protowire-go` v0.77.0 → v1.0.0**
+  ([#57](https://github.com/trendvidia/chameleon/pull/57)). The
+  dependency reached 1.0; no chameleon-side API surface change.
+
+### Fixed
+
+- **`protoc-gen-chameleon-go`: advertise proto3 optional support**
+  ([#57](https://github.com/trendvidia/chameleon/pull/57)). The
+  plugin now sets
+  `CodeGeneratorResponse.supported_features = FEATURE_PROTO3_OPTIONAL`,
+  silencing protoc's `plugin "protoc-gen-chameleon-go" does not
+  support required features. Feature "proto3 optional" is required
+  by N file(s)` warning. Bookkeeping only — the plugin walks
+  `pxf.Secret`-typed fields exclusively and never inspected the
+  proto3-optional bit.
+
+- **`sops`: cap `memguardWriter` growth at 1 GiB**
+  ([#58](https://github.com/trendvidia/chameleon/pull/58)). The
+  growth loop in `memguardWriter.Write` doubled `int` without an
+  overflow guard. On a 64-bit host you'd OOM long before integer
+  wrap in practice, but defense-in-depth now caps any single
+  plaintext at `1 << 30` bytes and returns
+  `sops.ErrPlaintextTooLarge` past that.
+
+- **`examples/buf`: broken `go_package` in vendored `pxf/secret.proto`**
+  ([#58](https://github.com/trendvidia/chameleon/pull/58)). The
+  directive pointed at `github.com/trendvidia/protowire/proto/pxf`
+  — a path the protowire spec repo intentionally publishes no Go
+  code at. Now points into the example's own `gen/go/pxf` tree,
+  mirroring `myapp/v1/config.proto`. Affected anyone copying the
+  example and running `buf generate`; CI did not catch it because
+  `examples/buf/gen/` is gitignored.
+
+- **Tighter `require.Error` test assertions**
+  ([#59](https://github.com/trendvidia/chameleon/pull/59)). Six
+  call sites in `merge`, `validate`, and `resolver` tests that
+  asserted "an error happened" without checking which now use
+  `ErrorContains` or `errors.Is(...)` against the relevant
+  sentinel / message. Catches the "test passes for wrong reason"
+  drift where an unrelated error silently satisfies the test.
+
+- **`secret`: de-flake `TestOpenDestroy_RecordsDuration`**
+  ([#60](https://github.com/trendvidia/chameleon/pull/60)). Bumped
+  the observation sleep from 5ms to 50ms so scheduler jitter and
+  histogram bucket rounding don't push the `dp.Sum >= 0.005`
+  assertion under threshold on overloaded runners. 45ms is paid
+  once per test run.
+
+### Notes for upgraders
+
+- **No breaking changes.** `secret.Secret`'s tightened concurrency
+  contract is strictly broader than the prior documented contract;
+  every old caller pattern still works.
+- **`sops.ErrPlaintextTooLarge`** is a new symbol in the public
+  `sops` package. The v1.0 frozen API surface (per ROADMAP) will be
+  re-checked once this soak completes.
+
+### v1.0 readiness — soak status
+
+| Criterion | v0.13.0 status |
+|---|---|
+| One release cycle of soak | v0.12.0 ran clean; v0.13.0 starts another (audit-driven API additions warrant it) |
+| No open enhancement issues blocking core flows | Zero |
+| README + godoc cross-checked | Yes (secret godoc updated for the new contract) |
+| Cross-repo pins documented | Yes (`protowire-go` v1.0.0 noted above) |
+
+v1.0.0 follows after this soak if no API-shaped feedback surfaces.
 
 ## [0.12.0] — 2026-05-12
 
@@ -997,7 +1049,8 @@ Documented in `README.md`:
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
 
-[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/trendvidia/chameleon/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/trendvidia/chameleon/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/trendvidia/chameleon/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/trendvidia/chameleon/compare/v0.9.0...v0.10.0
