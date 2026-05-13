@@ -34,6 +34,7 @@ package secret
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/awnumar/memguard"
@@ -52,9 +53,16 @@ var ErrUnset = errors.New("secret: unset")
 // unset Secret; populate it via [FromLockedBytes] (used by the chameleon
 // PXF decoder) or [FromString] (used by tests and one-off construction).
 //
-// Secret is NOT goroutine-safe for mutation (Destroy is racy with
-// concurrent Open). Concurrent Open calls are safe.
+// Open and Destroy are goroutine-safe: an [sync.RWMutex] serializes
+// access to the enclave/destroyed state so concurrent Opens parallelize
+// and a concurrent Destroy never races the enclave dereference.
+// Mutating metadata via [Secret.SetMetadata] remains constructor-only
+// — see that method's doc for the rationale.
 type Secret struct {
+	// mu guards enclave and destroyed. Hint/fingerprint stay outside
+	// the lock under the constructor-only SetMetadata contract.
+	mu sync.RWMutex
+
 	// enclave holds the encrypted plaintext. nil when unset or destroyed.
 	enclave *memguard.Enclave
 
@@ -124,13 +132,20 @@ func FromString(s, hint, fingerprint string) *Secret {
 // (histogram, recorded by Destroy). When the Secret has no Instruments
 // attached, the recordings are no-op.
 func (s *Secret) Open() (*OpenedBuffer, error) {
-	if s.destroyed {
+	s.mu.RLock()
+	destroyed := s.destroyed
+	enclave := s.enclave
+	s.mu.RUnlock()
+	if destroyed {
 		return nil, ErrDestroyed
 	}
-	if s.enclave == nil {
+	if enclave == nil {
 		return nil, ErrUnset
 	}
-	buf, err := s.enclave.Open()
+	// memguard.Enclave.Open runs outside the lock — it allocates a
+	// fresh LockedBuffer and is CPU-bound; serializing it would defeat
+	// the point of using an RWMutex here.
+	buf, err := enclave.Open()
 	if err != nil {
 		return nil, err
 	}
@@ -146,8 +161,10 @@ func (s *Secret) Open() (*OpenedBuffer, error) {
 }
 
 // Destroy wipes the underlying enclave. Subsequent Open calls return
-// [ErrDestroyed]. Idempotent.
+// [ErrDestroyed]. Idempotent. Safe to call concurrently with Open.
 func (s *Secret) Destroy() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.destroyed {
 		return
 	}
@@ -158,6 +175,8 @@ func (s *Secret) Destroy() {
 // IsSet reports whether the secret holds a value (i.e. populated and
 // not yet destroyed).
 func (s *Secret) IsSet() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return !s.destroyed && s.enclave != nil
 }
 

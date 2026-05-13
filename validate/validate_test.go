@@ -190,5 +190,5 @@ defaulted_required = "y"
 }
 
 func TestValidate_NilMessage(t *testing.T) {
-	require.Error(t, validate.Validate(nil, nil))
+	require.ErrorContains(t, validate.Validate(nil, nil), "nil message")
 }

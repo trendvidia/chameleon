@@ -109,3 +109,26 @@ func TestMemguardWriter_DestroyOnPartialStateIdempotent(t *testing.T) {
 	w.Destroy() // second call must be safe (idempotent)
 	w.Destroy()
 }
+
+// TestMemguardWriter_RejectsOversizedPlaintext checks the
+// defense-in-depth cap. A single Write whose payload exceeds
+// maxMemguardSize must return ErrPlaintextTooLarge without ever
+// allocating an mlocked buffer (the cap fires before w.buf is
+// touched), so no Destroy is needed on the writer for this path.
+func TestMemguardWriter_RejectsOversizedPlaintext(t *testing.T) {
+	w := &memguardWriter{}
+	// We need len(p) > maxMemguardSize but allocating that much would
+	// be wasteful. Drive the check via two writes: a small first write
+	// then a second one whose w.n+len(p) exceeds the cap.
+	_, err := w.Write([]byte("seed"))
+	require.NoError(t, err)
+	defer w.Destroy()
+
+	// Construct a slice header that lies about its length without
+	// actually allocating maxMemguardSize bytes. We can't do that in
+	// safe Go, so fall back to a smaller cap-violating payload: write
+	// up to the cap via a stub by directly setting w.n.
+	w.n = maxMemguardSize - 1
+	_, err = w.Write([]byte("xx")) // need = maxMemguardSize+1
+	require.ErrorIs(t, err, ErrPlaintextTooLarge)
+}
