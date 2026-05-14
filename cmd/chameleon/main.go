@@ -16,7 +16,17 @@
 //	              --chain=chain.pxf --layers=./layers --env=dev
 //	    Resolve a config and print the result as a PXF document.
 //	    Pipe into `pxf query` to extract individual values in
-//	    scripts. Same flag surface as `explain`.
+//	    scripts. Same flag surface as `explain`. Secret-typed
+//	    fields render as `<redacted>`.
+//
+//	chameleon reveal --field=paddle.api_key \
+//	                 --schema=app.proto --message=app.v1.AppConfig \
+//	                 --chain=chain.pxf --layers=./layers --env=dev \
+//	                 --decrypter=sops
+//	    Print the plaintext of a single Secret-typed field to
+//	    stdout (no trailing newline). The deliberate, opt-in,
+//	    explicit-naming complement to `get`'s redacted output —
+//	    suitable for $(...) command substitution.
 //
 //	chameleon verify --chain=chain.pxf --layers=./layers --env=dev
 //	    Check @header.content_sha256 of every layer the chain spec
@@ -66,6 +76,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "chameleon get:", err)
 			os.Exit(1)
 		}
+	case "reveal":
+		if err := revealCmd(os.Stdout, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon reveal:", err)
+			os.Exit(1)
+		}
 	case "verify":
 		if err := verifyCmd(os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon verify:", err)
@@ -111,6 +126,7 @@ Usage:
 Subcommands:
     explain     Resolve a config and print per-field provenance.
     get         Resolve a config and print it as a PXF document.
+    reveal      Print the plaintext of a single Secret-typed field.
     verify      Check @header.content_sha256 of every layer in a chain.
     migrate     Bulk-edit layer files in a chain spec (add/rename/delete fields).
     hash        Print the canonical body SHA-256 of a single layer file.
