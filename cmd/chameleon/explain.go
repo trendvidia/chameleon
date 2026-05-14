@@ -90,12 +90,20 @@ Flags:`)
 	//
 	// Source registration comes from two channels:
 	//   - the chain spec's declared `sources` map (kind=fs supported;
-	//     other kinds error since `explain` only knows fs);
+	//     other kinds error since `explain` only knows fs). Relative
+	//     `options["root"]` resolves against the chain.pxf's own
+	//     directory — that's what spec authors write (e.g. they put
+	//     `root = "./layers"` next to chain.pxf), not against the
+	//     user-provided --layers flag.
 	//   - implicit defaulting for any layer source name that wasn't
 	//     declared in the spec — point it at --layers so the simple
 	//     "single root, multiple logical names" case (the common
-	//     dev shape) just works.
-	sources, err := buildSources(spec, *layersDir)
+	//     dev shape) just works without a sources block.
+	chainDir, err := filepath.Abs(filepath.Dir(*chainPath))
+	if err != nil {
+		return fmt.Errorf("resolve chain dir: %w", err)
+	}
+	sources, err := buildSources(spec, chainDir, *layersDir)
 	if err != nil {
 		return err
 	}
@@ -277,15 +285,23 @@ func format(path, value string, e resolver.TraceEntry) string {
 // resolver from the chain spec. Two-pass:
 //
 //  1. Every source declared in spec.GetSources() — interpret its
-//     `kind` + `options`. Only `kind="fs"` is supported today; the
-//     spec's `options["root"]` is the FS root (resolved relative to
-//     layersDir when not absolute). Unknown kinds error so callers
-//     don't silently get the wrong behavior.
+//     `kind` + `options`. Only `kind="fs"` is supported today;
+//     `options["root"]` is the FS root, resolved relative to
+//     chainDir (the chain.pxf's own directory) when not absolute.
+//     Spec authors write paths like `./layers` next to chain.pxf,
+//     so anchoring at chainDir matches authoring intent and the
+//     production runtime where the consumer's binary configures
+//     sources independent of any explain-only flag. When no root
+//     is supplied, fall back to layersDir so a `{ kind = "fs" }`
+//     entry behaves like the historical single-source case.
+//     Unknown kinds error so callers don't silently get the
+//     wrong behavior.
 //
 //  2. Every source NAME referenced by a layer that wasn't declared
-//     in (1). Auto-register as fs at layersDir — this is the common
-//     dev shape ("a single layers dir with logical name prefixes
-//     like base / env-dev / secrets-dev, all on disk together").
+//     in (1). Auto-register as fs at layersDir — this is the
+//     common dev shape ("a single layers dir with logical name
+//     prefixes like base / env-dev / secrets-dev, all on disk
+//     together") and is the only place --layers is consulted.
 //
 // The auto-registration handles chain specs that use source names
 // purely as logical labels without declaring backing sources — the
@@ -296,7 +312,7 @@ func format(path, value string, e resolver.TraceEntry) string {
 // Returning the bare map (rather than a slice of resolver.Option)
 // keeps the helper testable without driving a live resolver. The
 // caller threads each entry through resolver.WithSource.
-func buildSources(spec proto.Message, layersDir string) (map[string]source.Source, error) {
+func buildSources(spec proto.Message, chainDir, layersDir string) (map[string]source.Source, error) {
 	cs, ok := spec.(*chameleonv1.ChainSpec)
 	if !ok {
 		return nil, fmt.Errorf("chain spec: unexpected type %T", spec)
@@ -316,10 +332,11 @@ func buildSources(spec proto.Message, layersDir string) (map[string]source.Sourc
 			)
 		}
 		root := ref.GetOptions()["root"]
-		if root == "" {
+		switch {
+		case root == "":
 			root = layersDir
-		} else if !filepath.IsAbs(root) {
-			root = filepath.Join(layersDir, root)
+		case !filepath.IsAbs(root):
+			root = filepath.Join(chainDir, root)
 		}
 		sources[name] = source.FS(os.DirFS(root))
 	}

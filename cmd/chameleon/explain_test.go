@@ -118,7 +118,9 @@ func TestBuildSources_AutoRegistersUndeclaredLayerSources(t *testing.T) {
 			{Id: "secrets-dev", Source: "secrets", Path: "marker.txt"},
 		},
 	}
-	got, err := buildSources(spec, dir)
+	// chainDir is unused on this path (no declared sources); pass
+	// the temp dir as a sentinel value to be sure pass 2 ignores it.
+	got, err := buildSources(spec, t.TempDir(), dir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
@@ -132,35 +134,44 @@ func TestBuildSources_AutoRegistersUndeclaredLayerSources(t *testing.T) {
 	}
 }
 
-// TestBuildSources_DeclaredFSRootJoinedWithLayersDir verifies that
-// a declared kind="fs" source with a RELATIVE options["root"]
-// resolves against layersDir, not the process CWD.
-func TestBuildSources_DeclaredFSRootJoinedWithLayersDir(t *testing.T) {
-	dir := t.TempDir()
-	subDir := filepath.Join(dir, "vault")
-	write(t, filepath.Join(subDir, "secret.pxf"), "x: 1")
+// TestBuildSources_DeclaredRelativeRootAnchorsAtChainDir is the
+// motivating fix for the website/config bug report:
+//   chain.pxf declares `root = "./layers"` next to itself, and the
+//   user passes `--layers layers`. The author wrote `./layers`
+//   meaning "relative to chain.pxf", not "relative to whatever
+//   --layers was set to". Anchoring at chainDir resolves correctly;
+//   anchoring at layersDir double-joined to `layers/layers/...`
+//   and produced ErrRequiredLayerMissing.
+func TestBuildSources_DeclaredRelativeRootAnchorsAtChainDir(t *testing.T) {
+	chainDir := t.TempDir()
+	write(t, filepath.Join(chainDir, "layers", "base.pxf"), "x: 1")
+
+	// layersDir is a DIFFERENT directory — the test fails if
+	// buildSources joins onto layersDir instead of chainDir.
+	layersDir := t.TempDir()
 
 	spec := &chameleonv1.ChainSpec{
 		Sources: map[string]*chameleonv1.SourceRef{
-			"secrets": {Kind: "fs", Options: map[string]string{"root": "vault"}},
+			"default": {Kind: "fs", Options: map[string]string{"root": "./layers"}},
 		},
 	}
-	got, err := buildSources(spec, dir)
+	got, err := buildSources(spec, chainDir, layersDir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
-	src, ok := got["secrets"]
+	src, ok := got["default"]
 	if !ok {
-		t.Fatalf("source %q missing; got keys %v", "secrets", keysOf(got))
+		t.Fatalf("source %q missing; got keys %v", "default", keysOf(got))
 	}
-	assertSourceRootedAt(t, src, "secret.pxf")
+	assertSourceRootedAt(t, src, "base.pxf")
 }
 
 // TestBuildSources_DeclaredFSAbsoluteRootHonored verifies that an
 // absolute options["root"] is used verbatim, not re-rooted under
-// layersDir.
+// chainDir or layersDir.
 func TestBuildSources_DeclaredFSAbsoluteRootHonored(t *testing.T) {
-	layersDir := t.TempDir()    // unrelated to where the source points.
+	chainDir := t.TempDir()  // unrelated
+	layersDir := t.TempDir() // unrelated
 	sourceDir := t.TempDir()
 	write(t, filepath.Join(sourceDir, "abs.pxf"), "x: 1")
 
@@ -169,11 +180,33 @@ func TestBuildSources_DeclaredFSAbsoluteRootHonored(t *testing.T) {
 			"elsewhere": {Kind: "fs", Options: map[string]string{"root": sourceDir}},
 		},
 	}
-	got, err := buildSources(spec, layersDir)
+	got, err := buildSources(spec, chainDir, layersDir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
 	assertSourceRootedAt(t, got["elsewhere"], "abs.pxf")
+}
+
+// TestBuildSources_DeclaredEmptyRootFallsBackToLayersDir verifies
+// the convenience case: a declared `{ kind = "fs" }` with no root
+// uses --layers, matching the pre-spec-sources single-source
+// invocation shape (so adding a sources block isn't a regression
+// for users who just want to label their default source).
+func TestBuildSources_DeclaredEmptyRootFallsBackToLayersDir(t *testing.T) {
+	chainDir := t.TempDir() // empty, unused
+	layersDir := t.TempDir()
+	write(t, filepath.Join(layersDir, "x.pxf"), "x: 1")
+
+	spec := &chameleonv1.ChainSpec{
+		Sources: map[string]*chameleonv1.SourceRef{
+			"default": {Kind: "fs"},
+		},
+	}
+	got, err := buildSources(spec, chainDir, layersDir)
+	if err != nil {
+		t.Fatalf("buildSources: %v", err)
+	}
+	assertSourceRootedAt(t, got["default"], "x.pxf")
 }
 
 // TestBuildSources_UnknownKindErrors guards the strict-on-declared
@@ -185,7 +218,7 @@ func TestBuildSources_UnknownKindErrors(t *testing.T) {
 			"vault": {Kind: "hashicorp-vault"},
 		},
 	}
-	_, err := buildSources(spec, t.TempDir())
+	_, err := buildSources(spec, t.TempDir(), t.TempDir())
 	if err == nil {
 		t.Fatal("expected error for unknown source kind")
 	}
@@ -206,7 +239,7 @@ func TestBuildSources_EmptyLayerSourceMapsToDefault(t *testing.T) {
 			{Id: "implicit", Source: "", Path: "x.pxf"},
 		},
 	}
-	got, err := buildSources(spec, dir)
+	got, err := buildSources(spec, t.TempDir(), dir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
@@ -235,7 +268,7 @@ func TestBuildSources_DeclaredOverridesAuto(t *testing.T) {
 			{Id: "uses-shared", Source: "shared", Path: "right.pxf"},
 		},
 	}
-	got, err := buildSources(spec, layersDir)
+	got, err := buildSources(spec, t.TempDir(), layersDir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
@@ -256,7 +289,7 @@ func TestBuildSources_DeclaredOverridesAuto(t *testing.T) {
 // map so callers can surface a more useful "spec has no layers"
 // error from the resolver rather than "unregistered source".
 func TestBuildSources_EmptySpecRegistersDefault(t *testing.T) {
-	got, err := buildSources(&chameleonv1.ChainSpec{}, t.TempDir())
+	got, err := buildSources(&chameleonv1.ChainSpec{}, t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
