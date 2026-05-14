@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-05-14
+
+Bug-fix patch — `chameleon lint` now skips files marked as generated
+per the standard Go convention, eliminating false positives on the
+proto-go-emitted `Secret.GetValue() string` accessor.
+
+### Fixed
+
+- **`chameleon lint` skips generated files**
+  ([#64](https://github.com/trendvidia/chameleon/pull/64)). The
+  analyzer's file loop now short-circuits on any file whose header
+  comments (before the package clause) match the standard
+  `^Code generated .* DO NOT EDIT\.$` line documented in
+  `go/build`. Before the fix, the standard accessor that
+  `protoc-gen-go` emits for every `Secret`-typed message field:
+
+  ```go
+  func (x *Secret) GetValue() string {
+      if x != nil {
+          return x.Value
+      }
+      return ""
+  }
+  ```
+
+  was flagged as a `pxfv1.Secret.Value` read — a false positive,
+  since the read is legitimate inside the generator's output (the
+  plaintext lands there before `chameleon.parse.Move` sweeps it
+  into memguard) and consumer code is the only place the analyzer
+  should catch direct `.Value` access. Reported by a consumer
+  running `chameleon lint ./...` against the `steward-api` Go
+  tree; the path-based exclude workaround
+  (`chameleon lint $(go list ./... | grep -v /internal/gen/)`)
+  becomes obsolete after this release.
+
+  Both `//` line comments and `/* */` block comments are honored.
+  New `cmd/chameleon/testdata/src/genpkg/` fixture mimics
+  proto-go output; new `TestAnalyzer_GeneratedFilesSkipped`
+  verifies the skip and would fail if the regression returned.
+  Existing `TestAnalyzer_FlagsBadPatterns` and
+  `TestAnalyzer_GoodPatternsClean` pass unchanged — the skip
+  only affects files carrying the generated-file marker, which
+  neither fixture has.
+
 ## [0.14.0] — 2026-05-14
 
 Tooling release: the `chameleon-lint` standalone binary folds into the
