@@ -310,8 +310,8 @@ func buildSources(spec proto.Message, layersDir string) (map[string]source.Sourc
 		if kind != "fs" {
 			return nil, fmt.Errorf(
 				"chain source %q: kind %q not supported by `chameleon explain` "+
-					"(only \"fs\"). Run via the consumer's runtime to exercise "+
-					"other kinds.",
+					"(only \"fs\"); run via the consumer's runtime to exercise "+
+					"other kinds",
 				name, kind,
 			)
 		}
