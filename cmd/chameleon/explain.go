@@ -15,10 +15,12 @@ import (
 	"strings"
 
 	"github.com/bufbuild/protocompile"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/chain"
+	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/resolver"
 	"github.com/trendvidia/chameleon/source"
 )
@@ -85,11 +87,25 @@ Flags:`)
 	}
 
 	// 4) Resolve with trace enabled.
+	//
+	// Source registration comes from two channels:
+	//   - the chain spec's declared `sources` map (kind=fs supported;
+	//     other kinds error since `explain` only knows fs);
+	//   - implicit defaulting for any layer source name that wasn't
+	//     declared in the spec — point it at --layers so the simple
+	//     "single root, multiple logical names" case (the common
+	//     dev shape) just works.
+	sources, err := buildSources(spec, *layersDir)
+	if err != nil {
+		return err
+	}
 	sample := dynamicpb.NewMessage(desc)
-	r, err := resolver.New[*dynamicpb.Message](sample, spec,
-		resolver.WithSource("default", source.FS(os.DirFS(*layersDir))),
-		resolver.WithTrace(),
-	)
+	opts := make([]resolver.Option, 0, len(sources)+1)
+	for name, src := range sources {
+		opts = append(opts, resolver.WithSource(name, src))
+	}
+	opts = append(opts, resolver.WithTrace())
+	r, err := resolver.New[*dynamicpb.Message](sample, spec, opts...)
 	if err != nil {
 		return err
 	}
@@ -255,4 +271,80 @@ func format(path, value string, e resolver.TraceEntry) string {
 		fmt.Fprintf(&b, "  [%s]", strings.Join(tags, " | "))
 	}
 	return b.String()
+}
+
+// buildSources derives the source.Source map to register with the
+// resolver from the chain spec. Two-pass:
+//
+//  1. Every source declared in spec.GetSources() — interpret its
+//     `kind` + `options`. Only `kind="fs"` is supported today; the
+//     spec's `options["root"]` is the FS root (resolved relative to
+//     layersDir when not absolute). Unknown kinds error so callers
+//     don't silently get the wrong behavior.
+//
+//  2. Every source NAME referenced by a layer that wasn't declared
+//     in (1). Auto-register as fs at layersDir — this is the common
+//     dev shape ("a single layers dir with logical name prefixes
+//     like base / env-dev / secrets-dev, all on disk together").
+//
+// The auto-registration handles chain specs that use source names
+// purely as logical labels without declaring backing sources — the
+// pre-this-patch behavior covered "default" only; this generalises
+// to any name. Specs that DO declare sources opt into the strict
+// kind-checked path.
+//
+// Returning the bare map (rather than a slice of resolver.Option)
+// keeps the helper testable without driving a live resolver. The
+// caller threads each entry through resolver.WithSource.
+func buildSources(spec proto.Message, layersDir string) (map[string]source.Source, error) {
+	cs, ok := spec.(*chameleonv1.ChainSpec)
+	if !ok {
+		return nil, fmt.Errorf("chain spec: unexpected type %T", spec)
+	}
+
+	sources := make(map[string]source.Source)
+
+	// Pass 1: declared sources.
+	for name, ref := range cs.GetSources() {
+		kind := ref.GetKind()
+		if kind != "fs" {
+			return nil, fmt.Errorf(
+				"chain source %q: kind %q not supported by `chameleon explain` "+
+					"(only \"fs\"). Run via the consumer's runtime to exercise "+
+					"other kinds.",
+				name, kind,
+			)
+		}
+		root := ref.GetOptions()["root"]
+		if root == "" {
+			root = layersDir
+		} else if !filepath.IsAbs(root) {
+			root = filepath.Join(layersDir, root)
+		}
+		sources[name] = source.FS(os.DirFS(root))
+	}
+
+	// Pass 2: undeclared source names referenced by layers — default
+	// to layersDir so they resolve like the historical single-source
+	// path.
+	for _, layer := range cs.GetLayers() {
+		name := layer.GetSource()
+		if name == "" {
+			name = "default"
+		}
+		if _, registered := sources[name]; registered {
+			continue
+		}
+		sources[name] = source.FS(os.DirFS(layersDir))
+	}
+
+	// Belt + suspenders: if neither pass registered anything (spec
+	// has no layers AND no declared sources), at least register
+	// "default" so the resolver can give the more useful "spec has
+	// no layers" error rather than "unregistered source" noise.
+	if len(sources) == 0 {
+		sources["default"] = source.FS(os.DirFS(layersDir))
+	}
+
+	return sources, nil
 }
