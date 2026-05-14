@@ -55,7 +55,7 @@ _chameleon() {
     local cur prev words cword
     _init_completion || return
 
-    local subcmds="explain verify migrate hash version completion help"
+    local subcmds="explain verify migrate hash lint version completion help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$subcmds" -- "$cur") )
@@ -75,6 +75,12 @@ _chameleon() {
         hash)
             _filedir
             ;;
+        lint)
+            # singlechecker driver — accepts package patterns + standard
+            # analysis flags. Completion just hands off to filedir for
+            # ./... style invocations.
+            _filedir
+            ;;
         completion)
             COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
             ;;
@@ -91,6 +97,7 @@ _chameleon() {
         'verify:Check @header.content_sha256 of every layer in a chain'
         'migrate:Bulk-edit layer files in a chain spec'
         'hash:Print the canonical body SHA-256 of a single layer file'
+        'lint:Flag pxfv1.Secret.Value reads / writes in consumer code'
         'version:Print chameleon version'
         'completion:Print shell completion script'
         'help:Show top-level help'
@@ -142,6 +149,11 @@ _chameleon() {
         hash)
             _files -g '*.pxf'
             ;;
+        lint)
+            # singlechecker driver — accepts Go package patterns
+            # (./..., pkg/path) plus standard analysis flags.
+            _files -/
+            ;;
         completion)
             _values 'shell' bash zsh fish
             ;;
@@ -158,6 +170,7 @@ complete -c chameleon -n '__fish_use_subcommand' -a explain    -d 'Resolve a con
 complete -c chameleon -n '__fish_use_subcommand' -a verify     -d 'Check @header.content_sha256 of every layer'
 complete -c chameleon -n '__fish_use_subcommand' -a migrate    -d 'Bulk-edit layer files'
 complete -c chameleon -n '__fish_use_subcommand' -a hash       -d 'Print canonical body SHA-256'
+complete -c chameleon -n '__fish_use_subcommand' -a lint       -d 'Flag pxfv1.Secret.Value reads / writes in consumer code'
 complete -c chameleon -n '__fish_use_subcommand' -a version    -d 'Print chameleon version'
 complete -c chameleon -n '__fish_use_subcommand' -a completion -d 'Print shell completion script'
 complete -c chameleon -n '__fish_use_subcommand' -a help       -d 'Show top-level help'

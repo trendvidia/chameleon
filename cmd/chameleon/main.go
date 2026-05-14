@@ -32,6 +32,11 @@
 //	chameleon completion <bash|zsh|fish>
 //	    Print a shell completion script. Source the output in your
 //	    shell init file for subcommand + flag completion.
+//
+//	chameleon lint ./...
+//	    Run the go/analysis-based linter that flags reads / writes of
+//	    pxfv1.Secret.Value (cleared by chameleon.parse.Move). Pass
+//	    --help after `lint` to see all analyzer driver flags.
 package main
 
 import (
@@ -75,6 +80,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, "chameleon completion:", err)
 			os.Exit(1)
 		}
+	case "lint":
+		os.Exit(lintCmd(os.Stdout, os.Stderr, os.Args[2:]))
 	case "-h", "--help", "help":
 		usage(os.Stdout)
 	default:
@@ -95,6 +102,7 @@ Subcommands:
     verify      Check @header.content_sha256 of every layer in a chain.
     migrate     Bulk-edit layer files in a chain spec (add/rename/delete fields).
     hash        Print the canonical body SHA-256 of a single layer file.
+    lint        Flag pxfv1.Secret.Value reads / writes in consumer code.
     version     Print chameleon version, Go toolchain, and commit.
     completion  Print shell completion script (bash|zsh|fish).
     help        Show this message.

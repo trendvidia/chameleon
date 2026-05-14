@@ -121,8 +121,7 @@ Enumeration is exhaustive — `go doc <pkg>` at the v1.0 tag should produce the 
 
 ### CLI binaries (stable)
 
-- `chameleon` with subcommands: `explain`, `verify`, `migrate`, `hash`.
-- `chameleon-lint` — `go/analysis`-shaped analyzer; usable via `go vet -vettool` or `golangci-lint`.
+- `chameleon` with subcommands: `explain`, `verify`, `migrate`, `hash`, `lint`. The `lint` subcommand is a `go/analysis` singlechecker; usable directly (`chameleon lint ./...`) or via `go vet -vettool`.
 
 ### Codegen output (stable)
 

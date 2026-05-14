@@ -44,7 +44,7 @@
 //	                         the function-form accessors. Wrapper methods
 //	                         encapsulate the secret.Map argument and steer
 //	                         callers away from the `cfg.X.Value` footgun;
-//	                         chameleon-lint stays the load-bearing
+//	                         `chameleon lint` stays the load-bearing
 //	                         compile-time check until Phase 2b ships the
 //	                         field-replacement variant.
 //	                         (default: false; opt-in.)

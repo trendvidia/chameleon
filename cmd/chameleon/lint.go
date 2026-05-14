@@ -4,10 +4,16 @@
 package main
 
 import (
+	"errors"
+	"flag"
+	"fmt"
 	"go/ast"
 	"go/types"
+	"os"
 
 	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/analysis/checker"
+	"golang.org/x/tools/go/packages"
 )
 
 // Analyzer reports reads / writes of a pxf.Secret's `Value` field. The
@@ -23,10 +29,79 @@ var Analyzer = &analysis.Analyzer{
 		"Value is empty after chameleon.parse.Move runs; use the " +
 		"typed accessor (e.g. AppConfigSecret_<Field>(res.Secrets)) or " +
 		"res.Secrets.Get(\"<path>\") instead.",
-	Run: run,
+	Run: runLint,
 }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+// lintCmd implements `chameleon lint <pkg-pattern>...`. The minimal
+// driver — load packages, run Analyzer, print diagnostics — gives us
+// help/usage text owned by the subcommand instead of singlechecker's
+// flat "<Analyzer.Name>: ..." banner. Returns the process exit code:
+// 0 = clean, 1 = diagnostics emitted or load/analysis error, 2 = bad
+// flags. main exits with this value.
+func lintCmd(out, errOut *os.File, args []string) int {
+	fs := flag.NewFlagSet("chameleon lint", flag.ContinueOnError)
+	fs.SetOutput(errOut)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `chameleon lint — flag reads / writes of pxfv1.Secret.Value.
+
+Value is cleared by chameleon.parse.Move once the plaintext is
+extracted into a memguard Enclave. Reads return ""; writes leave the
+runtime view untouched (parse.Move clears them again on the next
+Resolve). Use the typed accessor (e.g.
+AppConfigSecret_<Field>(res.Secrets)) or
+res.Secrets.Get("<dotted.path>") to reach the live plaintext.
+
+Usage:
+    chameleon lint <package>...
+
+Examples:
+    chameleon lint ./...
+    chameleon lint github.com/acme/svc/internal/config`)
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	patterns := fs.Args()
+	if len(patterns) == 0 {
+		fs.Usage()
+		return 2
+	}
+
+	cfg := &packages.Config{Mode: packages.LoadAllSyntax}
+	initial, err := packages.Load(cfg, patterns...)
+	if err != nil {
+		fmt.Fprintln(errOut, "chameleon lint:", err)
+		return 1
+	}
+	if n := packages.PrintErrors(initial); n > 0 {
+		return 1
+	}
+	if len(initial) == 0 {
+		fmt.Fprintln(errOut, "chameleon lint: no packages matched")
+		return 1
+	}
+
+	graph, err := checker.Analyze([]*analysis.Analyzer{Analyzer}, initial, nil)
+	if err != nil {
+		fmt.Fprintln(errOut, "chameleon lint:", err)
+		return 1
+	}
+	if err := graph.PrintText(out, -1); err != nil {
+		fmt.Fprintln(errOut, "chameleon lint:", err)
+		return 1
+	}
+	for act := range graph.All() {
+		if act.IsRoot && len(act.Diagnostics) > 0 {
+			return 1
+		}
+	}
+	return 0
+}
+
+func runLint(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {
 		ast.Inspect(file, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
