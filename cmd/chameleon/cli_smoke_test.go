@@ -120,6 +120,80 @@ func TestExplainCmd_MissingRequiredFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "required")
 }
 
+// --- get ---
+
+// TestGetCmd_Smoke walks the full get pipeline: load schema, parse
+// chain, resolve, marshal as PXF. Verifies stdout is a parseable
+// PXF document starting with the @type directive and carrying the
+// resolved scalars by name.
+func TestGetCmd_Smoke(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, map[string]string{
+		"app.proto": minimalSchema,
+		"chain.pxf": `version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`,
+		"base.pxf": `base_url = "x"
+max_replicas = 3
+`,
+	})
+
+	var out bytes.Buffer
+	err := getCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+	})
+	require.NoError(t, err)
+	got := out.String()
+
+	assert.Contains(t, got, "@type smoke.v1.Cfg", "emit-type=true default should prefix with @type")
+	assert.Contains(t, got, "base_url", "field name in output")
+	assert.Contains(t, got, `"x"`, "scalar value preserved")
+	assert.Contains(t, got, "max_replicas", "second field preserved")
+}
+
+// TestGetCmd_NoEmitType — --emit-type=false strips the @type
+// directive (for callers concatenating output or supplying their
+// own type binding).
+func TestGetCmd_NoEmitType(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, map[string]string{
+		"app.proto": minimalSchema,
+		"chain.pxf": `version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`,
+		"base.pxf": `base_url = "x"
+`,
+	})
+
+	var out bytes.Buffer
+	require.NoError(t, getCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+		"--emit-type=false",
+	}))
+	got := out.String()
+	assert.NotContains(t, got, "@type", "--emit-type=false should strip the directive")
+	assert.Contains(t, got, "base_url", "the message body itself is still emitted")
+}
+
+// TestGetCmd_MissingRequiredFlag — missing --schema must surface a
+// usage error, not panic.
+func TestGetCmd_MissingRequiredFlag(t *testing.T) {
+	var out bytes.Buffer
+	err := getCmd(&out, []string{"--chain=/dev/null"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "required")
+}
+
 // --- verify ---
 
 // TestVerifyCmd_OK — a layer whose @header.content_sha256 matches
@@ -296,7 +370,7 @@ func TestUsage(t *testing.T) {
 	n, _ := r.Read(buf)
 	got := string(buf[:n])
 
-	for _, sub := range []string{"explain", "verify", "migrate", "hash", "lint", "version", "completion"} {
+	for _, sub := range []string{"explain", "get", "verify", "migrate", "hash", "lint", "version", "completion"} {
 		assert.Contains(t, got, sub,
 			"usage text should mention every subcommand; missing %q", sub)
 	}

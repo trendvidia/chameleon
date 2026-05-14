@@ -12,6 +12,12 @@
 //	    whether it came from a default, whether interpolation
 //	    rewrote it, whether it's sensitive).
 //
+//	chameleon get --schema=app.proto --message=app.v1.AppConfig \
+//	              --chain=chain.pxf --layers=./layers --env=dev
+//	    Resolve a config and print the result as a PXF document.
+//	    Pipe into `pxf query` to extract individual values in
+//	    scripts. Same flag surface as `explain`.
+//
 //	chameleon verify --chain=chain.pxf --layers=./layers --env=dev
 //	    Check @header.content_sha256 of every layer the chain spec
 //	    resolves to. Encrypted layers are skipped (sops already
@@ -53,6 +59,11 @@ func main() {
 	case "explain":
 		if err := explainCmd(os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon explain:", err)
+			os.Exit(1)
+		}
+	case "get":
+		if err := getCmd(os.Stdout, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon get:", err)
 			os.Exit(1)
 		}
 	case "verify":
@@ -99,6 +110,7 @@ Usage:
 
 Subcommands:
     explain     Resolve a config and print per-field provenance.
+    get         Resolve a config and print it as a PXF document.
     verify      Check @header.content_sha256 of every layer in a chain.
     migrate     Bulk-edit layer files in a chain spec (add/rename/delete fields).
     hash        Print the canonical body SHA-256 of a single layer file.
