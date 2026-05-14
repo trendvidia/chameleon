@@ -10,6 +10,8 @@ import (
 	"go/ast"
 	"go/types"
 	"os"
+	"regexp"
+	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/checker"
@@ -103,6 +105,17 @@ Examples:
 
 func runLint(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {
+		// Skip generated files. The proto-go plugin (and every other
+		// code generator) emits `GetValue() string { return x.Value }`
+		// on a Secret message as the standard accessor — that read is
+		// legitimate inside the generator's output, and consumer code
+		// is the only place we want to flag. The Go convention from
+		// `go/build` is: a file is generated when its header comments
+		// (before the package clause) contain a line matching
+		// `^// Code generated .* DO NOT EDIT\.$`.
+		if isGeneratedFile(file) {
+			continue
+		}
 		ast.Inspect(file, func(n ast.Node) bool {
 			sel, ok := n.(*ast.SelectorExpr)
 			if !ok || sel.Sel.Name != "Value" {
@@ -203,4 +216,41 @@ func isPxfSecret(t *types.Named) bool {
 		}
 	}
 	return have["Value"] && have["Hint"] && have["Fingerprint"]
+}
+
+// generatedHeaderRE matches the standard Go "generated file" marker
+// documented in `go/build`: a line `// Code generated <by-whom> DO
+// NOT EDIT.` that must appear in the file's header comments (before
+// the package clause). Matched against the trimmed `//`-prefix-
+// stripped text so leading whitespace inside the comment doesn't
+// matter.
+var generatedHeaderRE = regexp.MustCompile(`^Code generated .* DO NOT EDIT\.$`)
+
+// isGeneratedFile reports whether f is a code-generated file per the
+// standard Go convention. Scans only comment groups whose End() is
+// before the package declaration — comments past the package clause
+// are doc strings on declarations, not file headers.
+func isGeneratedFile(f *ast.File) bool {
+	for _, cg := range f.Comments {
+		if cg.End() >= f.Package {
+			break
+		}
+		for _, c := range cg.List {
+			// Each c.Text retains its `//` (line comment) or `/* */`
+			// (block comment) markers. Strip them + trim whitespace
+			// before matching.
+			text := c.Text
+			switch {
+			case strings.HasPrefix(text, "//"):
+				text = strings.TrimSpace(text[2:])
+			case strings.HasPrefix(text, "/*"):
+				text = strings.TrimSuffix(strings.TrimPrefix(text, "/*"), "*/")
+				text = strings.TrimSpace(text)
+			}
+			if generatedHeaderRE.MatchString(text) {
+				return true
+			}
+		}
+	}
+	return false
 }
