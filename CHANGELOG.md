@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-05-14
+
+Tooling release: the `chameleon-lint` standalone binary folds into the
+main CLI as `chameleon lint`, so the project ships one CLI plus the
+protoc plugin. Adds a top-level `Makefile` covering the common
+developer workflow.
+
+The merge is technically breaking — anyone running
+`go install github.com/trendvidia/chameleon/cmd/chameleon-lint@latest`
+or the installed `chameleon-lint` binary needs to switch to
+`chameleon lint`. Behavior, exit codes, and diagnostic text are
+otherwise unchanged.
+
+### Changed
+
+- **`chameleon-lint` → `chameleon lint` subcommand**
+  ([#62](https://github.com/trendvidia/chameleon/pull/62)). The
+  `pxfv1.Secret.Value` analyzer (and its testdata) move from
+  `cmd/chameleon-lint/` to `cmd/chameleon/lint.go`; the old binary
+  directory is removed. The subcommand uses a small custom driver
+  (`packages.Load` + `analysis/checker.Analyze` +
+  `Graph.PrintText`) instead of `singlechecker.Main` so the help
+  banner reads `chameleon lint — ...` rather than the analyzer's
+  flat `chameleonlint:` prefix. Top-level usage and bash/zsh/fish
+  completions carry `lint`. Exit codes: 0 clean, 1 diagnostics or
+  load error, 2 bad flags.
+
+  Trade-off worth flagging: the custom driver omits singlechecker's
+  `-fix`, `-json`, and `-c N` flags. None of these were known to be
+  in use; happy to add them back on request.
+
+### Added
+
+- **Top-level `Makefile`**
+  ([#62](https://github.com/trendvidia/chameleon/pull/62)). Targets:
+  `build`, `install`, `test`, `test-short`, `test-integration`,
+  `fuzz`, `bench`, `cover`, `cover-html`, `vet`, `lint`
+  (`golangci-lint`, pinned to CI's `v2.12.2`), `self-lint` (eats own
+  dogfood: `chameleon lint ./...`), `fmt`, `fmt-check`, `tidy`,
+  `verify`, `generate`, `tools`, `ci`, `check`, `clean`. Knobs like
+  `FUZZ_TIME`, `BENCHTIME`, `GOLANGCI_LINT_VERSION` are
+  override-friendly. `make help` (default) lists every target.
+
 ## [0.13.0] — 2026-05-13
 
 Full-codebase audit cycle on top of v0.12.0 — four parallel agents
