@@ -15,11 +15,14 @@ import (
 	"strings"
 
 	"github.com/bufbuild/protocompile"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/chain"
+	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/resolver"
+	chsops "github.com/trendvidia/chameleon/sops"
 	"github.com/trendvidia/chameleon/source"
 )
 
@@ -33,6 +36,7 @@ func explainCmd(out io.Writer, args []string) error {
 		env       = fs.String("env", "", "environment to resolve (defaults to chain spec's default_environment)")
 		field     = fs.String("field", "", "if set, print provenance for this dotted field path only; otherwise print all")
 		ctxKVs    = fs.String("ctx", "", "comma-separated key=value pairs for ${ctx.*} substitutions, e.g. region=eu,tenant=acme")
+		decrypter = fs.String("decrypter", "none", `decrypter for encrypted layers: "none" (error if any encrypted layer is hit) or "sops" (use ambient sops/age/KMS credentials)`)
 	)
 	// includePaths collects --include flag values. Repeatable so callers
 	// can pass multiple proto search roots (mirrors protoc -I). Each
@@ -85,11 +89,40 @@ Flags:`)
 	}
 
 	// 4) Resolve with trace enabled.
+	//
+	// Source registration comes from two channels:
+	//   - the chain spec's declared `sources` map (kind=fs supported;
+	//     other kinds error since `explain` only knows fs). Relative
+	//     `options["root"]` resolves against the chain.pxf's own
+	//     directory — that's what spec authors write (e.g. they put
+	//     `root = "./layers"` next to chain.pxf), not against the
+	//     user-provided --layers flag.
+	//   - implicit defaulting for any layer source name that wasn't
+	//     declared in the spec — point it at --layers so the simple
+	//     "single root, multiple logical names" case (the common
+	//     dev shape) just works without a sources block.
+	chainDir, err := filepath.Abs(filepath.Dir(*chainPath))
+	if err != nil {
+		return fmt.Errorf("resolve chain dir: %w", err)
+	}
+	sources, err := buildSources(spec, chainDir, *layersDir)
+	if err != nil {
+		return err
+	}
+	dec, err := selectDecrypter(*decrypter)
+	if err != nil {
+		return err
+	}
 	sample := dynamicpb.NewMessage(desc)
-	r, err := resolver.New[*dynamicpb.Message](sample, spec,
-		resolver.WithSource("default", source.FS(os.DirFS(*layersDir))),
-		resolver.WithTrace(),
-	)
+	opts := make([]resolver.Option, 0, len(sources)+2)
+	for name, src := range sources {
+		opts = append(opts, resolver.WithSource(name, src))
+	}
+	opts = append(opts, resolver.WithTrace())
+	if dec != nil {
+		opts = append(opts, resolver.WithDecrypter(dec))
+	}
+	r, err := resolver.New[*dynamicpb.Message](sample, spec, opts...)
 	if err != nil {
 		return err
 	}
@@ -255,4 +288,108 @@ func format(path, value string, e resolver.TraceEntry) string {
 		fmt.Fprintf(&b, "  [%s]", strings.Join(tags, " | "))
 	}
 	return b.String()
+}
+
+// selectDecrypter maps the --decrypter flag value to a Decrypter
+// instance (or nil for "none"). "sops" returns chsops.Default(),
+// which reads credentials from the ambient environment (AWS_*,
+// GOOGLE_APPLICATION_CREDENTIALS, ~/.config/sops/age/keys.txt, …)
+// — same surface as a production binary's WithDecrypter wiring,
+// so the dev workflow exercises the real path. Unknown values
+// error rather than silently falling back to "none", since a
+// typo'd flag should not silently disable decryption.
+func selectDecrypter(name string) (chsops.Decrypter, error) {
+	switch name {
+	case "", "none":
+		return nil, nil
+	case "sops":
+		return chsops.Default(), nil
+	default:
+		return nil, fmt.Errorf(`--decrypter: unknown value %q (want "none" or "sops")`, name)
+	}
+}
+
+// buildSources derives the source.Source map to register with the
+// resolver from the chain spec. Two-pass:
+//
+//  1. Every source declared in spec.GetSources() — interpret its
+//     `kind` + `options`. Only `kind="fs"` is supported today;
+//     `options["root"]` is the FS root, resolved relative to
+//     chainDir (the chain.pxf's own directory) when not absolute.
+//     Spec authors write paths like `./layers` next to chain.pxf,
+//     so anchoring at chainDir matches authoring intent and the
+//     production runtime where the consumer's binary configures
+//     sources independent of any explain-only flag. When no root
+//     is supplied, fall back to layersDir so a `{ kind = "fs" }`
+//     entry behaves like the historical single-source case.
+//     Unknown kinds error so callers don't silently get the
+//     wrong behavior.
+//
+//  2. Every source NAME referenced by a layer that wasn't declared
+//     in (1). Auto-register as fs at layersDir — this is the
+//     common dev shape ("a single layers dir with logical name
+//     prefixes like base / env-dev / secrets-dev, all on disk
+//     together") and is the only place --layers is consulted.
+//
+// The auto-registration handles chain specs that use source names
+// purely as logical labels without declaring backing sources — the
+// pre-this-patch behavior covered "default" only; this generalises
+// to any name. Specs that DO declare sources opt into the strict
+// kind-checked path.
+//
+// Returning the bare map (rather than a slice of resolver.Option)
+// keeps the helper testable without driving a live resolver. The
+// caller threads each entry through resolver.WithSource.
+func buildSources(spec proto.Message, chainDir, layersDir string) (map[string]source.Source, error) {
+	cs, ok := spec.(*chameleonv1.ChainSpec)
+	if !ok {
+		return nil, fmt.Errorf("chain spec: unexpected type %T", spec)
+	}
+
+	sources := make(map[string]source.Source)
+
+	// Pass 1: declared sources.
+	for name, ref := range cs.GetSources() {
+		kind := ref.GetKind()
+		if kind != "fs" {
+			return nil, fmt.Errorf(
+				"chain source %q: kind %q not supported by `chameleon explain` "+
+					"(only \"fs\"); run via the consumer's runtime to exercise "+
+					"other kinds",
+				name, kind,
+			)
+		}
+		root := ref.GetOptions()["root"]
+		switch {
+		case root == "":
+			root = layersDir
+		case !filepath.IsAbs(root):
+			root = filepath.Join(chainDir, root)
+		}
+		sources[name] = source.FS(os.DirFS(root))
+	}
+
+	// Pass 2: undeclared source names referenced by layers — default
+	// to layersDir so they resolve like the historical single-source
+	// path.
+	for _, layer := range cs.GetLayers() {
+		name := layer.GetSource()
+		if name == "" {
+			name = "default"
+		}
+		if _, registered := sources[name]; registered {
+			continue
+		}
+		sources[name] = source.FS(os.DirFS(layersDir))
+	}
+
+	// Belt + suspenders: if neither pass registered anything (spec
+	// has no layers AND no declared sources), at least register
+	// "default" so the resolver can give the more useful "spec has
+	// no layers" error rather than "unregistered source" noise.
+	if len(sources) == 0 {
+		sources["default"] = source.FS(os.DirFS(layersDir))
+	}
+
+	return sources, nil
 }
