@@ -472,8 +472,7 @@ A goroutine-leak guard test runs Load+Destroy in a tight 500-iteration loop and 
 
 ```
 chain/                  ChainSpec expansion + LoadSpec/ParseSpec runtime helpers
-cmd/chameleon/          CLI: explain (per-field provenance) / verify (@header.content_sha256) / migrate (bulk layer edits) / hash
-cmd/chameleon-lint/     go/analysis-style linter flagging *pxfv1.Secret.Value reads
+cmd/chameleon/          CLI: explain (per-field provenance) / verify (@header.content_sha256) / migrate (bulk layer edits) / hash / lint (go/analysis-style linter flagging *pxfv1.Secret.Value reads)
 cmd/protoc-gen-chameleon-go/   protoc plugin emitting typed Secret accessors
 defaults/               (pxf.default) post-merge pass
 examples/buf/           working buf.gen.yaml + sample schema

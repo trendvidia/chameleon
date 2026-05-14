@@ -1,4 +1,4 @@
-// Package goodpkg exercises patterns chameleon-lint should NOT flag.
+// Package goodpkg exercises patterns `chameleon lint` should NOT flag.
 package goodpkg
 
 import "pxfv1"

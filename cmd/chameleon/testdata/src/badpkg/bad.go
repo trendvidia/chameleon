@@ -1,4 +1,4 @@
-// Package badpkg exercises the patterns chameleon-lint should flag.
+// Package badpkg exercises the patterns `chameleon lint` should flag.
 package badpkg
 
 import "pxfv1"

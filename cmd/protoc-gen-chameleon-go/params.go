@@ -29,7 +29,7 @@ func parseParams(name, value string) error {
 		// Opt-in: emit a `<Message>Resolved` wrapper alongside the
 		// standalone accessor functions. Wrapper methods are the
 		// recommended consumer API — they centralize the
-		// secret.Map argument and make the chameleon-lint
+		// secret.Map argument and make the `chameleon lint`
 		// `cfg.X.Value` footgun harder to reach (consumers go through
 		// the wrapper instead of poking at the raw proto type).
 		switch value {

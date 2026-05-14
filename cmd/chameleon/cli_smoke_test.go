@@ -296,7 +296,7 @@ func TestUsage(t *testing.T) {
 	n, _ := r.Read(buf)
 	got := string(buf[:n])
 
-	for _, sub := range []string{"explain", "verify", "migrate", "hash", "version", "completion"} {
+	for _, sub := range []string{"explain", "verify", "migrate", "hash", "lint", "version", "completion"} {
 		assert.Contains(t, got, sub,
 			"usage text should mention every subcommand; missing %q", sub)
 	}
