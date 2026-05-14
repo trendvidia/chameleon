@@ -156,6 +156,71 @@ max_replicas = 3
 	assert.Contains(t, got, "max_replicas", "second field preserved")
 }
 
+// TestGetCmd_RedactsSecrets — a schema with a pxf.Secret-typed
+// field should marshal as `value = "<redacted>"`, distinguishing
+// "deliberately suppressed" from an empty string. Plain scalars
+// (base_url) are untouched. Mirrors the website/config bug report:
+// before this change the output was `value = ""` and a reader
+// couldn't tell if the field was absent, set to empty, or
+// deliberately redacted.
+func TestGetCmd_RedactsSecrets(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, map[string]string{
+		// pxf.Secret well-known type — vendored inline so the test
+		// is self-contained and doesn't rely on protowire-go's
+		// import path being on disk.
+		"pxf/secret.proto": `syntax = "proto3";
+package pxf;
+message Secret {
+  string value = 1;
+  string hint = 2;
+  string fingerprint = 3;
+}
+`,
+		// Consumer schema mixes a plain scalar with a Secret-typed
+		// field so the test asserts both branches: redacted for
+		// the secret, untouched for the scalar.
+		"app.proto": `syntax = "proto3";
+package smoke.v1;
+import "pxf/secret.proto";
+message Cfg {
+  string base_url = 1;
+  pxf.Secret api_key = 2;
+}
+`,
+		"chain.pxf": `version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`,
+		"base.pxf": `base_url = "http://x"
+api_key = "live-plaintext-do-not-leak"
+`,
+	})
+
+	var out bytes.Buffer
+	err := getCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+	})
+	require.NoError(t, err)
+	got := out.String()
+
+	// pxf.Marshal renders Secret-typed fields with scalar shorthand
+	// when only `value` is populated — `api_key = "<x>"` rather than
+	// the block form `api_key { value = "<x>" }`. The redaction
+	// sentinel rides through that codec choice unchanged.
+	assert.Contains(t, got, `api_key = "<redacted>"`,
+		"secret field must marshal with the redaction sentinel")
+	assert.NotContains(t, got, "live-plaintext-do-not-leak",
+		"plaintext must not appear in the output — invariant load-bearing for the whole pipeline")
+	assert.Contains(t, got, `base_url = "http://x"`,
+		"plain scalars must be untouched by the redaction walker")
+}
+
 // TestGetCmd_NoEmitType — --emit-type=false strips the @type
 // directive (for callers concatenating output or supplying their
 // own type binding).
