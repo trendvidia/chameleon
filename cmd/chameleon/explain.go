@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -33,6 +34,17 @@ func explainCmd(out io.Writer, args []string) error {
 		field     = fs.String("field", "", "if set, print provenance for this dotted field path only; otherwise print all")
 		ctxKVs    = fs.String("ctx", "", "comma-separated key=value pairs for ${ctx.*} substitutions, e.g. region=eu,tenant=acme")
 	)
+	// includePaths collects --include flag values. Repeatable so callers
+	// can pass multiple proto search roots (mirrors protoc -I). Each
+	// path is added to protocompile's SourceResolver.ImportPaths and is
+	// searched in order; the schema file's own directory is prepended
+	// implicitly so a schema can be referenced by its on-disk path
+	// without --include even when it has no non-WKT imports.
+	var includePaths []string
+	fs.Func("include", "directory to search for proto imports (repeatable, like protoc -I)", func(s string) error {
+		includePaths = append(includePaths, s)
+		return nil
+	})
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `chameleon explain — resolve a config and print per-field provenance.
 
@@ -55,7 +67,7 @@ Flags:`)
 	}
 
 	// 1) Load consumer schema (compile the .proto file at runtime).
-	desc, err := compileSchema(*schema, *message)
+	desc, err := compileSchema(*schema, *message, includePaths)
 	if err != nil {
 		return err
 	}
@@ -105,20 +117,45 @@ Flags:`)
 }
 
 // compileSchema reads schemaPath and uses protocompile to find the
-// named message descriptor.
-func compileSchema(schemaPath, fullName string) (protoreflect.MessageDescriptor, error) {
-	data, err := os.ReadFile(schemaPath)
-	if err != nil {
+// named message descriptor. includePaths are additional import roots
+// (protoc -I equivalent) used to resolve the schema's transitive
+// imports. The schema file's own directory is prepended implicitly
+// so the schema is always findable by its basename.
+func compileSchema(schemaPath, fullName string, includePaths []string) (protoreflect.MessageDescriptor, error) {
+	// Verify the file exists up-front so callers get a clean error
+	// instead of protocompile's "could not resolve path" message
+	// pointing at the same file from inside the import-search loop.
+	if _, err := os.Stat(schemaPath); err != nil {
 		return nil, fmt.Errorf("read schema %s: %w", schemaPath, err)
 	}
+	// Search the schema's own directory first (so the schema resolves
+	// by basename), then any --include paths the caller passed (so
+	// transitive imports like pxf/secret.proto resolve). All paths
+	// are absolutized so protocompile's import-relative-to-import-path
+	// joining produces stable results regardless of the caller's CWD.
+	schemaDir, err := filepath.Abs(filepath.Dir(schemaPath))
+	if err != nil {
+		return nil, fmt.Errorf("resolve schema dir: %w", err)
+	}
+	importPaths := []string{schemaDir}
+	for _, p := range includePaths {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return nil, fmt.Errorf("resolve --include %q: %w", p, err)
+		}
+		importPaths = append(importPaths, abs)
+	}
+
 	comp := protocompile.Compiler{
 		Resolver: protocompile.WithStandardImports(
-			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(
-				map[string]string{schemaPath: string(data)},
-			)},
+			&protocompile.SourceResolver{ImportPaths: importPaths},
 		),
 	}
-	files, err := comp.Compile(context.Background(), schemaPath)
+	// Compile by basename so the schema resolves against the first
+	// import path (its own directory). Passing the full schemaPath
+	// here would force protocompile to find it via path-prefix
+	// matching, which is awkward when --include points elsewhere.
+	files, err := comp.Compile(context.Background(), filepath.Base(schemaPath))
 	if err != nil {
 		return nil, fmt.Errorf("compile %s: %w", schemaPath, err)
 	}
