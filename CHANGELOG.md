@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-05-14
+
+Additive patch — `chameleon explain` gains a `--include` flag for
+proto-import search paths, mirroring `protoc -I`. Closes a usability
+gap on schemas with non-standard transitive imports.
+
+### Added
+
+- **`chameleon explain --include <dir>` (repeatable)**
+  ([#66](https://github.com/trendvidia/chameleon/pull/66)).
+  Before this release, `compileSchema` built a `SourceResolver`
+  whose only entry was an in-memory map of `{schemaPath: data}`;
+  standard WKTs resolved via `WithStandardImports`, but custom
+  imports — `pxf/secret.proto` is the motivating case —
+  produced:
+
+  ```
+  chameleon explain: compile <path>: <path>:N:C: could not resolve
+  path "pxf/secret.proto": file does not exist
+  ```
+
+  The fix swaps the resolver from in-memory `Accessor` to
+  `ImportPaths`. The schema's own directory is prepended
+  implicitly (so a schema with no non-WKT imports still
+  compiles without a flag), and `--include` appends further
+  search roots. Each path is `filepath.Abs`-ed so protocompile's
+  import-relative-to-import-path joining is stable across
+  callers running from arbitrary CWDs. The schema file's
+  existence is checked up-front via `os.Stat` so a missing
+  schema produces a clean `read schema <path>: ...` error
+  instead of the deeper `could not resolve` message
+  protocompile would otherwise emit from inside its
+  import-search loop.
+
+  Reported by a consumer running `chameleon explain` against
+  `steward.config.v1.AppConfig`. Post-release invocation:
+
+  ```sh
+  chameleon explain \
+      --schema    ../proto/steward/config/v1/config.proto \
+      --include   ../proto \
+      --message   steward.config.v1.AppConfig \
+      --chain     chain.pxf --layers layers --env dev
+  ```
+
+  Callers without custom imports continue to work without
+  `--include` — the implicit schema-dir prepend preserves the
+  pre-existing no-flags case.
+
 ## [0.14.1] — 2026-05-14
 
 Bug-fix patch — `chameleon lint` now skips files marked as generated
