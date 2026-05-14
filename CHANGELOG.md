@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.4] — 2026-05-14
+
+Additive patch — new `chameleon get` subcommand emits the resolved
+config as a PXF document, composing with `pxf query` for dotted-
+path extraction in shell scripts.
+
+### Added
+
+- **`chameleon get`** ([#70](https://github.com/trendvidia/chameleon/pull/70)).
+  `explain` prints a human-readable provenance trace (value +
+  sensitivity + layer tags on one line); `get` prints the
+  resolved message itself, marshalled via
+  `protowire-go/encoding/pxf.MarshalOptions{TypeURL: ...}.Marshal`.
+  Same flag surface as `explain` (schema / message / chain /
+  layers / env / include / ctx / decrypter), minus `--field`
+  (pxf query owns dotted-path extraction), plus `--emit-type`
+  (default `true`) controlling whether the output is prefixed
+  with `@type <message>` for query-time descriptor binding.
+  `--emit-type=false` strips the directive for callers
+  concatenating outputs or supplying their own `@type`.
+
+  ```sh
+  chameleon get \
+      --schema    ../proto/steward/config/v1/config.proto \
+      --include   ../proto \
+      --message   steward.config.v1.AppConfig \
+      --chain     chain.pxf --layers layers --env dev \
+      --decrypter sops \
+    | pxf query '.server.addr'
+  # value = ":8080"
+  ```
+
+  Secret fields surface with empty `value` and intact `hint` /
+  `fingerprint` metadata — `parse.Move` clears plaintext into a
+  memguard-backed `secret.Map` *before* the resolver returns, so
+  `pxf.Marshal` can never observe plaintext on the message. A
+  dedicated reveal API (with explicit naming and an opt-in
+  posture matching 1Password's `op read`) is the right surface
+  for scripts that need secret plaintext, and is not part of
+  this release.
+
 ## [0.14.3] — 2026-05-14
 
 Bug-fix + additive patch — `chameleon explain` is now usable
