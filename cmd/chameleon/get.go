@@ -11,12 +11,31 @@ import (
 	"io"
 	"path/filepath"
 
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/chain"
 	"github.com/trendvidia/chameleon/resolver"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
+
+// secretFullName is the canonical FullName of the pxf.Secret well-
+// known type. Mirrors the same constant in parse/move.go; kept
+// duplicated here rather than exported because (a) `get` is the
+// only caller in cmd/chameleon and (b) the parse package is the
+// authority on the type and shouldn't grow a public surface to
+// service a sibling CLI command's redaction needs.
+const secretFullName protoreflect.FullName = "pxf.Secret"
+
+// redactedSentinel is the placeholder written into pxf.Secret.value
+// for marshalled output. Indicates "deliberately suppressed —
+// plaintext lives in res.Secrets, not on this message," so the
+// reader doesn't confuse a redacted secret with an absent or
+// empty-string scalar. Surrounding `<...>` chosen so it can't
+// collide with a legal config value (no real secret would
+// literally contain that string).
+const redactedSentinel = "<redacted>"
 
 // getCmd implements `chameleon get` — resolve a config against the
 // given chain spec + layer dir and print the full resolved message
@@ -139,6 +158,10 @@ Flags:`)
 	}
 	defer res.Destroy()
 
+	if err := redactSecrets(res.Config); err != nil {
+		return fmt.Errorf("redact secrets: %w", err)
+	}
+
 	mo := pxf.MarshalOptions{}
 	if *emitType {
 		mo.TypeURL = *message
@@ -149,4 +172,120 @@ Flags:`)
 	}
 	_, err = out.Write(body)
 	return err
+}
+
+// redactSecrets walks msg and writes redactedSentinel into the
+// `value` field of every pxf.Secret-typed message reached. Mirrors
+// parse.Move's walker but inverse: instead of extracting plaintext
+// into a memguard map, it writes a visible placeholder so the
+// marshalled PXF document distinguishes "deliberately suppressed"
+// from "absent" or "empty string." parse.Move has already cleared
+// the value to "" before this runs (it's invoked on the resolver's
+// post-Resolve message); this step overwrites that "" with the
+// sentinel.
+//
+// Errors only on a structural anomaly — a Secret message whose
+// descriptor lacks a `value` field. A nil msg is a no-op.
+func redactSecrets(msg proto.Message) error {
+	if msg == nil {
+		return nil
+	}
+	return redactWalk(msg.ProtoReflect())
+}
+
+func redactWalk(m protoreflect.Message) error {
+	var firstErr error
+	m.Range(func(fd protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+		switch {
+		case fd.IsMap():
+			if err := redactMap(m, fd); err != nil {
+				firstErr = err
+				return false
+			}
+		case fd.IsList():
+			if err := redactList(m, fd); err != nil {
+				firstErr = err
+				return false
+			}
+		case fd.Kind() == protoreflect.MessageKind:
+			sub := m.Mutable(fd).Message()
+			if fd.Message().FullName() == secretFullName {
+				if err := writeRedacted(sub); err != nil {
+					firstErr = err
+					return false
+				}
+				return true
+			}
+			if err := redactWalk(sub); err != nil {
+				firstErr = err
+				return false
+			}
+		}
+		return true
+	})
+	return firstErr
+}
+
+func redactList(parent protoreflect.Message, fd protoreflect.FieldDescriptor) error {
+	if fd.Kind() != protoreflect.MessageKind {
+		return nil
+	}
+	mdesc := fd.Message()
+	if mdesc == nil {
+		return nil
+	}
+	isSecret := mdesc.FullName() == secretFullName
+	list := parent.Mutable(fd).List()
+	for i, n := 0, list.Len(); i < n; i++ {
+		sub := list.Get(i).Message()
+		if isSecret {
+			if err := writeRedacted(sub); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := redactWalk(sub); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func redactMap(parent protoreflect.Message, fd protoreflect.FieldDescriptor) error {
+	valFd := fd.MapValue()
+	if valFd.Kind() != protoreflect.MessageKind {
+		return nil
+	}
+	mdesc := valFd.Message()
+	if mdesc == nil {
+		return nil
+	}
+	isSecret := mdesc.FullName() == secretFullName
+	mp := parent.Mutable(fd).Map()
+	var rangeErr error
+	mp.Range(func(_ protoreflect.MapKey, v protoreflect.Value) bool {
+		sub := v.Message()
+		if isSecret {
+			if err := writeRedacted(sub); err != nil {
+				rangeErr = err
+				return false
+			}
+			return true
+		}
+		if err := redactWalk(sub); err != nil {
+			rangeErr = err
+			return false
+		}
+		return true
+	})
+	return rangeErr
+}
+
+func writeRedacted(secMsg protoreflect.Message) error {
+	valueFd := secMsg.Descriptor().Fields().ByName("value")
+	if valueFd == nil {
+		return errors.New("redact: pxf.Secret descriptor missing `value` field")
+	}
+	secMsg.Set(valueFd, protoreflect.ValueOfString(redactedSentinel))
+	return nil
 }
