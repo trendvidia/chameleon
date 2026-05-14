@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.3] — 2026-05-14
+
+Bug-fix + additive patch — `chameleon explain` is now usable
+against real chain specs that declare named sources, anchors
+declared source roots relative to `chain.pxf`, and can decrypt
+sops-encrypted layers via the ambient sops/age/KMS stack.
+
+### Fixed
+
+- **`chameleon explain` registers every layer-referenced source
+  name** ([#68](https://github.com/trendvidia/chameleon/pull/68)).
+  Before this release `explainCmd` hardcoded
+  `WithSource("default", ...)` and ignored `spec.sources`
+  entirely, so any chain spec that used named sources errored
+  immediately:
+
+  ```
+  chameleon explain: resolver: layer references unregistered
+  source: layer="secrets-dev" source="secrets"
+  ```
+
+  Replaced with a two-pass `buildSources` helper: (1) every
+  source declared in `spec.sources` is registered (kind=fs
+  supported; other kinds error since `explain` only knows fs),
+  and (2) every source NAME referenced by a layer not declared
+  in pass 1 is auto-registered against `--layers`. The
+  auto-registration handles the common dev shape — a single
+  layers dir with logical name prefixes — without requiring a
+  `sources` block in chain.pxf.
+
+- **Declared relative source roots anchor at `chain.pxf`'s
+  directory, not at `--layers`**
+  ([#68](https://github.com/trendvidia/chameleon/pull/68)). A
+  chain.pxf that declares `root = "./layers"` next to itself
+  and is invoked as `chameleon explain --chain config/chain.pxf
+  --layers config/layers` previously double-joined to
+  `layers/layers/base.pxf`, producing
+  `resolver: required layer missing: layer="base"
+  path="base.pxf"`. Spec authors write declared roots relative
+  to chain.pxf (that's how they look at the path next to the
+  file on disk), so `buildSources` now anchors relative roots
+  at `filepath.Dir(--chain)`. The `--layers` flag remains the
+  anchor for the auto-registration pass and for declared
+  sources with an empty root, preserving the historical
+  single-source case.
+
+### Added
+
+- **`chameleon explain --decrypter <none|sops>`**
+  ([#68](https://github.com/trendvidia/chameleon/pull/68)). The
+  resolver eagerly rejects encrypted layers when no Decrypter
+  is configured — before attempting to open the file — so a
+  chain spec with an optional encrypted layer for a different
+  environment (e.g. `secrets-prod.sops.pxf`, missing in dev)
+  surfaced as `resolver: encrypted layer without Decrypter`
+  during a dev `explain` run. `--decrypter sops` wires
+  `chsops.Default()`, sourcing credentials from the ambient
+  environment (AWS_*, GOOGLE_APPLICATION_CREDENTIALS,
+  `~/.config/sops/age/keys.txt`, …) — same surface as a
+  production binary's `WithDecrypter` wiring, so the dev
+  workflow exercises the real decrypt path. `none` (the
+  default) preserves the historical behavior so any spec that
+  worked before continues to work; unknown values error rather
+  than silently falling back to `none` (a typo'd
+  `--decrypter=spos` must not quietly disable decryption).
+
+  Combined invocation against a real chain.pxf with a prod-
+  only encrypted layer:
+
+  ```sh
+  chameleon explain \
+      --schema    ../proto/steward/config/v1/config.proto \
+      --include   ../proto \
+      --message   steward.config.v1.AppConfig \
+      --chain     chain.pxf --layers layers --env dev \
+      --decrypter sops
+  ```
+
+  prints the full provenance trace; the encrypted prod layer
+  silently skips because its `.sops.pxf` doesn't exist for
+  env=dev.
+
 ## [0.14.2] — 2026-05-14
 
 Additive patch — `chameleon explain` gains a `--include` flag for
