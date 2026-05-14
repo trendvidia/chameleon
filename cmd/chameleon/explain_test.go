@@ -298,6 +298,47 @@ func TestBuildSources_EmptySpecRegistersDefault(t *testing.T) {
 	}
 }
 
+// TestSelectDecrypter_None: the default flag value disables
+// decryption — encrypted layers will surface ErrNoDecrypter, which
+// is the explicit "you forgot to wire something up" signal.
+func TestSelectDecrypter_None(t *testing.T) {
+	for _, v := range []string{"", "none"} {
+		dec, err := selectDecrypter(v)
+		if err != nil {
+			t.Errorf("selectDecrypter(%q): %v", v, err)
+		}
+		if dec != nil {
+			t.Errorf("selectDecrypter(%q) returned non-nil: %T", v, dec)
+		}
+	}
+}
+
+// TestSelectDecrypter_Sops returns a real chsops decrypter. We
+// don't drive it through an actual decrypt (env-dependent + slow);
+// the contract is "non-nil and implements Decrypter."
+func TestSelectDecrypter_Sops(t *testing.T) {
+	dec, err := selectDecrypter("sops")
+	if err != nil {
+		t.Fatalf("selectDecrypter: %v", err)
+	}
+	if dec == nil {
+		t.Fatal("sops decrypter unexpectedly nil")
+	}
+}
+
+// TestSelectDecrypter_UnknownErrors: a typo'd flag must error
+// rather than silently falling back to "none". Misspelling
+// --decrypter=spos shouldn't quietly disable decryption.
+func TestSelectDecrypter_UnknownErrors(t *testing.T) {
+	_, err := selectDecrypter("vault")
+	if err == nil {
+		t.Fatal("expected error for unknown decrypter")
+	}
+	if !strings.Contains(err.Error(), `"vault"`) {
+		t.Errorf("error doesn't mention the offending value: %v", err)
+	}
+}
+
 // assertSourceRootedAt opens a known file via src.Open and fails if
 // it cannot be read. The only black-box way to verify a Source's
 // FS-root from outside the source package.

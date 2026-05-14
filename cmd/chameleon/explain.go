@@ -22,6 +22,7 @@ import (
 	"github.com/trendvidia/chameleon/chain"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/resolver"
+	chsops "github.com/trendvidia/chameleon/sops"
 	"github.com/trendvidia/chameleon/source"
 )
 
@@ -35,6 +36,7 @@ func explainCmd(out io.Writer, args []string) error {
 		env       = fs.String("env", "", "environment to resolve (defaults to chain spec's default_environment)")
 		field     = fs.String("field", "", "if set, print provenance for this dotted field path only; otherwise print all")
 		ctxKVs    = fs.String("ctx", "", "comma-separated key=value pairs for ${ctx.*} substitutions, e.g. region=eu,tenant=acme")
+		decrypter = fs.String("decrypter", "none", `decrypter for encrypted layers: "none" (error if any encrypted layer is hit) or "sops" (use ambient sops/age/KMS credentials)`)
 	)
 	// includePaths collects --include flag values. Repeatable so callers
 	// can pass multiple proto search roots (mirrors protoc -I). Each
@@ -107,12 +109,19 @@ Flags:`)
 	if err != nil {
 		return err
 	}
+	dec, err := selectDecrypter(*decrypter)
+	if err != nil {
+		return err
+	}
 	sample := dynamicpb.NewMessage(desc)
-	opts := make([]resolver.Option, 0, len(sources)+1)
+	opts := make([]resolver.Option, 0, len(sources)+2)
 	for name, src := range sources {
 		opts = append(opts, resolver.WithSource(name, src))
 	}
 	opts = append(opts, resolver.WithTrace())
+	if dec != nil {
+		opts = append(opts, resolver.WithDecrypter(dec))
+	}
 	r, err := resolver.New[*dynamicpb.Message](sample, spec, opts...)
 	if err != nil {
 		return err
@@ -279,6 +288,25 @@ func format(path, value string, e resolver.TraceEntry) string {
 		fmt.Fprintf(&b, "  [%s]", strings.Join(tags, " | "))
 	}
 	return b.String()
+}
+
+// selectDecrypter maps the --decrypter flag value to a Decrypter
+// instance (or nil for "none"). "sops" returns chsops.Default(),
+// which reads credentials from the ambient environment (AWS_*,
+// GOOGLE_APPLICATION_CREDENTIALS, ~/.config/sops/age/keys.txt, …)
+// — same surface as a production binary's WithDecrypter wiring,
+// so the dev workflow exercises the real path. Unknown values
+// error rather than silently falling back to "none", since a
+// typo'd flag should not silently disable decryption.
+func selectDecrypter(name string) (chsops.Decrypter, error) {
+	switch name {
+	case "", "none":
+		return nil, nil
+	case "sops":
+		return chsops.Default(), nil
+	default:
+		return nil, fmt.Errorf(`--decrypter: unknown value %q (want "none" or "sops")`, name)
+	}
 }
 
 // buildSources derives the source.Source map to register with the
