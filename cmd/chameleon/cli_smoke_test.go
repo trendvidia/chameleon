@@ -259,6 +259,117 @@ func TestGetCmd_MissingRequiredFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "required")
 }
 
+// --- reveal ---
+
+// revealFixture lays out a self-contained schema with a plain
+// scalar + a pxf.Secret field, a chain.pxf, and a base.pxf layer
+// supplying both. Shared by the reveal smoke tests because they
+// all need the same descriptor + resolution surface.
+func revealFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeFixture(t, dir, map[string]string{
+		"pxf/secret.proto": `syntax = "proto3";
+package pxf;
+message Secret {
+  string value = 1;
+  string hint = 2;
+  string fingerprint = 3;
+}
+`,
+		"app.proto": `syntax = "proto3";
+package smoke.v1;
+import "pxf/secret.proto";
+message Cfg {
+  string base_url = 1;
+  pxf.Secret api_key = 2;
+}
+`,
+		"chain.pxf": `version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`,
+		"base.pxf": `base_url = "http://x"
+api_key = "live-plaintext-from-layer"
+`,
+	})
+	return dir
+}
+
+// TestRevealCmd_Smoke writes the plaintext of a Secret-typed field
+// to the supplied io.Writer with no trailing newline — the contract
+// load-bearing for $(...) command substitution.
+func TestRevealCmd_Smoke(t *testing.T) {
+	dir := revealFixture(t)
+
+	var out bytes.Buffer
+	err := revealCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+		"--field=api_key",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "live-plaintext-from-layer", out.String(),
+		"reveal must emit exact plaintext bytes, no trailing newline, no metadata")
+}
+
+// TestRevealCmd_NonSecretFieldRefused — plain scalars route through
+// chameleon get | pxf query. reveal refuses them with a clear
+// diagnostic.
+func TestRevealCmd_NonSecretFieldRefused(t *testing.T) {
+	dir := revealFixture(t)
+
+	var out bytes.Buffer
+	err := revealCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+		"--field=base_url",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a pxf.Secret field",
+		"non-Secret target should produce the type-mismatch error")
+	assert.Empty(t, out.String(),
+		"reveal must not emit any bytes when the field check fails")
+}
+
+// TestRevealCmd_UnknownFieldRefused — a typo'd dotted path errors
+// before the resolver runs, with a message naming the bad segment.
+func TestRevealCmd_UnknownFieldRefused(t *testing.T) {
+	dir := revealFixture(t)
+
+	var out bytes.Buffer
+	err := revealCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+		"--field=nonexistent",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `no field "nonexistent"`,
+		"typo path should name the bad segment")
+}
+
+// TestRevealCmd_MissingRequiredFlag — --field is required alongside
+// --schema/--message/--chain. Missing any of them surfaces the
+// same usage error.
+func TestRevealCmd_MissingRequiredFlag(t *testing.T) {
+	var out bytes.Buffer
+	err := revealCmd(&out, []string{"--schema=/dev/null", "--chain=/dev/null", "--message=x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "required")
+}
+
 // --- verify ---
 
 // TestVerifyCmd_OK — a layer whose @header.content_sha256 matches
@@ -435,7 +546,7 @@ func TestUsage(t *testing.T) {
 	n, _ := r.Read(buf)
 	got := string(buf[:n])
 
-	for _, sub := range []string{"explain", "get", "verify", "migrate", "hash", "lint", "version", "completion"} {
+	for _, sub := range []string{"explain", "get", "reveal", "verify", "migrate", "hash", "lint", "version", "completion"} {
 		assert.Contains(t, got, sub,
 			"usage text should mention every subcommand; missing %q", sub)
 	}
