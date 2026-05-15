@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
+syntax = "proto3";
+
+package chameleon.v1;
+
+import "pxf/annotations.proto";
+
+option go_package = "github.com/trendvidia/chameleon/proto/chameleon/v1;chameleonv1";
+
+// UserConfig is the user-level chameleon CLI configuration, located
+// at `$HOME/.chameleon`. Holds named app entries so a single config
+// file can describe every project the user works on; subcommands
+// load it lazily and merge its values under explicit CLI flags.
+//
+// The file is centralized (one per user, not one per project) so
+// scripts can invoke chameleon from any working directory — picking
+// the project via `--app=<name>` rather than `cd <project>` plus
+// project-local flags. No XDG-flavored discovery for now; revisit
+// if cross-platform config-dir conventions become a real ask.
+//
+// Self-consumed format: the file is a PXF document parsed via
+// protowire-go's pxf.Unmarshal against this message. Dogfooding the
+// PXF format we ship is a load-bearing commitment.
+message UserConfig {
+  // Name of the AppConfig entry used when --app is omitted. Must
+  // reference a key in `apps`, or be empty when `apps` has exactly
+  // one entry (single-app shortcut).
+  string default_app = 1;
+
+  // Named application entries. Keys are the values --app accepts;
+  // values supply per-flag defaults for explain / get / reveal /
+  // verify. Empty maps are permitted (a UserConfig file may exist
+  // before any app is registered) but yield "no default app" if
+  // any defaulted subcommand runs without --app.
+  map<string, AppConfig> apps = 2;
+}
+
+// AppConfig captures default flag values for one application's
+// chain spec. Paths resolve against `root`; absolute paths used
+// verbatim. Fields are deliberately a flat mirror of the CLI flag
+// surface so a hand-written entry reads exactly like the
+// corresponding `chameleon get --flag=value` invocation.
+message AppConfig {
+  // Absolute filesystem root for this app's project tree. All
+  // path-typed fields below resolve against this when relative.
+  // Required; the resolver rejects relative roots up-front
+  // because $HOME/.chameleon is read independently of CWD.
+  string root = 1 [(pxf.required) = true];
+
+  // Path to the .proto schema describing the consumer's typed
+  // config message. Resolved against `root`. Matches
+  // --schema. Required for explain / get / reveal.
+  string schema = 2;
+
+  // Directories to search for proto imports (mirrors protoc -I
+  // and the CLI's --include). Each entry resolves against `root`
+  // when relative. The schema's own directory is prepended
+  // implicitly by the compile step.
+  repeated string include = 3;
+
+  // Fully-qualified message name (e.g. myapp.v1.AppConfig). Matches
+  // --message. Required for explain / get / reveal.
+  string message = 4;
+
+  // Path to chain.pxf. Resolved against `root`. Matches --chain.
+  // Required for explain / get / reveal / verify.
+  string chain = 5;
+
+  // Directory holding layer files referenced by the chain spec.
+  // Resolved against `root`. Matches --layers. Required for
+  // explain / get / reveal / verify.
+  string layers = 6;
+
+  // Default environment for resolution. Matches --env. Optional
+  // — empty means "fall back to chain.pxf's default_environment".
+  string env = 7;
+
+  // Decrypter selector for encrypted layers. Matches --decrypter;
+  // accepted values are "none" and "sops". Optional — empty
+  // resolves to "none" at flag-merge time.
+  string decrypter = 8;
+}

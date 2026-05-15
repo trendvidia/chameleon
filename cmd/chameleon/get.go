@@ -68,6 +68,7 @@ func getCmd(out io.Writer, args []string) error {
 		env       = fs.String("env", "", "environment to resolve (defaults to chain spec's default_environment)")
 		ctxKVs    = fs.String("ctx", "", "comma-separated key=value pairs for ${ctx.*} substitutions, e.g. region=eu,tenant=acme")
 		decrypter = fs.String("decrypter", "none", `decrypter for encrypted layers: "none" (error if any encrypted layer is hit) or "sops" (use ambient sops/age/KMS credentials)`)
+		appName   = fs.String("app", "", "named application entry to load defaults from in $HOME/.chameleon; CLI flags override its values")
 		// emitType controls whether the output starts with a `@type
 		// <fully-qualified-name>\n\n` directive. Default on because
 		// pxf query uses @type for descriptor resolution and a self-
@@ -102,6 +103,17 @@ Flags:`)
 		}
 		return err
 	}
+
+	userCfg, err := loadUserConfig()
+	if err != nil {
+		return err
+	}
+	app, err := selectApp(userCfg, *appName)
+	if err != nil {
+		return err
+	}
+	applyAppDefaults(app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
+
 	if *schema == "" || *message == "" || *chainPath == "" {
 		fs.Usage()
 		return fmt.Errorf("--schema, --message, and --chain are required")

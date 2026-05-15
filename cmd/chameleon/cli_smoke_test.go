@@ -259,6 +259,54 @@ func TestGetCmd_MissingRequiredFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "required")
 }
 
+// TestGetCmd_AppDefaults — end-to-end exercise of the userconfig
+// merge path: write a $HOME/.chameleon entry that points at a
+// fixture project, run getCmd with NO --schema/--message/--chain
+// flags, and assert it still resolves. Proves the wiring (flag
+// parse → loadUserConfig → selectApp → applyAppDefaults → rest of
+// the get pipeline) ties together correctly, not just the helper
+// in isolation.
+func TestGetCmd_AppDefaults(t *testing.T) {
+	projDir := t.TempDir()
+	writeFixture(t, projDir, map[string]string{
+		"app.proto": minimalSchema,
+		"chain.pxf": `version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`,
+		"layers/base.pxf": `base_url = "from-app-defaults"
+max_replicas = 7
+`,
+	})
+
+	cfgPath := filepath.Join(t.TempDir(), ".chameleon")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`@type chameleon.v1.UserConfig
+
+default_app = "smoke"
+
+apps = {
+  "smoke": {
+    root    = "`+projDir+`"
+    schema  = "app.proto"
+    message = "smoke.v1.Cfg"
+    chain   = "chain.pxf"
+    layers  = "layers"
+    env     = "prod"
+  }
+}
+`), 0o644))
+	t.Setenv("CHAMELEON_USER_CONFIG", cfgPath)
+
+	var out bytes.Buffer
+	// Only --emit-type=false to keep the assertion simple; no
+	// schema/message/chain/layers/env flags at all.
+	require.NoError(t, getCmd(&out, []string{"--emit-type=false"}))
+	got := out.String()
+	assert.Contains(t, got, `base_url = "from-app-defaults"`,
+		"app defaults from $HOME/.chameleon should drive resolution")
+	assert.Contains(t, got, "max_replicas = 7")
+}
+
 // --- reveal ---
 
 // revealFixture lays out a self-contained schema with a plain

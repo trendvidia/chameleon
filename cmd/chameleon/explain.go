@@ -37,6 +37,7 @@ func explainCmd(out io.Writer, args []string) error {
 		field     = fs.String("field", "", "if set, print provenance for this dotted field path only; otherwise print all")
 		ctxKVs    = fs.String("ctx", "", "comma-separated key=value pairs for ${ctx.*} substitutions, e.g. region=eu,tenant=acme")
 		decrypter = fs.String("decrypter", "none", `decrypter for encrypted layers: "none" (error if any encrypted layer is hit) or "sops" (use ambient sops/age/KMS credentials)`)
+		appName   = fs.String("app", "", "named application entry to load defaults from in $HOME/.chameleon; CLI flags override its values")
 	)
 	// includePaths collects --include flag values. Repeatable so callers
 	// can pass multiple proto search roots (mirrors protoc -I). Each
@@ -65,6 +66,20 @@ Flags:`)
 		}
 		return err
 	}
+
+	// Merge in $HOME/.chameleon defaults under explicit CLI flags.
+	// A missing file is a no-op; the required-flag check below
+	// produces the same error it always did.
+	userCfg, err := loadUserConfig()
+	if err != nil {
+		return err
+	}
+	app, err := selectApp(userCfg, *appName)
+	if err != nil {
+		return err
+	}
+	applyAppDefaults(app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
+
 	if *schema == "" || *message == "" || *chainPath == "" {
 		fs.Usage()
 		return fmt.Errorf("--schema, --message, and --chain are required")
