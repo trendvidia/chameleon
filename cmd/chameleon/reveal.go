@@ -61,6 +61,7 @@ func revealCmd(out io.Writer, args []string) error {
 		ctxKVs    = fs.String("ctx", "", "comma-separated key=value pairs for ${ctx.*} substitutions, e.g. region=eu,tenant=acme")
 		decrypter = fs.String("decrypter", "none", `decrypter for encrypted layers: "none" (error if any encrypted layer is hit) or "sops" (use ambient sops/age/KMS credentials)`)
 		field     = fs.String("field", "", "dotted path of the pxf.Secret field to reveal, e.g. paddle.api_key (required)")
+		appName   = fs.String("app", "", "named application entry to load defaults from in $HOME/.chameleon; CLI flags override its values")
 	)
 	var includePaths []string
 	fs.Func("include", "directory to search for proto imports (repeatable, like protoc -I)", func(s string) error {
@@ -94,6 +95,20 @@ Flags:`)
 		}
 		return err
 	}
+
+	// --field is reveal-specific (no analog in any app default) so
+	// applyAppDefaults intentionally doesn't touch it. The user
+	// still has to name the secret each invocation — by design.
+	userCfg, err := loadUserConfig()
+	if err != nil {
+		return err
+	}
+	app, err := selectApp(userCfg, *appName)
+	if err != nil {
+		return err
+	}
+	applyAppDefaults(app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
+
 	if *schema == "" || *message == "" || *chainPath == "" || *field == "" {
 		fs.Usage()
 		return fmt.Errorf("--schema, --message, --chain, and --field are required")

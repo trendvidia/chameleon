@@ -24,6 +24,7 @@ func verifyCmd(out io.Writer, args []string) error {
 		env       = fs.String("env", "", "environment to expand (defaults to chain spec's default_environment)")
 		ctxKVs    = fs.String("ctx", "", "comma-separated key=value pairs for ${ctx.*} substitutions, e.g. region=eu,tenant=acme")
 		strict    = fs.Bool("strict", false, "fail if any layer is missing @header.content_sha256 (default: such layers are skipped)")
+		appName   = fs.String("app", "", "named application entry to load chain/layers/env defaults from in $HOME/.chameleon; CLI flags override its values")
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), `chameleon verify — check @header.content_sha256 of every layer in a chain.
@@ -48,6 +49,33 @@ Flags:`)
 		}
 		return err
 	}
+
+	// Verify only needs the chain/layers/env subset of the app
+	// surface; schema/message/include/decrypter aren't read here.
+	// Inline the three-field merge rather than threading nil
+	// pointers through applyAppDefaults.
+	userCfg, err := loadUserConfig()
+	if err != nil {
+		return err
+	}
+	app, err := selectApp(userCfg, *appName)
+	if err != nil {
+		return err
+	}
+	if app != nil {
+		if *chainPath == "" {
+			*chainPath = resolveAppPath(app, app.GetChain())
+		}
+		if *layersDir == "" || *layersDir == "." {
+			if app.GetLayers() != "" {
+				*layersDir = resolveAppPath(app, app.GetLayers())
+			}
+		}
+		if *env == "" {
+			*env = app.GetEnv()
+		}
+	}
+
 	if *chainPath == "" {
 		fs.Usage()
 		return fmt.Errorf("--chain is required")
