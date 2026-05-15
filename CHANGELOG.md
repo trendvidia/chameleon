@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-05-14
+
+Minor release — `chameleon` learns per-user, per-app flag
+defaults from a centralized `$HOME/.chameleon` PXF config file.
+Scripts can now invoke `chameleon get` / `chameleon reveal` /
+`chameleon explain` / `chameleon verify` from any working
+directory with `--app=<name>` (or no flags at all, if the file
+declares a default) instead of repeating the full
+`--schema` / `--include` / `--message` / `--chain` / `--layers` /
+`--env` / `--decrypter` surface every invocation.
+
+### Added
+
+- **`$HOME/.chameleon` user config**
+  ([#75](https://github.com/trendvidia/chameleon/pull/75)). New
+  `chameleon.v1.UserConfig` proto message
+  (`proto/chameleon/v1/user_config.proto`) backs the file; it is
+  parsed via `protowire-go/encoding/pxf.Unmarshal` so the format
+  is dogfooded PXF — no TOML/YAML/JSON dependency. Centralized
+  (one file per user, all apps inside) rather than per-project,
+  so callers don't need to `cd` into a project tree to pick up
+  defaults.
+
+  Example:
+
+  ```pxf
+  @type chameleon.v1.UserConfig
+
+  default_app = "steward"
+
+  apps = {
+    "steward": {
+      root      = "/Users/bene/projects/src/github.com/trendvidia/website"
+      schema    = "proto/steward/config/v1/config.proto"
+      include   = ["proto"]
+      message   = "steward.config.v1.AppConfig"
+      chain     = "config/chain.pxf"
+      layers    = "config/layers"
+      env       = "dev"
+      decrypter = "sops"
+    }
+  }
+  ```
+
+  After this lands:
+
+  ```sh
+  chameleon get | pxf query '.server.addr'    # default app
+  chameleon reveal --field=paddle.api_key     # default app
+  chameleon get --app=worker --env=prod       # different app + env override
+  ```
+
+- **`--app=<name>` flag on `explain`, `get`, `reveal`, `verify`**
+  ([#75](https://github.com/trendvidia/chameleon/pull/75)).
+  Selects which `apps[<name>]` entry from `$HOME/.chameleon`
+  supplies flag defaults for this invocation. Resolution rules:
+  (1) `--app=foo` explicit → `apps["foo"]` (error listing
+  available if absent); (2) `--app` omitted and `default_app`
+  set → that one; (3) single-entry `apps` and no `default_app`
+  → use it (single-app shortcut); (4) otherwise error listing
+  available apps. CLI flags always beat config values; the Go
+  defaults `--layers="."` and `--decrypter="none"` are treated
+  as "unset" by the merge so the app's values still take effect
+  when the CLI invocation omits those flags.
+
+  Subcommands without overlapping flag surface (`lint`,
+  `migrate`, `hash`, `version`, `completion`) are intentionally
+  out of scope.
+
 ## [0.15.0] — 2026-05-14
 
 Minor release — closes the `get` / `reveal` story for secret
