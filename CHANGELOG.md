@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-05-14
+
+Minor release — closes the `get` / `reveal` story for secret
+handling in scripts. `chameleon get` now renders Secret-typed
+fields with an unambiguous `<redacted>` sentinel (was empty
+string), and the new `chameleon reveal` subcommand is the
+explicit, opt-in, single-value path for getting plaintext into a
+shell variable.
+
+### Changed
+
+- **`chameleon get` renders `pxf.Secret` fields as `<redacted>`**
+  ([#72](https://github.com/trendvidia/chameleon/pull/72)).
+  `parse.Move` clears `pxf.Secret.value` to `""` on the resolver's
+  output (the plaintext is moved into a memguard-backed
+  `secret.Map` instead), so previously `chameleon get` emitted
+
+  ```pxf
+  api_key = ""
+  password = ""
+  ```
+
+  for every Secret field — indistinguishable from "operator
+  deliberately set the value to empty," "field is absent," and
+  "field is a redacted secret." `get` now walks the resolved
+  message before marshalling and writes `<redacted>` into every
+  `pxf.Secret.value`, so the output is
+
+  ```pxf
+  api_key = "<redacted>"
+  password = "<redacted>"
+  ```
+
+  unambiguously signalling "deliberately suppressed; plaintext
+  lives in `res.Secrets`, not here." Plain string scalars are
+  untouched.
+
+  *This is a user-visible output change* — scripts that grep for
+  `value = ""` to detect redacted secrets must switch to
+  `<redacted>`. Hence the minor bump.
+
+### Added
+
+- **`chameleon reveal --field=<dotted.path>`**
+  ([#73](https://github.com/trendvidia/chameleon/pull/73)).
+  The deliberate, opt-in, single-value path for getting secret
+  plaintext into a script:
+
+  ```sh
+  export PADDLE_API_KEY=$(chameleon reveal \
+      --field=paddle.api_key \
+      --schema=../proto/steward/config/v1/config.proto \
+      --include=../proto \
+      --message=steward.config.v1.AppConfig \
+      --chain=chain.pxf --layers=layers --env=dev \
+      --decrypter=sops)
+  ```
+
+  Surface mirrors `get` with three deltas: `--field` is
+  required and singular (no tree dumps; forces the caller to
+  name the target); the named field is validated against the
+  message descriptor before the resolver runs (typo'd paths and
+  non-Secret targets error with clean diagnostics instead of
+  conflating into "secret not set"); stdout is exactly the
+  plaintext bytes with no trailing newline (critical for
+  `$(...)` substitution where a trailing `\n` would corrupt the
+  captured value).
+
+  For plain (non-Secret) scalars, use `chameleon get | pxf
+  query`. Reveal refuses non-Secret paths to avoid surprising
+  callers who expected the safety properties of the Secret
+  pipeline.
+
 ## [0.14.4] — 2026-05-14
 
 Additive patch — new `chameleon get` subcommand emits the resolved
