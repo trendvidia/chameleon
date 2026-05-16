@@ -11,6 +11,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bufbuild/protocompile"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/reflect/protoreflect"
+
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/source"
 )
@@ -120,7 +125,7 @@ func TestBuildSources_AutoRegistersUndeclaredLayerSources(t *testing.T) {
 	}
 	// chainDir is unused on this path (no declared sources); pass
 	// the temp dir as a sentinel value to be sure pass 2 ignores it.
-	got, err := buildSources(spec, t.TempDir(), dir)
+	got, err := buildSources(spec, nil, t.TempDir(), dir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
@@ -155,7 +160,7 @@ func TestBuildSources_DeclaredRelativeRootAnchorsAtChainDir(t *testing.T) {
 			"default": {Kind: "fs", Options: map[string]string{"root": "./layers"}},
 		},
 	}
-	got, err := buildSources(spec, chainDir, layersDir)
+	got, err := buildSources(spec, nil, chainDir, layersDir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
@@ -180,7 +185,7 @@ func TestBuildSources_DeclaredFSAbsoluteRootHonored(t *testing.T) {
 			"elsewhere": {Kind: "fs", Options: map[string]string{"root": sourceDir}},
 		},
 	}
-	got, err := buildSources(spec, chainDir, layersDir)
+	got, err := buildSources(spec, nil, chainDir, layersDir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
@@ -202,7 +207,7 @@ func TestBuildSources_DeclaredEmptyRootFallsBackToLayersDir(t *testing.T) {
 			"default": {Kind: "fs"},
 		},
 	}
-	got, err := buildSources(spec, chainDir, layersDir)
+	got, err := buildSources(spec, nil, chainDir, layersDir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
@@ -218,7 +223,7 @@ func TestBuildSources_UnknownKindErrors(t *testing.T) {
 			"vault": {Kind: "hashicorp-vault"},
 		},
 	}
-	_, err := buildSources(spec, t.TempDir(), t.TempDir())
+	_, err := buildSources(spec, nil, t.TempDir(), t.TempDir())
 	if err == nil {
 		t.Fatal("expected error for unknown source kind")
 	}
@@ -239,7 +244,7 @@ func TestBuildSources_EmptyLayerSourceMapsToDefault(t *testing.T) {
 			{Id: "implicit", Source: "", Path: "x.pxf"},
 		},
 	}
-	got, err := buildSources(spec, t.TempDir(), dir)
+	got, err := buildSources(spec, nil, t.TempDir(), dir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
@@ -268,7 +273,7 @@ func TestBuildSources_DeclaredOverridesAuto(t *testing.T) {
 			{Id: "uses-shared", Source: "shared", Path: "right.pxf"},
 		},
 	}
-	got, err := buildSources(spec, t.TempDir(), layersDir)
+	got, err := buildSources(spec, nil, t.TempDir(), layersDir)
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
@@ -289,13 +294,64 @@ func TestBuildSources_DeclaredOverridesAuto(t *testing.T) {
 // map so callers can surface a more useful "spec has no layers"
 // error from the resolver rather than "unregistered source".
 func TestBuildSources_EmptySpecRegistersDefault(t *testing.T) {
-	got, err := buildSources(&chameleonv1.ChainSpec{}, t.TempDir(), t.TempDir())
+	got, err := buildSources(&chameleonv1.ChainSpec{}, nil, t.TempDir(), t.TempDir())
 	if err != nil {
 		t.Fatalf("buildSources: %v", err)
 	}
 	if _, ok := got["default"]; !ok || len(got) != 1 {
 		t.Errorf("expected single %q key; got %v", "default", keysOf(got))
 	}
+}
+
+// TestBuildSources_EnvKindRequiresDescriptor: a declared kind=env
+// source without a passed descriptor is a configuration error, not a
+// silent degrade. The CLI commands pass a non-nil desc; library
+// consumers must do the same or pick a different kind.
+func TestBuildSources_EnvKindRequiresDescriptor(t *testing.T) {
+	spec := &chameleonv1.ChainSpec{
+		Sources: map[string]*chameleonv1.SourceRef{
+			"runtime": {Kind: "env"},
+		},
+	}
+	_, err := buildSources(spec, nil, t.TempDir(), t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kind=env requires a message descriptor")
+}
+
+// TestBuildSources_EnvKindRejectsEncryptedLayer: env layers can't be
+// sops-encrypted; the rejection surfaces here so the operator gets a
+// clear "this combination is meaningless" rather than a confusing
+// downstream "decrypter found no metadata" error.
+func TestBuildSources_EnvKindRejectsEncryptedLayer(t *testing.T) {
+	spec := &chameleonv1.ChainSpec{
+		Sources: map[string]*chameleonv1.SourceRef{
+			"runtime": {Kind: "env"},
+		},
+		Layers: []*chameleonv1.LayerEntry{
+			{Id: "env-runtime", Source: "runtime", Path: "sentinel", Encrypted: true},
+		},
+	}
+	// Descriptor doesn't matter for this check — any non-nil works;
+	// use a small inline fixture via the env source's own test path.
+	desc := compileEnvSentinel(t)
+	_, err := buildSources(spec, desc, t.TempDir(), t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "encrypted=true is meaningless")
+}
+
+// compileEnvSentinel: smallest possible descriptor so the encrypted-
+// rejection test doesn't need to depend on the larger env_test fixture.
+func compileEnvSentinel(t *testing.T) protoreflect.MessageDescriptor {
+	t.Helper()
+	src := `syntax = "proto3"; package x; message X { string a = 1; }`
+	comp := protocompile.Compiler{Resolver: &protocompile.SourceResolver{
+		Accessor: protocompile.SourceAccessorFromMap(map[string]string{"x.proto": src}),
+	}}
+	files, err := comp.Compile(context.Background(), "x.proto")
+	require.NoError(t, err)
+	d, err := files.AsResolver().FindDescriptorByName("x.X")
+	require.NoError(t, err)
+	return d.(protoreflect.MessageDescriptor)
 }
 
 // TestSelectDecrypter_None: the default flag value disables
