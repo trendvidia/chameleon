@@ -140,7 +140,7 @@ Flags:`)
 	if err != nil {
 		return fmt.Errorf("resolve chain dir: %w", err)
 	}
-	sources, err := buildSources(spec, chainDir, *layersDir)
+	sources, err := buildSources(spec, desc, chainDir, *layersDir)
 	if err != nil {
 		return err
 	}

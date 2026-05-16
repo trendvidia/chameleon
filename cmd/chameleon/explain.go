@@ -120,7 +120,7 @@ Flags:`)
 	if err != nil {
 		return fmt.Errorf("resolve chain dir: %w", err)
 	}
-	sources, err := buildSources(spec, chainDir, *layersDir)
+	sources, err := buildSources(spec, desc, chainDir, *layersDir)
 	if err != nil {
 		return err
 	}
@@ -328,15 +328,18 @@ func selectDecrypter(name string) (chsops.Decrypter, error) {
 // resolver from the chain spec. Two-pass:
 //
 //  1. Every source declared in spec.GetSources() — interpret its
-//     `kind` + `options`. Only `kind="fs"` is supported today;
-//     `options["root"]` is the FS root, resolved relative to
-//     chainDir (the chain.pxf's own directory) when not absolute.
-//     Spec authors write paths like `./layers` next to chain.pxf,
-//     so anchoring at chainDir matches authoring intent and the
-//     production runtime where the consumer's binary configures
-//     sources independent of any explain-only flag. When no root
-//     is supplied, fall back to layersDir so a `{ kind = "fs" }`
-//     entry behaves like the historical single-source case.
+//     `kind` + `options`. Supported kinds:
+//       - "fs": filesystem-backed. `options["root"]` is the FS root,
+//         resolved relative to chainDir (the chain.pxf's own
+//         directory) when not absolute. When no root is supplied,
+//         fall back to layersDir so a `{ kind = "fs" }` entry
+//         behaves like the historical single-source case.
+//       - "env": process-environment-backed. `options["prefix"]`
+//         optionally narrows which env vars participate (matches
+//         only names that begin with the prefix; remainder is
+//         compared to the uppercased dotted field path). Requires
+//         the resolved message descriptor so the source can walk
+//         the schema and coerce values at Open time.
 //     Unknown kinds error so callers don't silently get the
 //     wrong behavior.
 //
@@ -345,6 +348,11 @@ func selectDecrypter(name string) (chsops.Decrypter, error) {
 //     common dev shape ("a single layers dir with logical name
 //     prefixes like base / env-dev / secrets-dev, all on disk
 //     together") and is the only place --layers is consulted.
+//
+// In addition: every LayerEntry that references an env-kind source
+// is checked for `encrypted = true` and rejected. Sops decryption
+// has nothing to bite on for env vars; failing fast here is more
+// helpful than a confusing runtime error inside the decrypter.
 //
 // The auto-registration handles chain specs that use source names
 // purely as logical labels without declaring backing sources — the
@@ -355,33 +363,59 @@ func selectDecrypter(name string) (chsops.Decrypter, error) {
 // Returning the bare map (rather than a slice of resolver.Option)
 // keeps the helper testable without driving a live resolver. The
 // caller threads each entry through resolver.WithSource.
-func buildSources(spec proto.Message, chainDir, layersDir string) (map[string]source.Source, error) {
+func buildSources(spec proto.Message, desc protoreflect.MessageDescriptor, chainDir, layersDir string) (map[string]source.Source, error) {
 	cs, ok := spec.(*chameleonv1.ChainSpec)
 	if !ok {
 		return nil, fmt.Errorf("chain spec: unexpected type %T", spec)
 	}
 
 	sources := make(map[string]source.Source)
+	envKinds := make(map[string]bool) // source name → is env-kind
 
 	// Pass 1: declared sources.
 	for name, ref := range cs.GetSources() {
 		kind := ref.GetKind()
-		if kind != "fs" {
+		switch kind {
+		case "fs":
+			root := ref.GetOptions()["root"]
+			switch {
+			case root == "":
+				root = layersDir
+			case !filepath.IsAbs(root):
+				root = filepath.Join(chainDir, root)
+			}
+			sources[name] = source.FS(os.DirFS(root))
+		case "env":
+			if desc == nil {
+				return nil, fmt.Errorf("chain source %q: kind=env requires a message descriptor; pass --schema + --message", name)
+			}
+			var opts []source.EnvOption
+			if prefix := ref.GetOptions()["prefix"]; prefix != "" {
+				opts = append(opts, source.WithPrefix(prefix))
+			}
+			sources[name] = source.Env(desc, opts...)
+			envKinds[name] = true
+		default:
 			return nil, fmt.Errorf(
-				"chain source %q: kind %q not supported by `chameleon explain` "+
-					"(only \"fs\"); run via the consumer's runtime to exercise "+
-					"other kinds",
+				"chain source %q: kind %q not supported (want \"fs\" or \"env\")",
 				name, kind,
 			)
 		}
-		root := ref.GetOptions()["root"]
-		switch {
-		case root == "":
-			root = layersDir
-		case !filepath.IsAbs(root):
-			root = filepath.Join(chainDir, root)
+	}
+
+	// Reject encrypted=true on layers that reference an env source.
+	// sops has nothing to decrypt; failing here beats a runtime
+	// "couldn't find sops metadata" further down the pipeline.
+	for _, layer := range cs.GetLayers() {
+		if !envKinds[layer.GetSource()] {
+			continue
 		}
-		sources[name] = source.FS(os.DirFS(root))
+		if layer.GetEncrypted() {
+			return nil, fmt.Errorf(
+				"chain layer %q: source %q is kind=env; encrypted=true is meaningless (env vars are plaintext)",
+				layer.GetId(), layer.GetSource(),
+			)
+		}
 	}
 
 	// Pass 2: undeclared source names referenced by layers — default

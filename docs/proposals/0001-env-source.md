@@ -1,6 +1,6 @@
 # Proposal 0001 — `kind = "env"` source
 
-**Status:** draft.
+**Status:** implemented in part (v1) — see "What landed" below.
 **Trigger:** trendvidia/steward needed to override `anthropic.api_key` (a Secret) and a pair of LLM perf knobs (`max_tokens`, synth timeout) at runtime. Without an env-aware layer in chameleon, the consumer ended up with `scripts/sync-worker-env.sh` — a sidecar that resolves chameleon and rewrites `.env`. That script *is* a second source of truth, and the consumer is stuck reconciling it.
 
 ## Context
@@ -118,3 +118,27 @@ The cleanest implementation is probably (b) — synthesize PXF from env, let the
 - Should the env source emit a `pxf.required`-style error when a field's env var is empty (vs. unset)? Today an unset env var is "no override"; an explicit empty string is ambiguous. Default: treat empty as unset (most ergonomic), but reserve a flag in source options if a consumer needs distinction.
 - Coercion error display: should `chameleon explain` surface the *attempted* coercion in the trace, so the operator sees "tried to coerce `not-a-number` to int32 for field foo.bar via env FOO_BAR; rejected"?
 - Interaction with `chameleon migrate`: when a field is renamed in the schema, do we also rewrite consumer references to its old derived env-var name? Probably "warn, don't rewrite" since env vars live outside the repo. Worth confirming.
+
+## What landed
+
+The v1 implementation covers the cases listed below; the rest stays as follow-ups so they can be discussed before code lands.
+
+**Shipped:**
+- `source.Env(desc, ...EnvOption)` + `source.WithPrefix(string)` in the `source/` package (`source/env.go`).
+- Scalar coercion: string, bool, int{32,64}, uint{32,64}, float{32,64}, bytes (base64).
+- Well-known leaves treated as scalars sourced from a single env var: `pxf.Secret`, `google.protobuf.Duration`, `google.protobuf.Timestamp`.
+- Recursive descent into singular nested messages; repeated and map fields silently skipped.
+- Coercion failure surfaces as a loud `Open` error citing the field path.
+- Unset env vars are silent — explicit "no override," not an error.
+- `cmd/chameleon` recognises `kind = "env"` in `SourceRef` (CLI's `buildSources` now takes a `MessageDescriptor`, dispatches to `source.Env` for env-kind entries).
+- Chain validation: a layer that references an env-kind source with `encrypted = true` is rejected at `buildSources` time with a self-explanatory error.
+
+**Recommendations confirmed at implementation time:**
+- Mapping convention is implicit (dotted path → `UPPER_SNAKE`, optional prefix). No proto annotation.
+- Field discovery is reflective; no opt-out annotation yet. (Defer until a consumer actually wants one.)
+
+**Followups (separate PRs):**
+- `[(chameleon.env_skip) = true]` field annotation in `pxf/annotations.proto` for fields that should never be env-overridable. Needs a schema-wide regen across consumers.
+- `chameleon explain` provenance string customization for env-sourced fields (cite env var name instead of file path).
+- `chameleon reveal` flagging absence of at-rest encryption when a Secret resolves from an env layer.
+- Enum coercion (currently rejected as "unsupported field kind"). Trivial to add; deferred until a consumer asks.
