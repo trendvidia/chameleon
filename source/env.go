@@ -112,7 +112,7 @@ const (
 // pathPrefix is the dotted field path of m's parent (empty at root).
 func (s *envSource) populate(m protoreflect.Message, pathPrefix []string) error {
 	fields := m.Descriptor().Fields()
-	for i := 0; i < fields.Len(); i++ {
+	for i := range fields.Len() {
 		fd := fields.Get(i)
 		if fd.IsList() || fd.IsMap() {
 			continue
@@ -198,7 +198,7 @@ func coerceMessageLeaf(name protoreflect.FullName, m protoreflect.Message, raw s
 		secondsFd := m.Descriptor().Fields().ByName("seconds")
 		nanosFd := m.Descriptor().Fields().ByName("nanos")
 		if secondsFd == nil || nanosFd == nil {
-			return fmt.Errorf("Duration descriptor missing seconds/nanos")
+			return fmt.Errorf("google.protobuf.Duration descriptor missing seconds/nanos")
 		}
 		m.Set(secondsFd, protoreflect.ValueOfInt64(dp.GetSeconds()))
 		m.Set(nanosFd, protoreflect.ValueOfInt32(dp.GetNanos()))
@@ -211,7 +211,7 @@ func coerceMessageLeaf(name protoreflect.FullName, m protoreflect.Message, raw s
 		secondsFd := m.Descriptor().Fields().ByName("seconds")
 		nanosFd := m.Descriptor().Fields().ByName("nanos")
 		if secondsFd == nil || nanosFd == nil {
-			return fmt.Errorf("Timestamp descriptor missing seconds/nanos")
+			return fmt.Errorf("google.protobuf.Timestamp descriptor missing seconds/nanos")
 		}
 		m.Set(secondsFd, protoreflect.ValueOfInt64(t.Unix()))
 		m.Set(nanosFd, protoreflect.ValueOfInt32(int32(t.Nanosecond())))
