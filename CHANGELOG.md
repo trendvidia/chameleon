@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-05-16
+
+Minor release — `chameleon` learns a second `Source` kind:
+`kind = "env"` reads process environment variables at resolve
+time and emits a synthetic PXF layer the existing parse + merge
+pipeline consumes like any other layer. Downstream consumers
+that previously bridged chameleon-resolved values into env-var-
+driven binaries via sidecar scripts can now declare an env
+layer in the chain spec and delete the script.
+
+### Added
+
+- **`source.Env(desc, ...EnvOption)` + `kind = "env"` chain spec
+  support** ([#78](https://github.com/trendvidia/chameleon/pull/78)).
+  At `Open()` time the source walks the resolved message's
+  descriptor, derives an env-var name per scalar leaf (dotted
+  field path → `UPPER_SNAKE` with optional source-level prefix
+  via `source.WithPrefix("FOO_")`), coerces the env value to the
+  field's typed value, builds a partial `dynamicpb.Message`, and
+  marshals it as a PXF document the resolver merges normally.
+
+  Discovery rules:
+    - Recurses into singular nested message fields (so
+      `anthropic.api_key` under `AppConfig.Anthropic` works).
+    - Skips `repeated` and `map` fields — env vars are flat;
+      structured overrides belong in pxf files.
+    - Treats `pxf.Secret`, `google.protobuf.Duration`, and
+      `google.protobuf.Timestamp` as scalar leaves sourced from
+      a single env var rather than descending into
+      `seconds`/`nanos`/`value` sub-fields.
+
+  Coercion covers string, bool, int{32,64}, uint{32,64},
+  float{32,64}, bytes (base64), `pxf.Secret`, `Duration` (Go
+  duration syntax), and `Timestamp` (RFC 3339). Parse failure
+  surfaces as a loud `Open` error citing the field path; an
+  unset env var is silent — that's "no override," not an error.
+
+  Example chain spec:
+
+  ```pxf
+  sources = {
+    "default": { kind = "fs"  options = { "root": "./layers" } }
+    "env":     { kind = "env" options = { "prefix": "STEWARD_" } }
+  }
+
+  layers = [
+    { id = "base"        path = "base.pxf"        for_each = ONCE }
+    { id = "env-layer"   path = "env/${env}.pxf"  for_each = PER_ENV }
+    { id = "env-runtime" path = "(env)"           source = "env" for_each = ONCE }
+  ]
+  ```
+
+  Setting `STEWARD_ANTHROPIC_API_KEY=sk-...` resolves into
+  `cfg.Anthropic.ApiKey` with the same `pxf.Secret` semantics as
+  if the value had come from a sops-encrypted file.
+
+- **`cmd/chameleon` recognises `kind = "env"`**
+  ([#78](https://github.com/trendvidia/chameleon/pull/78)). The
+  CLI's `buildSources` now takes a `MessageDescriptor` and
+  dispatches env-kind entries to `source.Env`. `get` / `reveal` /
+  `explain` pass the descriptor they already compile.
+
+- **Chain validation rejects encrypted env layers**
+  ([#78](https://github.com/trendvidia/chameleon/pull/78)). A
+  `LayerEntry` that references an env-kind source with
+  `encrypted = true` fails at `buildSources` time — sops has
+  nothing to decrypt for env vars, and failing fast beats a
+  confusing runtime "no sops metadata" error.
+
+- **`docs/proposals/`** ([#77](https://github.com/trendvidia/chameleon/pull/77)).
+  New directory for ADR-style design memos that need review
+  before code lands. The env-source design lives there as
+  `0001-env-source.md` with a "What landed" section closing the
+  loop between proposed and shipped.
+
+### Deferred
+
+Documented as followups in
+[`docs/proposals/0001-env-source.md`](docs/proposals/0001-env-source.md):
+
+- `[(chameleon.env_skip) = true]` field annotation for opting a
+  field out of env override. Needs `pxf/annotations.proto`
+  change + schema-wide regen across consumers.
+- `chameleon explain` provenance customization for env-sourced
+  fields (cite env var name instead of file path).
+- `chameleon reveal` flagging absence of at-rest encryption
+  when a `Secret` resolves from an env layer.
+- Enum coercion (currently rejected as unsupported field kind).
+
 ## [0.16.0] — 2026-05-14
 
 Minor release — `chameleon` learns per-user, per-app flag
