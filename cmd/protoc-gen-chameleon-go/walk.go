@@ -18,16 +18,13 @@ import (
 // naming, and keeps the local type names (pathStep, secretSite, ...)
 // the rest of the plugin and its tests refer to.
 
-// secretFullName is re-exported as a local alias for legibility in
-// existing call sites; the canonical constant lives in secretcatalog.
-const secretFullName = secretcatalog.SecretFullName
-
-// pathStep / container are descriptor-level concepts — alias straight
-// through to the catalog types so the plugin and its tests use the
-// same struct without an extra conversion step.
+// pathStep is a descriptor-level concept — alias straight through to
+// the catalog type so the plugin and its tests use the same struct
+// without an extra conversion step. The Container constants are
+// re-exported for the same reason; the Container type itself is not
+// aliased because the plugin only switches on the constants, never
+// names the type.
 type pathStep = secretcatalog.PathStep
-
-type container = secretcatalog.Container
 
 const (
 	containerScalar   = secretcatalog.ContainerScalar

@@ -81,7 +81,7 @@ func IsSecret(md protoreflect.MessageDescriptor) bool {
 func FindInFile(fd protoreflect.FileDescriptor) []Site {
 	var sites []Site
 	msgs := fd.Messages()
-	for i := 0; i < msgs.Len(); i++ {
+	for i := range msgs.Len() {
 		msg := msgs.Get(i)
 		visited := map[protoreflect.FullName]bool{msg.FullName(): true}
 		walkMessage(msg, msg, nil, &sites, visited)
@@ -105,7 +105,7 @@ func FindInMessage(md protoreflect.MessageDescriptor) []Site {
 // reported Site.Root.
 func walkMessage(root, current protoreflect.MessageDescriptor, path []PathStep, out *[]Site, visited map[protoreflect.FullName]bool) {
 	fields := current.Fields()
-	for i := 0; i < fields.Len(); i++ {
+	for i := range fields.Len() {
 		f := fields.Get(i)
 		switch {
 		case f.IsMap():
