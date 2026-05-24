@@ -152,6 +152,55 @@ base_url = "mybigproject.com"
 
 What it catches: a `prod.pxf` file accidentally moved to `env/dev.pxf` (env mismatch), a plaintext file dropped into an encrypted slot (encrypted mismatch), the wrong layer file at the wrong path (id mismatch). What it doesn't carry: any resolution semantics. Layer content is still just the schema-typed body; the header is sanity-check metadata only. Files without `@header` parse exactly as before.
 
+### Templates and interpolation
+
+chameleon recognizes `${...}` in **two distinct stages**. They share the syntax for ops-readable consistency but run on different code paths and can't cross-reference each other.
+
+#### Chain-time path templates
+
+Substituted by `chain.Expand` when materializing the chain spec into a concrete layer set — *before* any layer is loaded.
+
+```pxf
+layers = [
+  { id = "base", path = "base.pxf" },                                # no template
+  { id = "env",  path = "env/${env}.pxf", for_each = PER_ENV },      # → env/prod.pxf
+  { id = "reg",  path = "regions/${ctx.region}/db.pxf",              # → regions/eu/db.pxf
+                 required = true },
+]
+```
+
+- **`${env}`** resolves to the leaf environment name being resolved (`Request.Environment`).
+- **`${ctx.<key>}`** resolves to caller-supplied context values; the key must be declared in `chain.context_keys`.
+- An unset `${ctx.*}` reference **silently skips the layer** unless `required = true`. Set `required` on layers whose absence would be a bug — it converts the silent skip into a hard error.
+- The bundler (`chameleon bundle build`) **rejects** chain specs containing `${ctx.*}` outright: bundling is build-time and has no runtime context to substitute, so silently-skipped layers would produce a bundle that diverges from runtime resolution.
+
+#### Post-merge field interpolation
+
+Run by `interpolate.Apply` after all layers have merged. Operates on the typed message, not on raw PXF text.
+
+```pxf
+# base.pxf
+domain     = "mybigproject.com"
+base_url   = "https://${domain}"
+api_url    = "https://api.${domain}"
+
+# env/dev.pxf — overriding `domain` re-resolves both templates above
+domain     = "dev.mybigproject.com"
+```
+
+- **Scope.** Top-level string scalars, recursively into nested user-defined messages, repeated string elements, and `map<*, string>` values. `bytes`, numerics, and bools are not interpolated.
+- **References.** Dotted access into the merged message (`${endpoints.primary.url}`). No bracket access, no map-key lookups, no array indices inside `${...}`.
+- **Transitive resolution.** `a → b → c` resolves on demand; the walker doesn't pre-compute. A `MaxResolveDepth` cap (defense added in v0.10.0) prevents pathological chains from blowing the stack.
+- **Cycles.** Detected and surfaced as `interpolate.ErrCycle`. `base_url = "dev.${base_url}"` is a self-reference that errors — interpolation runs against the *final merged state*, so `base_url`'s template resolves to itself. Use an intermediate root variable for compose-from-base patterns (see the `domain` example above).
+- **Unknown references** error with `interpolate.ErrUnknownReference`.
+- **WKT exclusion.** `pxf.Secret`, `google.protobuf.Timestamp`, `google.protobuf.Duration`, and other well-known type subtrees are deliberately not traversed. Their inner fields don't participate in interpolation, and they cannot be referenced from inside a `${...}` lookup. This keeps secret plaintext out of the template namespace and decouples interpolation from value-type internals.
+
+#### The two stages don't cross-reference
+
+You cannot use `${env}` inside a config string value — `interpolate.Apply` would look up `env` as a field path in the merged message and error with `ErrUnknownReference`. You cannot use `${field.path}` inside a chain spec layer path — `chain.Expand` only recognizes `${env}` and `${ctx.*}` and would treat anything else as a literal path component.
+
+If you need the env name surfaced inside the resolved config, declare an explicit field for it in your schema and have each env's layer set it; then `${env_name}`-style references work normally through the post-merge interpolator.
+
 ### Secrets
 
 Fields typed `pxf.Secret` (the WKT defined in [protowire/proto/pxf/secret.proto](https://github.com/trendvidia/protowire/blob/main/proto/pxf/secret.proto)) are recognized by the codec. Author them in PXF as scalar shorthand or block form:
