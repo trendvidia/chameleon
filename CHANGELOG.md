@@ -7,11 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-05-23
+
+Minor release — chameleon learns to **bundle** configuration for distribution. A new end-to-end pipeline produces a per-module zip artifact (chain spec + narrowed, re-encrypted layers) suitable for stuffing into a single secret-manager value. A matching consume-side public API (`bundle.Open` / `bundle.OpenBase64`) returns a `Bundle{FS, Chain, Audit}` that plugs straight into the existing `chameleon.Load` — no special "bundle mode" at runtime. Per-module allow/deny over secret-bearing field paths means a compromised bundle only leaks the surface area that module was authorized to see, and per-env recipient sets keep env isolation in the ciphertext of a single env-agnostic bundle.
+
 ### Added
 
-- **Distribution bundles** ([#80](https://github.com/trendvidia/chameleon/pull/80) → [#84](https://github.com/trendvidia/chameleon/pull/84) plus the consume-side follow-up). A new end-to-end pipeline for shipping per-module configuration as a single secret-manager value:
+- **Distribution bundles** ([#80](https://github.com/trendvidia/chameleon/pull/80) → [#85](https://github.com/trendvidia/chameleon/pull/85)).
   - **`chameleon bundle build`** — decrypts a chain's layers, narrows each to a per-module allowlist of `pxf.Secret` field paths declared in a `BundleManifest`, re-encrypts with module-specific recipients, and packages chain spec + layers as a zip. `--base64` wraps the output for paste-into-secret-manager-field workflows.
-  - **`bundle.Open(r)` / `bundle.OpenBase64(r)`** — new public package. Returns `Bundle{FS, Chain, Audit}` that plugs straight into `chameleon.Load` — the runtime sees the bundle as just another `fs.FS` source, no special "bundle mode" required.
+  - **`bundle.Open(r)` / `bundle.OpenBase64(r)`** — new public package. Returns `Bundle{FS, Chain, Audit}` that plugs straight into `chameleon.Load` — the runtime sees the bundle as just another `fs.FS` source.
   - **`sops.Encrypter` + `sops.DefaultEncrypter()`** — symmetric to the existing `Decrypter`. Backed by getsops/sops/v3's encrypt package (via the trendvidia/sops fork's stable top-level encrypt API).
   - **`BundleManifest`** proto adds `Module` entries with `allow` / `deny` schema-path globs, per-env `recipients_by_env` (so a single env-agnostic bundle still preserves env isolation in ciphertext), and a `default` `Policy` (`ALLOW_ALL` / `DENY_ALL`) controlling fallthrough.
 
