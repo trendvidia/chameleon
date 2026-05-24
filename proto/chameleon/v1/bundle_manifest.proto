@@ -1,0 +1,140 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
+syntax = "proto3";
+
+package chameleon.v1;
+
+import "pxf/annotations.proto";
+
+option go_package = "github.com/trendvidia/chameleon/proto/chameleon/v1;chameleonv1";
+
+// BundleManifest describes how `chameleon bundle build` narrows a
+// resolved configuration before packaging it for distribution. It
+// declares one entry per consumer ("module") with a whitelist of
+// schema paths that module is allowed to receive; everything else is
+// stripped before re-encryption so a compromised bundle leaks only
+// the secrets that module was entitled to see.
+//
+// Resolution model: given `--module=NAME` at bundle time, the
+// bundler
+//   1. Resolves the full chain via the same code path the runtime
+//      uses (decrypting every sops layer).
+//   2. Looks up NAME in `modules`. If absent, applies `default`.
+//   3. Walks the merged tree. For each pxf.Secret-bearing field,
+//      drops it unless its schema path matches a Module.allow
+//      pattern and does NOT match a Module.deny pattern. Non-secret
+//      fields are kept (use the field whitelist on the schema side
+//      if you also need plain-config narrowing — see ROADMAP).
+//   4. Re-encrypts each (possibly trimmed) layer file with the KMS
+//      recipients declared for that module, optionally varying the
+//      recipient set per environment so the dev-env runtime cannot
+//      decrypt the prod-env layer inside the same bundle.
+//   5. Packages chain spec + trimmed layer files into the output
+//      bundle.
+//
+// Patterns use schema-form paths (no `[i]` / `[key]` brackets):
+// `db.password`, `primary.auth_token`, `tenant_keys`. Glob `*`
+// matches one path segment; `**` matches zero or more. Filtering
+// happens at the schema-field level, not at the runtime-data level
+// — you whitelist `tenant_keys` as a whole, not a specific tenant
+// key inside it.
+//
+// Every pattern is validated against the internal/secretcatalog
+// enumeration of the schema before bundling: a pattern that matches
+// no real path is a bundler error (almost always a typo, and the
+// silent-overrestriction failure mode is worse than the
+// fail-loud-at-build mode).
+//
+// Authoring shape:
+//
+//   @header chameleon.v1.BundleManifest
+//   default: ALLOW_ALL
+//   modules: {
+//     name: "billing-worker"
+//     default: DENY_ALL
+//     allow: "db.*"
+//     allow: "primary.auth_token"
+//   }
+message BundleManifest {
+  // Policy applied to modules not listed in `modules`. ALLOW_ALL
+  // matches the ergonomic-default ask; ops can flip to DENY_ALL to
+  // require every module to opt-in explicitly. `chameleon verify`
+  // warns when a deployment uses ALLOW_ALL globally so the
+  // security-conscious default is visible at review time.
+  Policy default = 1;
+
+  // Per-module overrides. Module names match `--module=NAME` at
+  // bundle build time and the chain spec's per-bundle KMS recipient
+  // resolution. No two entries may share a name (bundler error).
+  repeated Module modules = 2;
+
+  message Module {
+    // Module identifier — matches `chameleon bundle build --module`.
+    // Operator-chosen; convention is the binary or service name
+    // (`billing-worker`, `auth-api`).
+    string name = 1 [(pxf.required) = true];
+
+    // Schema-path globs the module is allowed to receive. Empty
+    // list combined with `default = DENY_ALL` produces a
+    // secrets-free bundle (legal — useful for modules that only
+    // need non-secret config).
+    repeated string allow = 2;
+
+    // Schema-path globs explicitly stripped after `allow` is
+    // applied. Use for carve-outs ("everything under `db.*` except
+    // `db.admin_password`") without restructuring the allow list.
+    repeated string deny = 3;
+
+    // Policy applied to schema paths matched by neither `allow`
+    // nor `deny`. Defaults to DENY_ALL when any `allow` pattern is
+    // set (the typical "whitelist" intent) and to BundleManifest.
+    // default otherwise. Set explicitly when you want a mixed
+    // posture — e.g. `allow` listed as documentation, with
+    // `default = ALLOW_ALL` for "let everything through but flag
+    // these as the security-critical surface".
+    Policy default = 4;
+
+    // KMS / age / pgp recipients used to re-encrypt the trimmed
+    // layer files in this module's bundle. Keyed by environment
+    // name as declared in the chain spec: the bundler matches each
+    // resolved layer's declared environment to a key here and
+    // encrypts only to that env's recipients. Layers belonging to
+    // the chain root ("base" / cross-env shared) are encrypted to
+    // the union of all listed recipient sets so every env-specific
+    // runtime can decrypt them.
+    //
+    // Empty map → fall back to `recipients` (single set, all
+    // layers encrypted identically). Useful when the consumer
+    // doesn't want env isolation in ciphertext, only in plaintext
+    // narrowing.
+    map<string, RecipientSet> recipients_by_env = 5;
+
+    // Single recipient set applied to every layer when
+    // `recipients_by_env` is empty. Mutually exclusive with
+    // recipients_by_env at bundle build time; setting both is a
+    // bundler error.
+    RecipientSet recipients = 6;
+  }
+
+  message RecipientSet {
+    // AWS KMS / GCP KMS / Azure Key Vault key identifiers. Format
+    // matches the sops `--kms` flag (provider-prefixed ARN /
+    // resource name).
+    repeated string kms = 1;
+
+    // age recipients (public keys, `age1...`). Suitable for
+    // self-hosted / non-cloud distributions.
+    repeated string age = 2;
+
+    // PGP fingerprints. Discouraged for new deployments —
+    // kept for parity with sops's input surface.
+    repeated string pgp = 3;
+  }
+
+  enum Policy {
+    POLICY_UNSPECIFIED = 0;
+    ALLOW_ALL = 1;
+    DENY_ALL = 2;
+  }
+}
