@@ -108,6 +108,11 @@ func main() {
 		}
 	case "lint":
 		os.Exit(lintCmd(os.Stdout, os.Stderr, os.Args[2:]))
+	case "bundle":
+		if err := bundleCmd(os.Stdout, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon bundle:", err)
+			os.Exit(1)
+		}
 	case "-h", "--help", "help":
 		usage(os.Stdout)
 	default:
@@ -131,6 +136,7 @@ Subcommands:
     migrate     Bulk-edit layer files in a chain spec (add/rename/delete fields).
     hash        Print the canonical body SHA-256 of a single layer file.
     lint        Flag pxfv1.Secret.Value reads / writes in consumer code.
+    bundle      Build a per-module distribution bundle (decrypt → narrow → re-encrypt → zip).
     version     Print chameleon version, Go toolchain, and commit.
     completion  Print shell completion script (bash|zsh|fish).
     help        Show this message.
