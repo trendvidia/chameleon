@@ -334,6 +334,67 @@ r, _ := resolver.New[*AppConfig](sample, spec,
 
 The `Decrypter` interface is one method (`Decrypt`) — straightforward to wrap any encryption backend.
 
+## Distribution bundles
+
+A **bundle** is a zip artifact carrying a chain spec plus its layer files as a single addressable blob. Built per-module: each consumer module ships only the secrets it's authorized to see, so a compromised bundle leaks just that module's surface area — not every secret in the chain.
+
+### What gets narrowed
+
+A `BundleManifest` (PXF-encoded) declares one entry per module, with allow / deny globs over **schema-form** field paths:
+
+```pxf
+modules = [{
+  name = "billing-worker"
+  allow = ["db.*", "primary.auth_token"]    # only these Secret paths survive
+  recipients = { age = ["age1examplerecipient..."] }
+}]
+```
+
+Globs match against the `secretcatalog` enumeration of the consumer schema (`*` matches one segment, `**` matches zero or more). Patterns are validated at build time — a typo'd allow-glob fails the bundler, never silently produces an over-restricted bundle. The narrowing pass only touches `pxf.Secret`-bearing fields; non-secret structural config is preserved verbatim.
+
+The bundler decrypts each layer, drops denied secret fields, then re-encrypts with the module's recipients. `recipients_by_env` opt-in encrypts each layer file to only the env that consumes it, so a single env-agnostic bundle still preserves env isolation in the ciphertext (a dev runtime physically can't decrypt the prod layer).
+
+### Building
+
+```sh
+chameleon bundle build \
+    --manifest=modules.pxf --module=billing-worker \
+    --schema=app.proto --message=app.v1.AppConfig \
+    --chain=chain.pxf --layers=./layers \
+    --decrypter=sops --out=billing-worker.bundle
+```
+
+For paste-into-a-secret-manager-field workflows, add `--base64`:
+
+```sh
+chameleon bundle build ... --base64 \
+    | gcloud secrets versions add billing-worker-bundle --data-file=-
+```
+
+### Consuming
+
+The runtime story stays the chameleon runtime story — the bundle's `chain.pxf` + layer FS plug into `chameleon.Load` exactly the way an on-disk layer directory would:
+
+```go
+import "github.com/trendvidia/chameleon/bundle"
+
+// 1. Pull the bundle out of wherever you stored it.
+raw, _ := secretsClient.Get(ctx, "billing-worker-bundle")
+
+// 2. Open it. Use OpenBase64 for the base64-wrapped form.
+b, err := bundle.OpenBase64(bytes.NewReader(raw))
+if err != nil { return err }
+
+// 3. Resolve normally.
+res, err := chameleon.Load[*myappv1.AppConfig](
+    &myappv1.AppConfig{}, b.Chain, b.FS, "prod",
+)
+if err != nil { return err }
+defer res.Destroy()
+```
+
+`bundle.Open` reads raw zip bytes; `bundle.OpenBase64` decodes the base64 wrapping first. Both return a `Bundle{FS, Chain, Audit}` — `FS` and `Chain` go straight to `chameleon.Load`, `Audit` carries the produce-time manifest hash + module + timestamp for diagnostics.
+
 ## Codegen
 
 The included `protoc-gen-chameleon-go` plugin emits a sidecar `*.chameleon.go` per `.proto` with one accessor per `pxf.Secret` field — including those reached through `repeated` and `map<*, V>` containers.

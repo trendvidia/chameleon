@@ -7,6 +7,7 @@ import (
 	"archive/zip"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -122,6 +123,33 @@ type BuildOptions struct {
 // chameleon's runtime treats them as optional sanity checks, and
 // the bundle's chain spec is authoritative for the layer
 // metadata they encode (id, env, encrypted).
+// BuildBase64 is the symmetric convenience for Build: it wraps
+// opts.Output with base64.NewEncoder before running Build, then
+// explicitly Closes the encoder so the trailing pad group flushes.
+// Equivalent to:
+//
+//	enc := base64.NewEncoder(base64.StdEncoding, opts.Output)
+//	opts.Output = enc
+//	err := Build(ctx, opts)
+//	if cerr := enc.Close(); err == nil { err = cerr }
+//
+// but factored as a single call so the close-error surfacing —
+// which is load-bearing, truncating the pad group is a silent
+// data-loss bug — happens consistently across callers. The
+// matching reader is [bundle.OpenBase64].
+func BuildBase64(ctx context.Context, opts BuildOptions) error {
+	if opts.Output == nil {
+		return fmt.Errorf("bundler: BuildOptions invalid: output is required")
+	}
+	enc := base64.NewEncoder(base64.StdEncoding, opts.Output)
+	opts.Output = enc
+	err := Build(ctx, opts)
+	if cerr := enc.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
 func Build(ctx context.Context, opts BuildOptions) error {
 	if err := opts.validate(); err != nil {
 		return err
@@ -307,9 +335,9 @@ func writeChainSpec(zw *zip.Writer, spec proto.Message) error {
 	if err != nil {
 		return fmt.Errorf("bundler: marshal chain spec: %w", err)
 	}
-	w, err := zw.Create("chain.pxf")
+	w, err := zw.Create(ChainEntryPath)
 	if err != nil {
-		return fmt.Errorf("bundler: zip create chain.pxf: %w", err)
+		return fmt.Errorf("bundler: zip create %s: %w", ChainEntryPath, err)
 	}
 	_, err = w.Write(body)
 	return err
@@ -346,9 +374,9 @@ func writeAudit(zw *zip.Writer, opts BuildOptions, manifest *chameleonv1.BundleM
 	fmt.Fprintf(&b, "built_at: %s\n", now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "chameleon_version: %s\n", chameleonVersion())
 
-	w, err := zw.Create("META/audit.txt")
+	w, err := zw.Create(AuditEntryPath)
 	if err != nil {
-		return fmt.Errorf("bundler: zip create audit: %w", err)
+		return fmt.Errorf("bundler: zip create %s: %w", AuditEntryPath, err)
 	}
 	_, err = io.WriteString(w, b.String())
 	return err

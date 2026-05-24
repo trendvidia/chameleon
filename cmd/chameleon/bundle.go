@@ -6,7 +6,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -154,12 +153,15 @@ Flags:`)
 		return err
 	}
 
-	// Buffer the bundle in memory so we control the write boundary —
-	// writing directly to the final Writer means a half-built zip on
-	// any post-Build failure, which is uglier than the small extra
-	// allocation. Bundles are KB-to-low-MB; memory cost is fine.
+	// Buffer the bundle in memory so a post-Build failure (file IO,
+	// base64 close) doesn't leave a half-built artifact on disk.
+	// Bundles are KB-to-low-MB; memory cost is fine.
 	var buf bytes.Buffer
-	if err := bundler.Build(context.Background(), bundler.BuildOptions{
+	build := bundler.Build
+	if *b64 {
+		build = bundler.BuildBase64
+	}
+	if err := build(context.Background(), bundler.BuildOptions{
 		Manifest:     manifestMsg,
 		Module:       *module,
 		Schema:       schemaDesc,
@@ -178,20 +180,6 @@ Flags:`)
 		return err
 	}
 	defer closeSink()
-
-	if *b64 {
-		enc := base64.NewEncoder(base64.StdEncoding, sink)
-		if _, err := io.Copy(enc, &buf); err != nil {
-			return fmt.Errorf("write base64 output: %w", err)
-		}
-		// The base64 encoder buffers up to three bytes of pad; Close
-		// flushes the trailing group. Errors here MUST be surfaced
-		// (truncated output is a silent data-loss bug).
-		if err := enc.Close(); err != nil {
-			return fmt.Errorf("flush base64 output: %w", err)
-		}
-		return nil
-	}
 	_, err = io.Copy(sink, &buf)
 	return err
 }

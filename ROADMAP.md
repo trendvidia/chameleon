@@ -31,6 +31,7 @@ Originally scoped as "v1.0 prep, weeks of work." Shipped in two consecutive mino
 ## Post-v0.9.0 additions
 
 - **[Proposal 0001 — `kind = "env"` source](docs/proposals/0001-env-source.md)** — `source.Env(desc, ...)` reads process environment variables at resolve time and emits a synthetic PXF layer the existing pipeline merges normally. Eliminates the parallel "sync env from chameleon" sidecar pattern downstreams were starting to need. Scalar coercion + well-known leaves (`pxf.Secret`, `google.protobuf.Duration`, `google.protobuf.Timestamp`) covered in v1; opt-out annotation + `explain`/`reveal` provenance UX deferred to follow-ups documented in the proposal.
+- **Distribution bundles** (PRs #80 → #84) — `chameleon bundle build` produces a per-module zip artifact (chain spec + narrowed, re-encrypted layers) distributable as a single secret-manager value. A `BundleManifest` declares per-module allow/deny globs over secret-bearing field paths so a compromised bundle only leaks that module's surface area; `recipients_by_env` keeps env isolation in the ciphertext of a single env-agnostic bundle. Consumer side is the public `bundle` package: `bundle.Open` / `bundle.OpenBase64` return `Bundle{FS, Chain, Audit}` that plugs straight into `chameleon.Load`. The `--base64` flag on `bundle build` matches `bundle.OpenBase64` for paste-into-secret-manager-field workflows.
 
 ## v1.0 readiness criteria
 
@@ -108,10 +109,10 @@ Enumeration is exhaustive — `go doc <pkg>` at the v1.0 tag should produce the 
 
 ### `github.com/trendvidia/chameleon/sops`
 
-- **Functions**: `Default() Decrypter`, `FormatForPath(path) Format`.
-- **Types**: `Decrypter`, `Format` (with `String()` method).
+- **Functions**: `Default() Decrypter`, `DefaultEncrypter() Encrypter`, `FormatForPath(path) Format`.
+- **Types**: `Decrypter`, `Encrypter`, `Recipients`, `Format` (with `String()` method).
 - **Constants**: `FormatAuto`, `FormatProtowire`, `FormatBinary`, `FormatDotenv`, `FormatINI`, `FormatJSON`, `FormatYAML`.
-- **Errors**: `ErrEmptyCiphertext`.
+- **Errors**: `ErrEmptyCiphertext`, `ErrPlaintextTooLarge`, `ErrEmptyPlaintext`, `ErrNoRecipients`.
 
 ### `github.com/trendvidia/chameleon/source`
 
@@ -119,13 +120,19 @@ Enumeration is exhaustive — `go doc <pkg>` at the v1.0 tag should produce the 
 - **Types**: `Source`, `Info`.
 - **Errors**: `ErrNotFound`.
 
+### `github.com/trendvidia/chameleon/bundle`
+
+- **Functions**: `Open(r io.Reader) (*Bundle, error)`, `OpenBase64(r io.Reader) (*Bundle, error)`.
+- **Types**: `Bundle` (fields `FS fs.FS`, `Chain proto.Message`, `Audit []byte`).
+- **Errors**: `ErrMissingChain`.
+
 ### `github.com/trendvidia/chameleon/wkt`
 
 - **Functions**: `Atomic(d protoreflect.MessageDescriptor) bool`.
 
 ### CLI binaries (stable)
 
-- `chameleon` with subcommands: `explain`, `verify`, `migrate`, `hash`, `lint`. The `lint` subcommand is a `go/analysis` singlechecker; usable directly (`chameleon lint ./...`) or via `go vet -vettool`.
+- `chameleon` with subcommands: `explain`, `get`, `reveal`, `verify`, `migrate`, `hash`, `lint`, `bundle build`. The `lint` subcommand is a `go/analysis` singlechecker; usable directly (`chameleon lint ./...`) or via `go vet -vettool`. `bundle build` produces per-module distribution bundles (`--base64` for paste-friendly output).
 
 ### Codegen output (stable)
 
