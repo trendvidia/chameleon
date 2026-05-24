@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Distribution bundles** ([#80](https://github.com/trendvidia/chameleon/pull/80) → [#84](https://github.com/trendvidia/chameleon/pull/84) plus the consume-side follow-up). A new end-to-end pipeline for shipping per-module configuration as a single secret-manager value:
+  - **`chameleon bundle build`** — decrypts a chain's layers, narrows each to a per-module allowlist of `pxf.Secret` field paths declared in a `BundleManifest`, re-encrypts with module-specific recipients, and packages chain spec + layers as a zip. `--base64` wraps the output for paste-into-secret-manager-field workflows.
+  - **`bundle.Open(r)` / `bundle.OpenBase64(r)`** — new public package. Returns `Bundle{FS, Chain, Audit}` that plugs straight into `chameleon.Load` — the runtime sees the bundle as just another `fs.FS` source, no special "bundle mode" required.
+  - **`sops.Encrypter` + `sops.DefaultEncrypter()`** — symmetric to the existing `Decrypter`. Backed by getsops/sops/v3's encrypt package (via the trendvidia/sops fork's stable top-level encrypt API).
+  - **`BundleManifest`** proto adds `Module` entries with `allow` / `deny` schema-path globs, per-env `recipients_by_env` (so a single env-agnostic bundle still preserves env isolation in ciphertext), and a `default` `Policy` (`ALLOW_ALL` / `DENY_ALL`) controlling fallthrough.
+
+  Manifest patterns are validated against `internal/secretcatalog` at bundle-build time — a typo'd allow-glob fails the bundler instead of silently producing an over-restricted bundle.
+
 ## [0.17.0] — 2026-05-16
 
 Minor release — `chameleon` learns a second `Source` kind:
