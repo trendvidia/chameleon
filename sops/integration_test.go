@@ -132,3 +132,49 @@ func TestRoundTrip_Age_WrongKey(t *testing.T) {
 	assert.Contains(t, strings.ToLower(err.Error()), "decrypt",
 		"error should mention the failing operation")
 }
+
+// TestRoundTrip_ChameleonEncrypter_Age covers the encrypt side of
+// the symmetry: plaintext → chameleon's DefaultEncrypter →
+// ciphertext → chameleon's Decrypter → original plaintext, all
+// keyed on a freshly generated age identity. This is the canary
+// for the bundler's re-encrypt step.
+func TestRoundTrip_ChameleonEncrypter_Age(t *testing.T) {
+	identity, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+	publicKey := identity.Recipient().String()
+	privateKey := identity.String()
+
+	plaintext := []byte(`base_url = "mybigproject.com"
+db_password = "real-secret-do-not-leak"
+`)
+	// Take a copy so we can assert the encrypter wiped the input.
+	plaintextCopy := append([]byte(nil), plaintext...)
+
+	ciphertext, err := chsops.DefaultEncrypter().Encrypt(
+		context.Background(),
+		plaintext,
+		chsops.FormatProtowire,
+		chsops.Recipients{Age: []string{publicKey}},
+	)
+	require.NoError(t, err, "chameleon Encrypter on age recipient")
+	require.NotEmpty(t, ciphertext)
+	assert.Contains(t, string(ciphertext), "sops {",
+		"PXF sops envelope should include the trailing metadata block")
+	assert.Contains(t, string(ciphertext), "ENC[AES256_GCM",
+		"individual leaf values should be wrapped in the AES256_GCM envelope")
+
+	// Plaintext slice must be wiped on success (matches Decrypter's
+	// ciphertext-wipe contract).
+	for i, b := range plaintext {
+		assert.Equal(t, byte(0), b, "plaintext byte %d should be wiped after Encrypt", i)
+	}
+
+	// Decrypt round-trips to the original.
+	t.Setenv("SOPS_AGE_KEY", privateKey)
+	buf, err := chsops.Default().Decrypt(context.Background(), ciphertext, chsops.FormatProtowire)
+	require.NoError(t, err, "round-trip decrypt of chameleon-encrypted ciphertext")
+	defer buf.Destroy()
+
+	assert.Equal(t, string(plaintextCopy), string(buf.Bytes()),
+		"decrypted plaintext should match the original byte-for-byte")
+}

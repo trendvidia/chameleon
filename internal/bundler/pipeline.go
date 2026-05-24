@@ -15,37 +15,11 @@ import (
 	"github.com/trendvidia/chameleon/sops"
 )
 
-// Encrypter re-encrypts a plaintext layer against a set of sops
-// recipients (KMS / age / PGP). Defined here, not in sops/, so the
-// bundler owns the dependency-inversion seam: the next PR adds a
-// getsops-backed implementation in package sops that satisfies this
-// interface. Keeping the interface local also lets tests inject a
-// fake encrypter without pulling in any KMS plumbing.
-//
-// Format mirrors sops.Decrypter — the same enum value is round-
-// tripped so decrypt→narrow→encrypt of a sops-encrypted PXF file
-// produces another sops-encrypted PXF file in the same container
-// shape (yaml envelope around binary-encoded ciphertext, etc.).
-//
-// Recipients is the union of every key the resulting ciphertext can
-// be decrypted by. The pipeline computes this per-layer from the
-// module's recipients_by_env entry (or recipients fallback) so each
-// layer file inside an env-agnostic bundle is encrypted only to
-// the env that consumes it.
-type Encrypter interface {
-	Encrypt(ctx context.Context, plaintext []byte, format sops.Format, recipients Recipients) ([]byte, error)
-}
-
-// Recipients is the flat union of KMS / age / PGP recipients used
-// to encrypt a single layer file. Mirrors
-// chameleonv1.BundleManifest_RecipientSet's three fields but with
-// the proto package decoupled so the encrypter doesn't depend on
-// chameleonv1.
-type Recipients struct {
-	KMS []string
-	Age []string
-	PGP []string
-}
+// sops.Encrypter + sops.Recipients carry the per-layer re-encrypt
+// contract. The bundler computes a sops.Recipients per layer from
+// the module's recipients_by_env entry (or recipients fallback) so
+// each layer file inside an env-agnostic bundle is encrypted only
+// to the env that consumes it.
 
 // BuildOptions is the input bundle for [Build]. Required fields
 // cause Build to error if unset; optional fields fall back to
@@ -82,9 +56,8 @@ type BuildOptions struct {
 	Decrypter sops.Decrypter
 
 	// Encrypter writes sops-encrypted layers in the output bundle.
-	// Required when any layer's resolved Recipients are non-empty.
-	// Will land in package sops in the follow-up PR.
-	Encrypter Encrypter
+	// Required when any layer's resolved sops.Recipients are non-empty.
+	Encrypter sops.Encrypter
 
 	// Output is the io.Writer the zip bundle is streamed to.
 	// Required. The caller is responsible for any wrapping
