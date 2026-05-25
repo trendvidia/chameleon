@@ -361,6 +361,154 @@ chameleon hash base.pxf
 
 Encrypted layers are skipped — sops already authenticates the ciphertext.
 
+## Working with secrets
+
+The reference material covers what a `pxf.Secret` field looks like ([### Secrets](#secrets)) and the memguard accessor API. This section is the end-to-end **operator flow** — from "I need to add a new secret" through to "it's in production, accessed safely, and rotates cleanly."
+
+### Recommended layer layout
+
+Separate plaintext config from encrypted secrets at the file level. `LayerEntry.encrypted = true` selects per-entry decryption, so a typical repo carries:
+
+```
+config/
+  chain.pxf            # plaintext
+  base.pxf             # plaintext defaults — NO secrets here
+  env/
+    prod.pxf           # plaintext per-env config
+    sandbox.pxf
+    dev.pxf
+  secrets/
+    prod.pxf           # sops-encrypted per-env secrets
+    sandbox.pxf
+    dev.pxf
+```
+
+Chain spec wires the secrets layer as `encrypted = true`:
+
+```pxf
+layers = [
+  { id = "base",    path = "base.pxf",           for_each = ONCE },
+  { id = "env",     path = "env/${env}.pxf",     for_each = PER_ENV },
+  { id = "secrets", path = "secrets/${env}.pxf", for_each = PER_ENV, encrypted = true },
+]
+```
+
+**Why separate.** Mixing encrypted and plaintext fields in the same file is supported but discourages the explicit "this is a secret, route through KMS" choice. Gating decryption behind a single dedicated layer keeps the decrypt cost predictable and makes "should this go in `base.pxf` or `secrets/prod.pxf`?" a question operators ask out loud.
+
+**Never put per-env secrets in `base.pxf`.** `base.pxf` loads for every environment including `dev` — a dev runtime with decrypt creds for `base.pxf` would see prod secrets. Per-env secrets belong in per-env layers, full stop.
+
+### Encrypting layers
+
+Use the `sops` CLI directly:
+
+```sh
+# First time — encrypt with one or more recipients in place.
+sops -e -i --age "age1examplerecipient..." secrets/prod.pxf
+
+# Editing an already-encrypted file — sops decrypts to $EDITOR + re-encrypts on save.
+sops secrets/prod.pxf
+```
+
+For team setups, list multiple recipients (one per operator's age key or KMS principal) so anyone authorized can edit. A `.sops.yaml` in the repo root centralises the recipient list per path pattern; check it in alongside the encrypted files so `sops <file>` finds the right keys without flags.
+
+PXF's sops format is recognized by `.pxf` extension on sops versions shipping protowire support; older sops may need `--input-type protowire --output-type protowire`.
+
+### Runtime decryption
+
+Production runtimes wire `sops.Default()` into the resolver:
+
+```go
+r, err := resolver.New[*AppConfig](sample, spec,
+    resolver.WithSource("default", source.FS(os.DirFS("./config"))),
+    resolver.WithDecrypter(sops.Default()),
+)
+```
+
+`sops.Default()` reads keys from the ambient environment, exactly the same lookup the `sops` CLI does:
+
+| Backend | Credential source |
+|---|---|
+| age | `SOPS_AGE_KEY` (inline), `SOPS_AGE_KEY_FILE`, `SOPS_AGE_KEY_CMD`, `~/.config/sops/age/keys.txt` |
+| AWS KMS | Standard AWS SDK chain (env vars, IAM role, EC2 / EKS metadata) |
+| GCP KMS | `GOOGLE_APPLICATION_CREDENTIALS` or workload identity |
+| Azure Key Vault | `AZURE_CLIENT_ID` / managed identity |
+| PGP | gpg-agent |
+
+**Recommended posture.** Cloud KMS in production — the runtime gets decrypt capability via its IAM role, no plaintext keys deployed. age for development and CI test fixtures — flat-file private keys, no cloud round-trip cost. If you need programmatic key injection (fetching keys per-tenant, swapping providers per-deployment), implement `sops.Decrypter` yourself; see [Custom decryption](#custom-decryption-programmatic-key-injection).
+
+### Accessing secrets in code: three rules
+
+1. **Always use the codegen accessor** (`<Root>Secret_<Path>`), not `cfg.Field.Value`. `parse.Move` clears `.Value` to `""` after resolve — reading it returns an empty string, never the actual secret. The `chameleon lint` analyzer catches `.Value` reads at CI time.
+2. **Always `defer buf.Destroy()`** at the same scope as `Open()`. Forgetting it leaks the mlocked page until process exit; the `chameleon.secret.active` OTel gauge surfaces leaked enclaves under monitoring.
+3. **Never round-trip a secret through `string`, `log`, or template rendering.** `buf.Bytes()` lives in mlocked memory; passing it to `fmt.Printf`, `log.Print`, or any `%s` formatter copies plaintext to the regular heap where the GC may not zero it for arbitrarily long. Pass `buf.Bytes()` straight to the consumer (DB driver, HTTP client, file write) without intermediate string conversion.
+
+```go
+pw := mypb.AppConfigSecret_DbPassword(res.Secrets)
+buf, err := pw.Open()
+if err != nil { return err }
+defer buf.Destroy()
+
+// Right: pass bytes directly to the driver.
+db, err := sql.Open("postgres", buildConnStr(buf.Bytes()))
+
+// Wrong — never do this.
+log.Printf("connecting with password %s", string(buf.Bytes()))
+```
+
+### Rotation
+
+**Data rotation** (changing a secret's value) is just a new encrypted layer push:
+
+```sh
+sops secrets/prod.pxf   # edit in $EDITOR, save, sops re-encrypts
+git commit -am "rotate db password"
+git push                # next resolve picks up the new value
+```
+
+**Key rotation** (changing the KMS / age key used to encrypt the layer) goes through sops directly:
+
+```sh
+sops rotate --in-place --add-age "age1new..." --rm-age "age1old..." secrets/prod.pxf
+```
+
+For bulk schema changes across every layer (adding / removing / renaming a Secret field everywhere), use `chameleon migrate` — it decrypts every layer in a chain spec, applies the transform at the PXF AST level, and re-encrypts. Avoids the "find every encrypted file and edit by hand" footgun on multi-env setups.
+
+### Inspecting at resolve time
+
+`chameleon explain` redacts secrets in its output, showing only provenance:
+
+```
+db_password    = <sensitive>                          [secrets | encrypted | sops]
+```
+
+`chameleon reveal --field=db_password` prints the plaintext of one named secret to stdout (no trailing newline) — suitable for `$(...)` substitution in scripts that need a real secret value:
+
+```sh
+PGPASSWORD=$(chameleon reveal --field=db_password --schema=... --chain=... --env=prod --decrypter=sops) \
+  psql -h ...
+```
+
+`reveal` is the deliberate, explicitly-named complement to the always-redacted `get` / `explain` output. Don't use it in long-running processes — the library API gives you mlock + Destroy lifecycle that a stdout pipe can't.
+
+### Distribution
+
+For deployments where the runtime can't easily reach the layer directory + sops decrypt credentials (FaaS, edge, locked-down containers), build a per-module bundle that ships chain + narrowed re-encrypted layers as a single secret-manager value:
+
+```sh
+chameleon bundle build --module=billing-worker --manifest=modules.pxf ... --base64 \
+  | gcloud secrets versions add billing-worker-bundle --data-file=-
+```
+
+The `BundleManifest` declares per-module allow/deny over secret-bearing field paths — a compromised bundle leaks only the secrets that module was authorized to use, not the full chain. See [Distribution bundles](#distribution-bundles) for the full surface (consume side: `bundle.OpenBase64` → `chameleon.Load`).
+
+### What never to do
+
+- **Don't reference a `pxf.Secret` from inside a `${field.path}` interpolation.** The WKT exclusion catches this — the interpolation walker doesn't descend into Secret subtrees and `${db_password}` errors as `unknown reference`. Surfacing a secret as a substring of another field would defeat the memguard story.
+- **Don't read `cfg.Field.Value` on a `pxf.Secret` field.** It's been cleared. Use the codegen accessor or `Secrets.Get(path)`.
+- **Don't reuse a `LockedBuffer` after `Destroy()`.** Each Open + Destroy is one cycle. Need it again? Open it again — the accessors are idempotent.
+- **Don't pin the same age / KMS key across all environments.** Per-env recipients let you revoke a single env's access cleanly (e.g. remove a leaked dev key without touching prod).
+- **Don't commit `.sops.yaml` recipients without auditing them.** Anyone whose key is in the recipient list can decrypt the layer locally even without prod access. Quarterly audit + rotation hygiene applies.
+
 ## Custom decryption (programmatic key injection)
 
 `sops.Default()` sources keys from the ambient environment (`SOPS_AGE_KEY`, etc.). For programmatic key injection — say, fetching keys from a secret manager at runtime — implement the `sops.Decrypter` interface yourself:
@@ -612,3 +760,4 @@ wkt/                    well-known type predicate (atomic-merge boundary)
 ## License
 
 MIT
+ 
