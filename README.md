@@ -592,6 +592,38 @@ defer res.Destroy()
 
 `bundle.Open` reads raw zip bytes; `bundle.OpenBase64` decodes the base64 wrapping first. Both return a `Bundle{FS, Chain, Audit}` — `FS` and `Chain` go straight to `chameleon.Load`, `Audit` carries the produce-time manifest hash + module + timestamp for diagnostics.
 
+### Debugging a bundle from the CLI
+
+`chameleon explain`, `chameleon get`, and `chameleon reveal` all accept bundle input via three flags, so you can debug a bundle the same way you'd debug a loose chain + layer directory — no unzipping by hand. The chain spec inside the bundle replaces `--chain`; the bundle's `fs.FS` replaces `--layers`.
+
+| Flag | Source |
+|---|---|
+| `--bundle=PATH` | Read the bundle bytes from a file at PATH |
+| `--bundle=-` | Read the bundle bytes from stdin |
+| `--bundle-env=VAR` | Read the bundle bytes from the env var named VAR |
+
+Add `--base64` to any of the three when the bundle is base64-wrapped (matching `chameleon bundle build --base64` output).
+
+```sh
+# From a file on disk.
+chameleon reveal --field=db_password \
+    --schema=app.proto --message=app.v1.AppConfig \
+    --bundle=billing-worker.bundle --decrypter=sops --env=prod
+
+# Streamed through stdin — pipe straight from a secret-manager CLI.
+gcloud secrets versions access latest --secret=billing-worker-bundle \
+  | chameleon get --schema=app.proto --message=app.v1.AppConfig \
+                  --bundle=- --base64 --decrypter=sops --env=prod
+
+# From an env var the runtime already has.
+chameleon explain --schema=app.proto --message=app.v1.AppConfig \
+                  --bundle-env=CONFIG_BUNDLE --base64 --env=prod
+```
+
+`--bundle-env=VAR` reads the variable's *value* directly inside the CLI — the shell-expanded form `--bundle="$VAR"` would put the bundle bytes on the process command line where `ps` and `/proc/$pid/cmdline` would surface them to other users on the host. Prefer the by-name form for anything containing ciphertext.
+
+`--bundle*` flags are mutually exclusive with `--chain` and `--layers`; combining them errors at flag-parse time.
+
 ## Codegen
 
 The included `protoc-gen-chameleon-go` plugin emits a sidecar `*.chameleon.go` per `.proto` with one accessor per `pxf.Secret` field — including those reached through `repeated` and `map<*, V>` containers.

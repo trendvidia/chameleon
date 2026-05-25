@@ -67,17 +67,17 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "explain":
-		if err := explainCmd(os.Stdout, os.Args[2:]); err != nil {
+		if err := explainCmd(os.Stdin, os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon explain:", err)
 			os.Exit(1)
 		}
 	case "get":
-		if err := getCmd(os.Stdout, os.Args[2:]); err != nil {
+		if err := getCmd(os.Stdin, os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon get:", err)
 			os.Exit(1)
 		}
 	case "reveal":
-		if err := revealCmd(os.Stdout, os.Args[2:]); err != nil {
+		if err := revealCmd(os.Stdin, os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon reveal:", err)
 			os.Exit(1)
 		}

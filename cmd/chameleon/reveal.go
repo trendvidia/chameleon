@@ -12,11 +12,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/chain"
 	"github.com/trendvidia/chameleon/resolver"
+	"github.com/trendvidia/chameleon/source"
 )
 
 // revealCmd implements `chameleon reveal` — print the plaintext of
@@ -50,12 +52,12 @@ import (
 // construction and the next GC) is the same one all chameleon
 // consumers inherit; closing that requires protowire-go-side work
 // and is not scope for this command.
-func revealCmd(out io.Writer, args []string) error {
+func revealCmd(stdin io.Reader, out io.Writer, args []string) error {
 	fs := flag.NewFlagSet("reveal", flag.ContinueOnError)
 	var (
 		schema    = fs.String("schema", "", ".proto file describing the consumer's config (required)")
 		message   = fs.String("message", "", "fully-qualified message name, e.g. myapp.v1.AppConfig (required)")
-		chainPath = fs.String("chain", "", "path to chain.pxf (required)")
+		chainPath = fs.String("chain", "", "path to chain.pxf (required unless a bundle input is provided)")
 		layersDir = fs.String("layers", ".", "directory holding layer files referenced by the chain spec")
 		env       = fs.String("env", "", "environment to resolve (defaults to chain spec's default_environment)")
 		ctxKVs    = fs.String("ctx", "", "comma-separated key=value pairs for ${ctx.*} substitutions, e.g. region=eu,tenant=acme")
@@ -63,6 +65,7 @@ func revealCmd(out io.Writer, args []string) error {
 		field     = fs.String("field", "", "dotted path of the pxf.Secret field to reveal, e.g. paddle.api_key (required)")
 		appName   = fs.String("app", "", "named application entry to load defaults from in $HOME/.chameleon; CLI flags override its values")
 	)
+	bflags := registerBundleFlags(fs)
 	var includePaths []string
 	fs.Func("include", "directory to search for proto imports (repeatable, like protoc -I)", func(s string) error {
 		includePaths = append(includePaths, s)
@@ -109,9 +112,18 @@ Flags:`)
 	}
 	applyAppDefaults(app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
 
-	if *schema == "" || *message == "" || *chainPath == "" || *field == "" {
+	if *schema == "" || *message == "" || *field == "" {
 		fs.Usage()
-		return fmt.Errorf("--schema, --message, --chain, and --field are required")
+		return fmt.Errorf("--schema, --message, and --field are required")
+	}
+	if !bflags.active() && *chainPath == "" {
+		fs.Usage()
+		return fmt.Errorf("--chain (or --bundle / --bundle-env) is required")
+	}
+	if bflags.active() {
+		if err := rejectChainLayerConflict(fs); err != nil {
+			return err
+		}
 	}
 
 	desc, err := compileSchema(*schema, *message, includePaths)
@@ -126,21 +138,33 @@ Flags:`)
 		return err
 	}
 
-	spec, err := chain.LoadSpec(*chainPath)
-	if err != nil {
-		return err
+	var (
+		spec    proto.Message
+		sources map[string]source.Source
+	)
+	if bflags.active() {
+		b, err := bflags.open(stdin)
+		if err != nil {
+			return err
+		}
+		spec = b.Chain
+		sources = map[string]source.Source{"default": source.FS(b.FS)}
+	} else {
+		spec, err = chain.LoadSpec(*chainPath)
+		if err != nil {
+			return err
+		}
+		chainDir, err := filepath.Abs(filepath.Dir(*chainPath))
+		if err != nil {
+			return fmt.Errorf("resolve chain dir: %w", err)
+		}
+		sources, err = buildSources(spec, desc, chainDir, *layersDir)
+		if err != nil {
+			return err
+		}
 	}
 
 	ctxMap, err := parseCtx(*ctxKVs)
-	if err != nil {
-		return err
-	}
-
-	chainDir, err := filepath.Abs(filepath.Dir(*chainPath))
-	if err != nil {
-		return fmt.Errorf("resolve chain dir: %w", err)
-	}
-	sources, err := buildSources(spec, desc, chainDir, *layersDir)
 	if err != nil {
 		return err
 	}

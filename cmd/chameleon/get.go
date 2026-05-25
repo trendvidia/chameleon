@@ -17,6 +17,7 @@ import (
 
 	"github.com/trendvidia/chameleon/chain"
 	"github.com/trendvidia/chameleon/resolver"
+	"github.com/trendvidia/chameleon/source"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
@@ -58,12 +59,12 @@ const redactedSentinel = "<redacted>"
 // observe the plaintext on the message. Scripts that need secret
 // plaintext should use a dedicated, explicitly-named API rather
 // than this command.
-func getCmd(out io.Writer, args []string) error {
+func getCmd(stdin io.Reader, out io.Writer, args []string) error {
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	var (
 		schema    = fs.String("schema", "", ".proto file describing the consumer's config (required)")
 		message   = fs.String("message", "", "fully-qualified message name, e.g. myapp.v1.AppConfig (required)")
-		chainPath = fs.String("chain", "", "path to chain.pxf (required)")
+		chainPath = fs.String("chain", "", "path to chain.pxf (required unless a bundle input is provided)")
 		layersDir = fs.String("layers", ".", "directory holding layer files referenced by the chain spec")
 		env       = fs.String("env", "", "environment to resolve (defaults to chain spec's default_environment)")
 		ctxKVs    = fs.String("ctx", "", "comma-separated key=value pairs for ${ctx.*} substitutions, e.g. region=eu,tenant=acme")
@@ -78,6 +79,7 @@ func getCmd(out io.Writer, args []string) error {
 		// piping into a tool that supplies its own @type).
 		emitType = fs.Bool("emit-type", true, "prefix output with `@type <message>` directive")
 	)
+	bflags := registerBundleFlags(fs)
 	var includePaths []string
 	fs.Func("include", "directory to search for proto imports (repeatable, like protoc -I)", func(s string) error {
 		includePaths = append(includePaths, s)
@@ -114,9 +116,18 @@ Flags:`)
 	}
 	applyAppDefaults(app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
 
-	if *schema == "" || *message == "" || *chainPath == "" {
+	if *schema == "" || *message == "" {
 		fs.Usage()
-		return fmt.Errorf("--schema, --message, and --chain are required")
+		return fmt.Errorf("--schema and --message are required")
+	}
+	if !bflags.active() && *chainPath == "" {
+		fs.Usage()
+		return fmt.Errorf("--chain (or --bundle / --bundle-env) is required")
+	}
+	if bflags.active() {
+		if err := rejectChainLayerConflict(fs); err != nil {
+			return err
+		}
 	}
 
 	desc, err := compileSchema(*schema, *message, includePaths)
@@ -124,21 +135,33 @@ Flags:`)
 		return err
 	}
 
-	spec, err := chain.LoadSpec(*chainPath)
-	if err != nil {
-		return err
+	var (
+		spec    proto.Message
+		sources map[string]source.Source
+	)
+	if bflags.active() {
+		b, err := bflags.open(stdin)
+		if err != nil {
+			return err
+		}
+		spec = b.Chain
+		sources = map[string]source.Source{"default": source.FS(b.FS)}
+	} else {
+		spec, err = chain.LoadSpec(*chainPath)
+		if err != nil {
+			return err
+		}
+		chainDir, err := filepath.Abs(filepath.Dir(*chainPath))
+		if err != nil {
+			return fmt.Errorf("resolve chain dir: %w", err)
+		}
+		sources, err = buildSources(spec, desc, chainDir, *layersDir)
+		if err != nil {
+			return err
+		}
 	}
 
 	ctxMap, err := parseCtx(*ctxKVs)
-	if err != nil {
-		return err
-	}
-
-	chainDir, err := filepath.Abs(filepath.Dir(*chainPath))
-	if err != nil {
-		return fmt.Errorf("resolve chain dir: %w", err)
-	}
-	sources, err := buildSources(spec, desc, chainDir, *layersDir)
 	if err != nil {
 		return err
 	}
