@@ -10,14 +10,19 @@
 //	    Resolve a config against the given chain spec + layer dir
 //	    and print per-field provenance (which layer set the value,
 //	    whether it came from a default, whether interpolation
-//	    rewrote it, whether it's sensitive).
+//	    rewrote it, whether it's sensitive). Bundle input:
+//	    --bundle=PATH (file), --bundle=- (stdin), or
+//	    --bundle-env=VAR (env var by name) — add --base64 for the
+//	    wrapped form. --bundle* are mutually exclusive with --chain
+//	    / --layers.
 //
 //	chameleon get --schema=app.proto --message=app.v1.AppConfig \
 //	              --chain=chain.pxf --layers=./layers --env=dev
 //	    Resolve a config and print the result as a PXF document.
 //	    Pipe into `pxf query` to extract individual values in
-//	    scripts. Same flag surface as `explain`. Secret-typed
-//	    fields render as `<redacted>`.
+//	    scripts. Same flag surface as `explain` (including the
+//	    --bundle / --bundle-env / --base64 input forms). Secret-
+//	    typed fields render as `<redacted>`.
 //
 //	chameleon reveal --field=paddle.api_key \
 //	                 --schema=app.proto --message=app.v1.AppConfig \
@@ -26,7 +31,18 @@
 //	    Print the plaintext of a single Secret-typed field to
 //	    stdout (no trailing newline). The deliberate, opt-in,
 //	    explicit-naming complement to `get`'s redacted output —
-//	    suitable for $(...) command substitution.
+//	    suitable for $(...) command substitution. Same bundle
+//	    input flags as `explain` / `get`.
+//
+//	chameleon bundle build --manifest=modules.pxf --module=NAME \
+//	                       --schema=app.proto --message=app.v1.AppConfig \
+//	                       --chain=chain.pxf --layers=./layers \
+//	                       --decrypter=sops --out=NAME.bundle
+//	    Produce a per-module distribution bundle (chain spec +
+//	    narrowed, re-encrypted layers as a zip). --base64 for
+//	    paste-into-secret-manager output. Consume via the
+//	    `github.com/trendvidia/chameleon/bundle` package or via the
+//	    --bundle / --bundle-env flags on explain / get / reveal.
 //
 //	chameleon verify --chain=chain.pxf --layers=./layers --env=dev
 //	    Check @header.content_sha256 of every layer the chain spec

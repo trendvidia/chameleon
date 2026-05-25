@@ -113,7 +113,14 @@ max_replicas = 3
 
 // TestExplainCmd_MissingRequiredFlag — missing --schema must surface
 // a usage error, not panic.
+//
+// Isolates from the developer's ~/.chameleon: with no override,
+// applyAppDefaults would silently fill in --schema from the user
+// config and the required-flag check would never fire (the test
+// would then fail at schema-compile time with a path that exists
+// on the author's laptop but not in CI or other developers').
 func TestExplainCmd_MissingRequiredFlag(t *testing.T) {
+	t.Setenv("CHAMELEON_USER_CONFIG", filepath.Join(t.TempDir(), "nonexistent"))
 	var out bytes.Buffer
 	err := explainCmd(nil, &out, []string{"--chain=/dev/null"})
 	require.Error(t, err)
@@ -251,8 +258,12 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 }
 
 // TestGetCmd_MissingRequiredFlag — missing --schema must surface a
-// usage error, not panic.
+// usage error, not panic. CHAMELEON_USER_CONFIG override pins this
+// to a non-existent path so a developer's ~/.chameleon app entry
+// can't silently fill in --schema and skip the required check —
+// see the matching note on TestExplainCmd_MissingRequiredFlag.
 func TestGetCmd_MissingRequiredFlag(t *testing.T) {
+	t.Setenv("CHAMELEON_USER_CONFIG", filepath.Join(t.TempDir(), "nonexistent"))
 	var out bytes.Buffer
 	err := getCmd(nil, &out, []string{"--chain=/dev/null"})
 	require.Error(t, err)
