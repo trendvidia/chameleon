@@ -248,6 +248,204 @@ func TestExplainCmd_BundleFile(t *testing.T) {
 		"explain output via bundle should mention the resolved field")
 }
 
+// --- buildBundleSources: chain spec's declared sources -----------------------
+//
+// Regression tests for the gap where reveal/get/explain with a
+// --bundle* input only registered the bundle's FS as "default",
+// ignoring everything else the chain spec declared. Chains that use
+// an env-source layer (the STEWARD_* runtime-override pattern) would
+// previously error with `layer references unregistered source` mid-
+// resolve; now they work.
+
+// buildBundleForWithEnvSource produces a bundle whose chain declares
+// a `kind=env` source + a layer that consumes it. The env source's
+// prefix is "SMOKE_" so a SMOKE_API_KEY env var feeds api_key. The
+// base layer carries a default so the env-source override has
+// something to win against.
+func buildBundleForWithEnvSource(t *testing.T, dir string) []byte {
+	t.Helper()
+
+	layersFS := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "http://from-base-layer"
+api_key = "from-base-layer"
+`)},
+	}
+
+	chainSpec := &chameleonv1.ChainSpec{
+		Version:      "1.0.0",
+		Environments: []*chameleonv1.Environment{{Name: "prod"}},
+		Sources: map[string]*chameleonv1.SourceRef{
+			"env": {Kind: "env", Options: map[string]string{"prefix": "SMOKE_"}},
+		},
+		Layers: []*chameleonv1.LayerEntry{
+			{Id: "base", Path: "base.pxf", ForEach: chameleonv1.LayerEntry_ONCE, Required: true},
+			{Id: "env-runtime", Path: "(env)", ForEach: chameleonv1.LayerEntry_ONCE, Source: "env"},
+		},
+	}
+	manifest := &chameleonv1.BundleManifest{
+		Modules: []*chameleonv1.BundleManifest_Module{{
+			Name:  "test",
+			Allow: []string{"api_key"},
+		}},
+	}
+
+	desc, err := compileSchema(filepath.Join(dir, "app.proto"), "smoke.v1.Cfg", []string{dir})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	require.NoError(t, bundler.BuildBase64(context.Background(), bundler.BuildOptions{
+		Manifest:     manifest,
+		Module:       "test",
+		Schema:       desc,
+		ChainSpec:    chainSpec,
+		LayersFS:     layersFS,
+		Output:       &buf,
+		ManifestName: "test-manifest",
+	}))
+	return buf.Bytes()
+}
+
+func TestRevealCmd_BundleWithEnvSource(t *testing.T) {
+	dir := revealFixture(t)
+	bundlePath := filepath.Join(dir, "bundle.b64")
+	require.NoError(t, writeFile(bundlePath, buildBundleForWithEnvSource(t, dir)))
+
+	// SMOKE_API_KEY (prefix + UPPER_SNAKE of api_key) overrides the
+	// base layer's plaintext value via the env-runtime layer at the
+	// top of the chain. Without buildBundleSources registering the
+	// env source from the chain spec, reveal would error with
+	// `layer references unregistered source`.
+	t.Setenv("SMOKE_API_KEY", "from-env-source-override")
+
+	var out bytes.Buffer
+	err := revealCmd(nil, &out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--bundle=" + bundlePath,
+		"--base64",
+		"--env=prod",
+		"--field=api_key",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "from-env-source-override", out.String(),
+		"env source must register from chain spec when bundle input is used; "+
+			"env-runtime layer should override the base layer value")
+}
+
+func TestGetCmd_BundleWithEnvSource(t *testing.T) {
+	dir := revealFixture(t)
+	bundlePath := filepath.Join(dir, "bundle.b64")
+	require.NoError(t, writeFile(bundlePath, buildBundleForWithEnvSource(t, dir)))
+
+	t.Setenv("SMOKE_API_KEY", "from-env-source-override")
+
+	var out bytes.Buffer
+	err := getCmd(nil, &out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--bundle=" + bundlePath,
+		"--base64",
+		"--env=prod",
+	})
+	require.NoError(t, err,
+		"get must not error on chains with env-source layers when bundle input is used")
+	// get redacts Secret values, so we can't see the env-source
+	// plaintext here. The non-error is the assertion that matters —
+	// pre-fix this errored with "unregistered source" before any
+	// output was written.
+	assert.Contains(t, out.String(), "base_url",
+		"output should include the resolved non-secret fields")
+}
+
+func TestExplainCmd_BundleWithEnvSource(t *testing.T) {
+	dir := revealFixture(t)
+	bundlePath := filepath.Join(dir, "bundle.b64")
+	require.NoError(t, writeFile(bundlePath, buildBundleForWithEnvSource(t, dir)))
+
+	t.Setenv("SMOKE_API_KEY", "from-env-source-override")
+
+	var out bytes.Buffer
+	err := explainCmd(nil, &out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--bundle=" + bundlePath,
+		"--base64",
+		"--env=prod",
+	})
+	require.NoError(t, err,
+		"explain must not error on chains with env-source layers when bundle input is used")
+}
+
+// TestRevealCmd_BundleRejectsEncryptedEnvLayer mirrors the
+// buildSources rejection: a layer that references a kind=env source
+// MUST NOT carry encrypted=true (sops has nothing to bite on for
+// env vars). buildBundleSources should reject it identically.
+//
+// The bundler may catch this at build time; if not, the run-time
+// rejection covers callers who hand us a bundle they didn't build.
+func TestRevealCmd_BundleRejectsEncryptedEnvLayer(t *testing.T) {
+	dir := revealFixture(t)
+
+	layersFS := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x"
+api_key = "y"
+`)},
+	}
+	chainSpec := &chameleonv1.ChainSpec{
+		Version:      "1.0.0",
+		Environments: []*chameleonv1.Environment{{Name: "prod"}},
+		Sources: map[string]*chameleonv1.SourceRef{
+			"env": {Kind: "env", Options: map[string]string{"prefix": "SMOKE_"}},
+		},
+		Layers: []*chameleonv1.LayerEntry{
+			{Id: "base", Path: "base.pxf", ForEach: chameleonv1.LayerEntry_ONCE, Required: true},
+			{Id: "env-runtime", Path: "(env)", ForEach: chameleonv1.LayerEntry_ONCE, Source: "env", Encrypted: true},
+		},
+	}
+	manifest := &chameleonv1.BundleManifest{
+		Modules: []*chameleonv1.BundleManifest_Module{{Name: "test", Allow: []string{"api_key"}}},
+	}
+	desc, err := compileSchema(filepath.Join(dir, "app.proto"), "smoke.v1.Cfg", []string{dir})
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	buildErr := bundler.BuildBase64(context.Background(), bundler.BuildOptions{
+		Manifest:     manifest,
+		Module:       "test",
+		Schema:       desc,
+		ChainSpec:    chainSpec,
+		LayersFS:     layersFS,
+		Output:       &buf,
+		ManifestName: "test-manifest",
+	})
+	if buildErr != nil {
+		// Bundler caught it first — that's also acceptable; just
+		// confirm the message points at the source-kind conflict.
+		assert.Contains(t, buildErr.Error(), "env",
+			"bundler rejected encrypted-on-env-source layer: %v", buildErr)
+		return
+	}
+
+	bundlePath := filepath.Join(dir, "bundle.b64")
+	require.NoError(t, writeFile(bundlePath, buf.Bytes()))
+
+	err = revealCmd(nil, &bytes.Buffer{}, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--bundle=" + bundlePath,
+		"--base64",
+		"--env=prod",
+		"--field=api_key",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "encrypted=true is meaningless",
+		"buildBundleSources must reject encrypted=true on env-source layers")
+}
+
 // --- silence unused-import nags --------------------------------------------
 
 var _ = strings.Contains

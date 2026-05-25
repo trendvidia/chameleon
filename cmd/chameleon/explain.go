@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -112,7 +113,10 @@ Flags:`)
 			return err
 		}
 		spec = b.Chain
-		sources = map[string]source.Source{"default": source.FS(b.FS)}
+		sources, err = buildBundleSources(spec, desc, b.FS)
+		if err != nil {
+			return err
+		}
 	} else {
 		spec, err = chain.LoadSpec(*chainPath)
 		if err != nil {
@@ -451,6 +455,93 @@ func buildSources(spec proto.Message, desc protoreflect.MessageDescriptor, chain
 	// no layers" error rather than "unregistered source" noise.
 	if len(sources) == 0 {
 		sources["default"] = source.FS(os.DirFS(layersDir))
+	}
+
+	return sources, nil
+}
+
+// buildBundleSources is the bundle-input counterpart to buildSources.
+// Same two-pass shape (declared sources, then undeclared layer-
+// referenced names), but every fs source — declared or implicit —
+// resolves to bundleFS instead of an on-disk dir:
+//
+//   - kind=fs: source.FS(bundleFS), ignoring options["root"]. The
+//     bundler packs one logical FS root per module (it takes one
+//     --layers dir on the build side); collapsing all fs sources
+//     in the chain onto that root is the correct round-trip.
+//   - kind=env: source.Env(desc, opts...). Identical to buildSources
+//     — env sources don't read from disk, so they behave the same
+//     regardless of how layer files are sourced.
+//   - any other kind: rejected with the same error shape.
+//
+// Same encrypted-on-env-source rejection rule as buildSources, for
+// the same reason (sops has nothing to decrypt for env vars).
+//
+// Without this helper, callers using a --bundle input would only
+// see whatever single-source map they constructed inline, missing
+// every declared source the chain spec carries — chains with an
+// env-runtime layer (the common shape for STEWARD_*-style runtime
+// overrides) would error mid-resolve with "unregistered source".
+func buildBundleSources(spec proto.Message, desc protoreflect.MessageDescriptor, bundleFS iofs.FS) (map[string]source.Source, error) {
+	cs, ok := spec.(*chameleonv1.ChainSpec)
+	if !ok {
+		return nil, fmt.Errorf("chain spec: unexpected type %T", spec)
+	}
+
+	sources := make(map[string]source.Source)
+	envKinds := make(map[string]bool)
+
+	for name, ref := range cs.GetSources() {
+		kind := ref.GetKind()
+		switch kind {
+		case "fs":
+			sources[name] = source.FS(bundleFS)
+		case "env":
+			if desc == nil {
+				return nil, fmt.Errorf("chain source %q: kind=env requires a message descriptor; pass --schema + --message", name)
+			}
+			var opts []source.EnvOption
+			if prefix := ref.GetOptions()["prefix"]; prefix != "" {
+				opts = append(opts, source.WithPrefix(prefix))
+			}
+			sources[name] = source.Env(desc, opts...)
+			envKinds[name] = true
+		default:
+			return nil, fmt.Errorf(
+				"chain source %q: kind %q not supported (want \"fs\" or \"env\")",
+				name, kind,
+			)
+		}
+	}
+
+	for _, layer := range cs.GetLayers() {
+		if !envKinds[layer.GetSource()] {
+			continue
+		}
+		if layer.GetEncrypted() {
+			return nil, fmt.Errorf(
+				"chain layer %q: source %q is kind=env; encrypted=true is meaningless (env vars are plaintext)",
+				layer.GetId(), layer.GetSource(),
+			)
+		}
+	}
+
+	// Undeclared source names referenced by layers — default to the
+	// bundle's FS so a logical label the chain doesn't explicitly
+	// declare still resolves against bundled content.
+	for _, layer := range cs.GetLayers() {
+		name := layer.GetSource()
+		if name == "" {
+			name = "default"
+		}
+		if _, registered := sources[name]; registered {
+			continue
+		}
+		sources[name] = source.FS(bundleFS)
+	}
+
+	if len(sources) == 0 {
+		sources["default"] = source.FS(bundleFS)
 	}
 
 	return sources, nil
