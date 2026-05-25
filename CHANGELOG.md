@@ -7,10 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-05-24
+
+Minor release — closes the "ship a bundle → debug it" loop. `chameleon reveal` / `get` / `explain` now accept bundle input via `--bundle=PATH` (file), `--bundle=-` (stdin), or `--bundle-env=VAR` (env var read by name, so the bundle bytes never leak onto the process command line). `chameleon bundle build` gains a `--force` flag for the everyday "edit manifest → rebuild" loop. Plus a long-overdue test isolation fix that retires the "(pre-existing test failures, unrelated)" caveat we've been carrying in every release PR since #80.
+
 ### Added
 
 - **`chameleon bundle build --force`** ([#89](https://github.com/trendvidia/chameleon/pull/89)). Truncates and overwrites an existing `--out` file. Without `--force`, the bundler errors on an existing path (the original safety default — typo'd paths can't clobber pinned release artifacts or files in active use). Unblocks the iterative "edit manifest → rebuild" loop without needing an `rm` step.
-- **Bundle input on `chameleon reveal` / `get` / `explain`** ([#89](https://github.com/trendvidia/chameleon/pull/89)). The three resolution CLI subcommands can now read their chain spec + layer FS from a bundle instead of loose `--chain` + `--layers` paths, closing the "ship a bundle → debug it" loop. Three mutually-exclusive input forms:
+- **Bundle input on `chameleon reveal` / `get` / `explain`** ([#89](https://github.com/trendvidia/chameleon/pull/89)). The three resolution CLI subcommands can now read their chain spec + layer FS from a bundle instead of loose `--chain` + `--layers` paths. Three mutually-exclusive input forms:
   - `--bundle=PATH` — file on disk.
   - `--bundle=-` — stdin (pipe straight from a secret-manager CLI).
   - `--bundle-env=VAR` — env var by NAME. The CLI reads the variable's value in-process so the bundle bytes never appear on the process command line (unlike `--bundle="$VAR"`, which would leak via `ps` / `/proc/$pid/cmdline`).
