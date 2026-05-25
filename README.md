@@ -311,7 +311,7 @@ Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/ch
 - `chameleon explain` — resolve a chain spec and print per-field provenance (which layer set the value, whether a default was applied, whether interpolation rewrote it, whether the field is sensitive). Accepts on-disk `--chain` + `--layers` or a `--bundle` input (file / stdin / env var, optionally `--base64`).
 - `chameleon get` — resolve a chain spec and print the result as a PXF document. Same input flags as `explain`; secret fields render as `<redacted>`. Pipe into `pxf query` to extract individual values.
 - `chameleon reveal --field=<path>` — print the plaintext of a single Secret-typed field to stdout (no trailing newline; suitable for `$(...)` substitution). Same input flags as `explain`.
-- `chameleon bundle build` — produce a per-module distribution bundle (chain spec + narrowed, re-encrypted layers as a zip). `--base64` for paste-into-secret-manager-field output. See "[Distribution bundles](#distribution-bundles)".
+- `chameleon bundle build` — produce a per-module distribution bundle (chain spec + narrowed, re-encrypted layers as a zip). `--base64` for paste-into-secret-manager-field output, `--force` to truncate-overwrite an existing `--out` file. See "[Distribution bundles](#distribution-bundles)".
 - `chameleon verify` — check `@header.content_sha256` on every layer the chain resolves to. Encrypted layers are skipped (sops already authenticates them).
 - `chameleon migrate` — bulk-edit layer files in a chain spec. Decrypts encrypted layers, applies an AST-level transform (add-field / delete-field / rename-field), re-encrypts preserving the original key set.
 - `chameleon hash` — print the canonical body SHA-256 of a single layer file. Use this value as the `@header.content_sha256` on the layer.
@@ -588,6 +588,12 @@ For paste-into-a-secret-manager-field workflows, add `--base64`:
 ```sh
 chameleon bundle build ... --base64 \
     | gcloud secrets versions add billing-worker-bundle --data-file=-
+```
+
+`--out=PATH` refuses to overwrite an existing file by default — typo'd paths can't clobber a pinned release artifact or a file in active use. For the iterative "edit manifest → rebuild" loop, add `--force` to truncate and overwrite:
+
+```sh
+chameleon bundle build ... --out=billing-worker.bundle --force
 ```
 
 ### Consuming

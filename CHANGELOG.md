@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`chameleon bundle build --force`** ([#89](https://github.com/trendvidia/chameleon/pull/89)). Truncates and overwrites an existing `--out` file. Without `--force`, the bundler errors on an existing path (the original safety default — typo'd paths can't clobber pinned release artifacts or files in active use). Unblocks the iterative "edit manifest → rebuild" loop without needing an `rm` step.
 - **Bundle input on `chameleon reveal` / `get` / `explain`** ([#89](https://github.com/trendvidia/chameleon/pull/89)). The three resolution CLI subcommands can now read their chain spec + layer FS from a bundle instead of loose `--chain` + `--layers` paths, closing the "ship a bundle → debug it" loop. Three mutually-exclusive input forms:
   - `--bundle=PATH` — file on disk.
   - `--bundle=-` — stdin (pipe straight from a secret-manager CLI).

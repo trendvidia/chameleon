@@ -40,9 +40,11 @@
 //	                       --decrypter=sops --out=NAME.bundle
 //	    Produce a per-module distribution bundle (chain spec +
 //	    narrowed, re-encrypted layers as a zip). --base64 for
-//	    paste-into-secret-manager output. Consume via the
-//	    `github.com/trendvidia/chameleon/bundle` package or via the
-//	    --bundle / --bundle-env flags on explain / get / reveal.
+//	    paste-into-secret-manager output. --force to truncate-
+//	    overwrite an existing --out file (default: refuse).
+//	    Consume via the `github.com/trendvidia/chameleon/bundle`
+//	    package or via the --bundle / --bundle-env flags on
+//	    explain / get / reveal.
 //
 //	chameleon verify --chain=chain.pxf --layers=./layers --env=dev
 //	    Check @header.content_sha256 of every layer the chain spec

@@ -167,8 +167,30 @@ func TestBundleBuildCmd_RefusesOverwrite(t *testing.T) {
 	// Pre-create the file so O_EXCL refuses.
 	require.NoError(t, writeFile(outPath, []byte("existing")))
 	err := bundleCmd(&bytes.Buffer{}, append([]string{"build"}, bundleArgs(dir, "--out="+outPath)...))
-	require.Error(t, err, "must refuse to overwrite existing --out path")
+	require.Error(t, err, "must refuse to overwrite existing --out path by default")
 	assert.Contains(t, err.Error(), "exist", "error should mention the existence collision")
+}
+
+func TestBundleBuildCmd_ForceOverwrite(t *testing.T) {
+	dir := bundleFixtures(t)
+	outPath := filepath.Join(dir, "out.bundle")
+	// Pre-create with placeholder bytes; --force should truncate
+	// + overwrite without complaint.
+	require.NoError(t, writeFile(outPath, []byte("stale-content-that-must-be-replaced")))
+
+	err := bundleCmd(&bytes.Buffer{}, append([]string{"build"}, bundleArgs(dir, "--out="+outPath, "--force")...))
+	require.NoError(t, err, "--force should allow overwriting an existing --out path")
+
+	data, err := io.ReadAll(mustOpen(t, outPath))
+	require.NoError(t, err)
+	// The replacement must be a valid bundle, NOT prefixed by the
+	// stale bytes (which would happen if we used O_APPEND or forgot
+	// O_TRUNC and the new content was shorter than the old).
+	assert.False(t, bytes.HasPrefix(data, []byte("stale-content")),
+		"--force must truncate, not append — stale bytes survived the rewrite")
+	entries := readZip(t, data)
+	assert.Contains(t, string(entries["base.pxf"]), "db_password",
+		"forced rewrite should contain the freshly-built narrowed layer")
 }
 
 func TestBundleBuildCmd_MissingRequiredFlag(t *testing.T) {
