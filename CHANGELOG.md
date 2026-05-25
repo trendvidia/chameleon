@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] — 2026-05-25
+
+Patch release — fixes the bundle-input source-registration gap shipped in v0.19.0. `reveal` / `get` / `explain` with `--bundle*` were only registering the bundle's FS as `"default"`, so chains declaring additional sources (most commonly `kind=env` for runtime overrides at the top of the chain) errored mid-resolve with `unregistered source`. The new `buildBundleSources` helper walks the chain spec the same way the on-disk path does, restoring on-disk-vs-bundle parity for every reveal/get/explain flag combination.
+
 ### Fixed
 
-- **`chameleon reveal` / `get` / `explain` with `--bundle*` now register every source declared in the bundle's chain spec, not just the bundle's FS as `"default"`.** Previously the three subcommands hardcoded a one-entry source map when bundle input was active, so chains that declared additional sources — most commonly `kind=env` for runtime overrides at the top of the chain — errored mid-resolve with `resolver: layer references unregistered source: layer="<id>" source="<name>"`. A new `buildBundleSources` helper (sibling to `buildSources`) walks the chain spec's declared sources, registers `kind=env` from the schema descriptor, and routes every `kind=fs` source — declared or implicit — to the bundle's FS root. Same encrypted-on-env-source rejection rule as `buildSources`. Tests in `cmd/chameleon/bundleflags_test.go` cover the env-source happy path for reveal/get/explain plus the encrypted-on-env-source rejection.
+- **`chameleon reveal` / `get` / `explain` with `--bundle*` now register every source declared in the bundle's chain spec, not just the bundle's FS as `"default"`** ([#91](https://github.com/trendvidia/chameleon/pull/91)). Previously the three subcommands hardcoded a one-entry source map when bundle input was active, so chains that declared additional sources — most commonly `kind=env` for runtime overrides at the top of the chain — errored mid-resolve with `resolver: layer references unregistered source: layer="<id>" source="<name>"`. A new `buildBundleSources` helper (sibling to `buildSources`) walks the chain spec's declared sources, registers `kind=env` from the schema descriptor, and routes every `kind=fs` source — declared or implicit — to the bundle's FS root. Same encrypted-on-env-source rejection rule as `buildSources`. Tests in `cmd/chameleon/bundleflags_test.go` cover the env-source happy path for reveal/get/explain plus the encrypted-on-env-source rejection.
 
 ## [0.19.0] — 2026-05-24
 
