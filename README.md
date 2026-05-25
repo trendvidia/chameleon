@@ -308,7 +308,10 @@ Currently only `pxf.Secret` has a metadata concept (`hint`, `fingerprint`). Othe
 
 Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/chameleon@latest`. Subcommands:
 
-- `chameleon explain` — resolve a chain spec and print per-field provenance (which layer set the value, whether a default was applied, whether interpolation rewrote it, whether the field is sensitive).
+- `chameleon explain` — resolve a chain spec and print per-field provenance (which layer set the value, whether a default was applied, whether interpolation rewrote it, whether the field is sensitive). Accepts on-disk `--chain` + `--layers` or a `--bundle` input (file / stdin / env var, optionally `--base64`).
+- `chameleon get` — resolve a chain spec and print the result as a PXF document. Same input flags as `explain`; secret fields render as `<redacted>`. Pipe into `pxf query` to extract individual values.
+- `chameleon reveal --field=<path>` — print the plaintext of a single Secret-typed field to stdout (no trailing newline; suitable for `$(...)` substitution). Same input flags as `explain`.
+- `chameleon bundle build` — produce a per-module distribution bundle (chain spec + narrowed, re-encrypted layers as a zip). `--base64` for paste-into-secret-manager-field output, `--force` to truncate-overwrite an existing `--out` file. See "[Distribution bundles](#distribution-bundles)".
 - `chameleon verify` — check `@header.content_sha256` on every layer the chain resolves to. Encrypted layers are skipped (sops already authenticates them).
 - `chameleon migrate` — bulk-edit layer files in a chain spec. Decrypts encrypted layers, applies an AST-level transform (add-field / delete-field / rename-field), re-encrypts preserving the original key set.
 - `chameleon hash` — print the canonical body SHA-256 of a single layer file. Use this value as the `@header.content_sha256` on the layer.
@@ -490,6 +493,25 @@ PGPASSWORD=$(chameleon reveal --field=db_password --schema=... --chain=... --env
 
 `reveal` is the deliberate, explicitly-named complement to the always-redacted `get` / `explain` output. Don't use it in long-running processes — the library API gives you mlock + Destroy lifecycle that a stdout pipe can't.
 
+Both `explain` and `reveal` (and `get`) also accept bundle input — useful when debugging what a deployed runtime actually sees, since the bundle ships through the same path the runtime resolved:
+
+```sh
+# Bundle on disk.
+chameleon reveal --field=db_password --bundle=billing-worker.bundle \
+                 --schema=... --decrypter=sops --env=prod
+
+# Pipe from a secret-manager CLI (base64-wrapped).
+gcloud secrets versions access latest --secret=billing-worker-bundle \
+  | chameleon reveal --field=db_password --bundle=- --base64 \
+                     --schema=... --decrypter=sops --env=prod
+
+# Read straight from the env var a container already has.
+chameleon reveal --field=db_password --bundle-env=CONFIG_BUNDLE --base64 \
+                 --schema=... --decrypter=sops --env=prod
+```
+
+See "[Debugging a bundle from the CLI](#debugging-a-bundle-from-the-cli)" for the full surface and the security note on `--bundle-env=VAR` vs `--bundle="$VAR"`.
+
 ### Distribution
 
 For deployments where the runtime can't easily reach the layer directory + sops decrypt credentials (FaaS, edge, locked-down containers), build a per-module bundle that ships chain + narrowed re-encrypted layers as a single secret-manager value:
@@ -568,6 +590,12 @@ chameleon bundle build ... --base64 \
     | gcloud secrets versions add billing-worker-bundle --data-file=-
 ```
 
+`--out=PATH` refuses to overwrite an existing file by default — typo'd paths can't clobber a pinned release artifact or a file in active use. For the iterative "edit manifest → rebuild" loop, add `--force` to truncate and overwrite:
+
+```sh
+chameleon bundle build ... --out=billing-worker.bundle --force
+```
+
 ### Consuming
 
 The runtime story stays the chameleon runtime story — the bundle's `chain.pxf` + layer FS plug into `chameleon.Load` exactly the way an on-disk layer directory would:
@@ -591,6 +619,38 @@ defer res.Destroy()
 ```
 
 `bundle.Open` reads raw zip bytes; `bundle.OpenBase64` decodes the base64 wrapping first. Both return a `Bundle{FS, Chain, Audit}` — `FS` and `Chain` go straight to `chameleon.Load`, `Audit` carries the produce-time manifest hash + module + timestamp for diagnostics.
+
+### Debugging a bundle from the CLI
+
+`chameleon explain`, `chameleon get`, and `chameleon reveal` all accept bundle input via three flags, so you can debug a bundle the same way you'd debug a loose chain + layer directory — no unzipping by hand. The chain spec inside the bundle replaces `--chain`; the bundle's `fs.FS` replaces `--layers`.
+
+| Flag | Source |
+|---|---|
+| `--bundle=PATH` | Read the bundle bytes from a file at PATH |
+| `--bundle=-` | Read the bundle bytes from stdin |
+| `--bundle-env=VAR` | Read the bundle bytes from the env var named VAR |
+
+Add `--base64` to any of the three when the bundle is base64-wrapped (matching `chameleon bundle build --base64` output).
+
+```sh
+# From a file on disk.
+chameleon reveal --field=db_password \
+    --schema=app.proto --message=app.v1.AppConfig \
+    --bundle=billing-worker.bundle --decrypter=sops --env=prod
+
+# Streamed through stdin — pipe straight from a secret-manager CLI.
+gcloud secrets versions access latest --secret=billing-worker-bundle \
+  | chameleon get --schema=app.proto --message=app.v1.AppConfig \
+                  --bundle=- --base64 --decrypter=sops --env=prod
+
+# From an env var the runtime already has.
+chameleon explain --schema=app.proto --message=app.v1.AppConfig \
+                  --bundle-env=CONFIG_BUNDLE --base64 --env=prod
+```
+
+`--bundle-env=VAR` reads the variable's *value* directly inside the CLI — the shell-expanded form `--bundle="$VAR"` would put the bundle bytes on the process command line where `ps` and `/proc/$pid/cmdline` would surface them to other users on the host. Prefer the by-name form for anything containing ciphertext.
+
+`--bundle*` flags are mutually exclusive with `--chain` and `--layers`; combining them errors at flag-parse time.
 
 ## Codegen
 

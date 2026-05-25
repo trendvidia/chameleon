@@ -65,7 +65,7 @@ max_replicas = 3
 	})
 
 	var out bytes.Buffer
-	err := explainCmd(&out, []string{
+	err := explainCmd(nil, &out, []string{
 		"--schema=" + filepath.Join(dir, "app.proto"),
 		"--message=smoke.v1.Cfg",
 		"--chain=" + filepath.Join(dir, "chain.pxf"),
@@ -97,7 +97,7 @@ max_replicas = 3
 	})
 
 	var out bytes.Buffer
-	require.NoError(t, explainCmd(&out, []string{
+	require.NoError(t, explainCmd(nil, &out, []string{
 		"--schema=" + filepath.Join(dir, "app.proto"),
 		"--message=smoke.v1.Cfg",
 		"--chain=" + filepath.Join(dir, "chain.pxf"),
@@ -113,9 +113,16 @@ max_replicas = 3
 
 // TestExplainCmd_MissingRequiredFlag — missing --schema must surface
 // a usage error, not panic.
+//
+// Isolates from the developer's ~/.chameleon: with no override,
+// applyAppDefaults would silently fill in --schema from the user
+// config and the required-flag check would never fire (the test
+// would then fail at schema-compile time with a path that exists
+// on the author's laptop but not in CI or other developers').
 func TestExplainCmd_MissingRequiredFlag(t *testing.T) {
+	t.Setenv("CHAMELEON_USER_CONFIG", filepath.Join(t.TempDir(), "nonexistent"))
 	var out bytes.Buffer
-	err := explainCmd(&out, []string{"--chain=/dev/null"})
+	err := explainCmd(nil, &out, []string{"--chain=/dev/null"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "required")
 }
@@ -140,7 +147,7 @@ max_replicas = 3
 	})
 
 	var out bytes.Buffer
-	err := getCmd(&out, []string{
+	err := getCmd(nil, &out, []string{
 		"--schema=" + filepath.Join(dir, "app.proto"),
 		"--message=smoke.v1.Cfg",
 		"--chain=" + filepath.Join(dir, "chain.pxf"),
@@ -198,7 +205,7 @@ api_key = "live-plaintext-do-not-leak"
 	})
 
 	var out bytes.Buffer
-	err := getCmd(&out, []string{
+	err := getCmd(nil, &out, []string{
 		"--schema=" + filepath.Join(dir, "app.proto"),
 		"--include=" + dir,
 		"--message=smoke.v1.Cfg",
@@ -237,7 +244,7 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 	})
 
 	var out bytes.Buffer
-	require.NoError(t, getCmd(&out, []string{
+	require.NoError(t, getCmd(nil, &out, []string{
 		"--schema=" + filepath.Join(dir, "app.proto"),
 		"--message=smoke.v1.Cfg",
 		"--chain=" + filepath.Join(dir, "chain.pxf"),
@@ -251,10 +258,14 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 }
 
 // TestGetCmd_MissingRequiredFlag — missing --schema must surface a
-// usage error, not panic.
+// usage error, not panic. CHAMELEON_USER_CONFIG override pins this
+// to a non-existent path so a developer's ~/.chameleon app entry
+// can't silently fill in --schema and skip the required check —
+// see the matching note on TestExplainCmd_MissingRequiredFlag.
 func TestGetCmd_MissingRequiredFlag(t *testing.T) {
+	t.Setenv("CHAMELEON_USER_CONFIG", filepath.Join(t.TempDir(), "nonexistent"))
 	var out bytes.Buffer
-	err := getCmd(&out, []string{"--chain=/dev/null"})
+	err := getCmd(nil, &out, []string{"--chain=/dev/null"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "required")
 }
@@ -300,7 +311,7 @@ apps = {
 	var out bytes.Buffer
 	// Only --emit-type=false to keep the assertion simple; no
 	// schema/message/chain/layers/env flags at all.
-	require.NoError(t, getCmd(&out, []string{"--emit-type=false"}))
+	require.NoError(t, getCmd(nil, &out, []string{"--emit-type=false"}))
 	got := out.String()
 	assert.Contains(t, got, `base_url = "from-app-defaults"`,
 		"app defaults from $HOME/.chameleon should drive resolution")
@@ -351,7 +362,7 @@ func TestRevealCmd_Smoke(t *testing.T) {
 	dir := revealFixture(t)
 
 	var out bytes.Buffer
-	err := revealCmd(&out, []string{
+	err := revealCmd(nil, &out, []string{
 		"--schema=" + filepath.Join(dir, "app.proto"),
 		"--include=" + dir,
 		"--message=smoke.v1.Cfg",
@@ -372,7 +383,7 @@ func TestRevealCmd_NonSecretFieldRefused(t *testing.T) {
 	dir := revealFixture(t)
 
 	var out bytes.Buffer
-	err := revealCmd(&out, []string{
+	err := revealCmd(nil, &out, []string{
 		"--schema=" + filepath.Join(dir, "app.proto"),
 		"--include=" + dir,
 		"--message=smoke.v1.Cfg",
@@ -394,7 +405,7 @@ func TestRevealCmd_UnknownFieldRefused(t *testing.T) {
 	dir := revealFixture(t)
 
 	var out bytes.Buffer
-	err := revealCmd(&out, []string{
+	err := revealCmd(nil, &out, []string{
 		"--schema=" + filepath.Join(dir, "app.proto"),
 		"--include=" + dir,
 		"--message=smoke.v1.Cfg",
@@ -413,7 +424,7 @@ func TestRevealCmd_UnknownFieldRefused(t *testing.T) {
 // same usage error.
 func TestRevealCmd_MissingRequiredFlag(t *testing.T) {
 	var out bytes.Buffer
-	err := revealCmd(&out, []string{"--schema=/dev/null", "--chain=/dev/null", "--message=x"})
+	err := revealCmd(nil, &out, []string{"--schema=/dev/null", "--chain=/dev/null", "--message=x"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "required")
 }

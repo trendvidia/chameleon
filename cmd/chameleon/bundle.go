@@ -74,6 +74,7 @@ func bundleBuildCmd(out io.Writer, args []string) error {
 		decrypter = fs.String("decrypter", "none", `decrypter for encrypted layers: "none" (error if any encrypted layer is hit) or "sops" (use ambient sops/age/KMS credentials)`)
 		outPath   = fs.String("out", "-", `output path for the zip bundle; "-" writes to stdout`)
 		b64       = fs.Bool("base64", false, "base64-encode the zip on the way out — paste-friendly for secret-manager fields")
+		force     = fs.Bool("force", false, "if --out=PATH exists, truncate and overwrite it (default: error)")
 		appName   = fs.String("app", "", "named application entry to load defaults from in $HOME/.chameleon; CLI flags override its values")
 	)
 	var includePaths []string
@@ -175,7 +176,7 @@ Flags:`)
 		return err
 	}
 
-	sink, closeSink, err := openOutput(out, *outPath)
+	sink, closeSink, err := openOutput(out, *outPath, *force)
 	if err != nil {
 		return err
 	}
@@ -186,15 +187,25 @@ Flags:`)
 
 // openOutput resolves the --out flag into a writer + a close func.
 // "-" routes to the command's `out` writer (typically stdout) with
-// a no-op close. Any other value opens the named file with
-// O_EXCL — we refuse to overwrite an existing bundle because the
-// CLI doesn't know whether the previous file is in use by another
-// process or pinned by a release tag.
-func openOutput(out io.Writer, path string) (io.Writer, func(), error) {
+// a no-op close. Any other value opens the named file:
+//
+//   - default (force=false): O_EXCL — refuse to overwrite. The CLI
+//     doesn't know whether the previous file is in use by another
+//     process or pinned by a release tag, so the safe default is
+//     to require an explicit choice.
+//   - --force (force=true): O_TRUNC — truncate and overwrite. The
+//     iterative "edit manifest → rebuild" loop needs this; the
+//     `--force` opt-in keeps the typo-clobbers-pinned-artifact
+//     mode behind an explicit flag.
+func openOutput(out io.Writer, path string, force bool) (io.Writer, func(), error) {
 	if path == "" || path == "-" {
 		return out, func() {}, nil
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	excl := os.O_EXCL
+	if force {
+		excl = os.O_TRUNC
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|excl|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open %s: %w", path, err)
 	}

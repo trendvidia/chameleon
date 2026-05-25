@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`chameleon bundle build --force`** ([#89](https://github.com/trendvidia/chameleon/pull/89)). Truncates and overwrites an existing `--out` file. Without `--force`, the bundler errors on an existing path (the original safety default — typo'd paths can't clobber pinned release artifacts or files in active use). Unblocks the iterative "edit manifest → rebuild" loop without needing an `rm` step.
+- **Bundle input on `chameleon reveal` / `get` / `explain`** ([#89](https://github.com/trendvidia/chameleon/pull/89)). The three resolution CLI subcommands can now read their chain spec + layer FS from a bundle instead of loose `--chain` + `--layers` paths, closing the "ship a bundle → debug it" loop. Three mutually-exclusive input forms:
+  - `--bundle=PATH` — file on disk.
+  - `--bundle=-` — stdin (pipe straight from a secret-manager CLI).
+  - `--bundle-env=VAR` — env var by NAME. The CLI reads the variable's value in-process so the bundle bytes never appear on the process command line (unlike `--bundle="$VAR"`, which would leak via `ps` / `/proc/$pid/cmdline`).
+
+  Add `--base64` to any form when the bundle is base64-wrapped (matches `chameleon bundle build --base64` output). `--bundle*` flags are mutually exclusive with `--chain` / `--layers`; combining them errors at flag-parse time.
+
+### Fixed
+
+- **`TestExplainCmd_MissingRequiredFlag` / `TestGetCmd_MissingRequiredFlag` isolation** ([#89](https://github.com/trendvidia/chameleon/pull/89)). Both tests now pin `CHAMELEON_USER_CONFIG` to a non-existent path so the developer's `~/.chameleon` app entry can't silently fill in `--schema` and skip the required-flag check. Eliminates the long-running "two unrelated pre-existing test failures" caveat that's been in every release PR since #80.
+
 ## [0.18.0] — 2026-05-23
 
 Minor release — chameleon learns to **bundle** configuration for distribution. A new end-to-end pipeline produces a per-module zip artifact (chain spec + narrowed, re-encrypted layers) suitable for stuffing into a single secret-manager value. A matching consume-side public API (`bundle.Open` / `bundle.OpenBase64`) returns a `Bundle{FS, Chain, Audit}` that plugs straight into the existing `chameleon.Load` — no special "bundle mode" at runtime. Per-module allow/deny over secret-bearing field paths means a compromised bundle only leaks the surface area that module was authorized to see, and per-env recipient sets keep env isolation in the ciphertext of a single env-agnostic bundle.

@@ -26,12 +26,12 @@ import (
 	"github.com/trendvidia/chameleon/source"
 )
 
-func explainCmd(out io.Writer, args []string) error {
+func explainCmd(stdin io.Reader, out io.Writer, args []string) error {
 	fs := flag.NewFlagSet("explain", flag.ContinueOnError)
 	var (
 		schema    = fs.String("schema", "", ".proto file describing the consumer's config (required)")
 		message   = fs.String("message", "", "fully-qualified message name, e.g. myapp.v1.AppConfig (required)")
-		chainPath = fs.String("chain", "", "path to chain.pxf (required)")
+		chainPath = fs.String("chain", "", "path to chain.pxf (required unless a bundle input is provided)")
 		layersDir = fs.String("layers", ".", "directory holding layer files referenced by the chain spec")
 		env       = fs.String("env", "", "environment to resolve (defaults to chain spec's default_environment)")
 		field     = fs.String("field", "", "if set, print provenance for this dotted field path only; otherwise print all")
@@ -39,6 +39,7 @@ func explainCmd(out io.Writer, args []string) error {
 		decrypter = fs.String("decrypter", "none", `decrypter for encrypted layers: "none" (error if any encrypted layer is hit) or "sops" (use ambient sops/age/KMS credentials)`)
 		appName   = fs.String("app", "", "named application entry to load defaults from in $HOME/.chameleon; CLI flags override its values")
 	)
+	bflags := registerBundleFlags(fs)
 	// includePaths collects --include flag values. Repeatable so callers
 	// can pass multiple proto search roots (mirrors protoc -I). Each
 	// path is added to protocompile's SourceResolver.ImportPaths and is
@@ -80,9 +81,18 @@ Flags:`)
 	}
 	applyAppDefaults(app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
 
-	if *schema == "" || *message == "" || *chainPath == "" {
+	if *schema == "" || *message == "" {
 		fs.Usage()
-		return fmt.Errorf("--schema, --message, and --chain are required")
+		return fmt.Errorf("--schema and --message are required")
+	}
+	if !bflags.active() && *chainPath == "" {
+		fs.Usage()
+		return fmt.Errorf("--chain (or --bundle / --bundle-env) is required")
+	}
+	if bflags.active() {
+		if err := rejectChainLayerConflict(fs); err != nil {
+			return err
+		}
 	}
 
 	// 1) Load consumer schema (compile the .proto file at runtime).
@@ -91,36 +101,39 @@ Flags:`)
 		return err
 	}
 
-	// 2) Parse chain spec.
-	spec, err := chain.LoadSpec(*chainPath)
-	if err != nil {
-		return err
+	// 2) Parse chain spec — either from the bundle or from --chain.
+	var (
+		spec    proto.Message
+		sources map[string]source.Source
+	)
+	if bflags.active() {
+		b, err := bflags.open(stdin)
+		if err != nil {
+			return err
+		}
+		spec = b.Chain
+		sources = map[string]source.Source{"default": source.FS(b.FS)}
+	} else {
+		spec, err = chain.LoadSpec(*chainPath)
+		if err != nil {
+			return err
+		}
+		// Source registration for the on-disk path comes from two
+		// channels (see buildSources): the chain spec's declared
+		// `sources` map (kind=fs supported), and implicit defaulting
+		// for any source name not declared, pointing at --layers.
+		chainDir, err := filepath.Abs(filepath.Dir(*chainPath))
+		if err != nil {
+			return fmt.Errorf("resolve chain dir: %w", err)
+		}
+		sources, err = buildSources(spec, desc, chainDir, *layersDir)
+		if err != nil {
+			return err
+		}
 	}
 
 	// 3) Build context map.
 	ctxMap, err := parseCtx(*ctxKVs)
-	if err != nil {
-		return err
-	}
-
-	// 4) Resolve with trace enabled.
-	//
-	// Source registration comes from two channels:
-	//   - the chain spec's declared `sources` map (kind=fs supported;
-	//     other kinds error since `explain` only knows fs). Relative
-	//     `options["root"]` resolves against the chain.pxf's own
-	//     directory — that's what spec authors write (e.g. they put
-	//     `root = "./layers"` next to chain.pxf), not against the
-	//     user-provided --layers flag.
-	//   - implicit defaulting for any layer source name that wasn't
-	//     declared in the spec — point it at --layers so the simple
-	//     "single root, multiple logical names" case (the common
-	//     dev shape) just works without a sources block.
-	chainDir, err := filepath.Abs(filepath.Dir(*chainPath))
-	if err != nil {
-		return fmt.Errorf("resolve chain dir: %w", err)
-	}
-	sources, err := buildSources(spec, desc, chainDir, *layersDir)
 	if err != nil {
 		return err
 	}
