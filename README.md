@@ -652,6 +652,8 @@ chameleon explain --schema=app.proto --message=app.v1.AppConfig \
 
 `--bundle*` flags are mutually exclusive with `--chain` and `--layers`; combining them errors at flag-parse time.
 
+Chains that declare a `kind=env` source for `STEWARD_*`-style runtime overrides at the top of the chain work transparently with `--bundle*` — the CLI walks the bundled chain spec's `sources` map and registers each kind alongside the bundle's FS. Same encrypted-on-env-source rejection rule the on-disk path applies.
+
 ## Codegen
 
 The included `protoc-gen-chameleon-go` plugin emits a sidecar `*.chameleon.go` per `.proto` with one accessor per `pxf.Secret` field — including those reached through `repeated` and `map<*, V>` containers.

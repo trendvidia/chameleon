@@ -145,7 +145,10 @@ Flags:`)
 			return err
 		}
 		spec = b.Chain
-		sources = map[string]source.Source{"default": source.FS(b.FS)}
+		sources, err = buildBundleSources(spec, desc, b.FS)
+		if err != nil {
+			return err
+		}
 	} else {
 		spec, err = chain.LoadSpec(*chainPath)
 		if err != nil {

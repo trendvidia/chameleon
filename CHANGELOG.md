@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`chameleon reveal` / `get` / `explain` with `--bundle*` now register every source declared in the bundle's chain spec, not just the bundle's FS as `"default"`.** Previously the three subcommands hardcoded a one-entry source map when bundle input was active, so chains that declared additional sources — most commonly `kind=env` for runtime overrides at the top of the chain — errored mid-resolve with `resolver: layer references unregistered source: layer="<id>" source="<name>"`. A new `buildBundleSources` helper (sibling to `buildSources`) walks the chain spec's declared sources, registers `kind=env` from the schema descriptor, and routes every `kind=fs` source — declared or implicit — to the bundle's FS root. Same encrypted-on-env-source rejection rule as `buildSources`. Tests in `cmd/chameleon/bundleflags_test.go` cover the env-source happy path for reveal/get/explain plus the encrypted-on-env-source rejection.
+
 ## [0.19.0] — 2026-05-24
 
 Minor release — closes the "ship a bundle → debug it" loop. `chameleon reveal` / `get` / `explain` now accept bundle input via `--bundle=PATH` (file), `--bundle=-` (stdin), or `--bundle-env=VAR` (env var read by name, so the bundle bytes never leak onto the process command line). `chameleon bundle build` gains a `--force` flag for the everyday "edit manifest → rebuild" loop. Plus a long-overdue test isolation fix that retires the "(pre-existing test failures, unrelated)" caveat we've been carrying in every release PR since #80.
