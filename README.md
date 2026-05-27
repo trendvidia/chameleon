@@ -416,6 +416,36 @@ For team setups, list multiple recipients (one per operator's age key or KMS pri
 
 PXF's sops format is recognized by `.pxf` extension on sops versions shipping protowire support; older sops may need `--input-type protowire --output-type protowire`.
 
+#### Naming the encryption key per environment
+
+For deployments that use **different** age keys per environment (so a `dev` runtime physically can't decrypt `prod`'s layers, even if it gets hold of the ciphertext), declare the key by name in the chain spec:
+
+```pxf
+environments = [
+  { name = "prod"    key_name = "prod-key" }
+  { name = "sandbox" extends  = "prod" key_name = "sandbox-key" }
+  { name = "dev"     extends  = "sandbox" }    # inherits "sandbox-key"
+]
+```
+
+Names are looked up in `SOPS_AGE_KEY_FILE` — a PXF multi-key file (`.pxf` extension) holding one labelled age identity per env:
+
+```pxf
+keys = {
+  "prod-key":    "AGE-SECRET-KEY-1..."
+  "sandbox-key": "AGE-SECRET-KEY-1..."
+}
+```
+
+A child env with empty `key_name` inherits the nearest non-empty ancestor's value, mirroring how `extends` already composes layer state — so `dev` above encrypts to `sandbox-key`.
+
+Two consumers honor `key_name` automatically:
+
+- **`chameleon migrate`** uses the env's `key_name` when re-encrypting a layer after a schema transform.
+- **`chameleon bundle build`** unions the `key_name`-derived recipient into each layer's bundle recipient set, alongside any `BundleManifest.recipients_by_env` entry. A typo'd or missing `key_name` fails at bundle-build time, not at runtime decrypt.
+
+Envs without a `key_name` fall back to whatever recipient set the encrypted file already carries (for `migrate`) or the `BundleManifest` recipient list (for `bundle build`) — unmigrated chains keep working unchanged.
+
 ### Runtime decryption
 
 Production runtimes wire `sops.Default()` into the resolver:
@@ -559,19 +589,42 @@ A **bundle** is a zip artifact carrying a chain spec plus its layer files as a s
 
 ### What gets narrowed
 
-A `BundleManifest` (PXF-encoded) declares one entry per module, with allow / deny globs over **schema-form** field paths:
+A `BundleManifest` (PXF-encoded) declares one entry per module, with **two independent selectors** — one for `pxf.Secret`-bearing fields, one for non-secret (attribute) fields. Both use schema-form field paths with `*` (one segment) / `**` (zero or more) globs.
 
 ```pxf
 modules = [{
   name = "billing-worker"
-  allow = ["db.*", "primary.auth_token"]    # only these Secret paths survive
+
+  # Secret selector — gates pxf.Secret-bearing fields.
+  allow = ["db.*", "primary.auth_token"]    # only these secrets survive
+  # deny = ["db.admin_password"]            # carve-outs after allow
+
+  # Attribute selector — gates everything else (non-secret config).
+  # Omit the attribute_* fields entirely and non-secrets pass through
+  # unchanged (the historical "secrets-only narrowing" behavior).
+  attribute_deny = ["debug.*", "internal.*"]
+
   recipients = { age = ["age1examplerecipient..."] }
 }]
 ```
 
-Globs match against the `secretcatalog` enumeration of the consumer schema (`*` matches one segment, `**` matches zero or more). Patterns are validated at build time — a typo'd allow-glob fails the bundler, never silently produces an over-restricted bundle. The narrowing pass only touches `pxf.Secret`-bearing fields; non-secret structural config is preserved verbatim.
+The two selectors are evaluated independently: a secret field's verdict doesn't depend on the attribute filter and vice versa. Default policies (when `default` / `attribute_default` aren't set explicitly):
 
-The bundler decrypts each layer, drops denied secret fields, then re-encrypts with the module's recipients. `recipients_by_env` opt-in encrypts each layer file to only the env that consumes it, so a single env-agnostic bundle still preserves env isolation in the ciphertext (a dev runtime physically can't decrypt the prod layer).
+| Patterns set | Selector default |
+|---|---|
+| No `allow` / `attribute_allow` patterns | Falls through to manifest `default` (else `ALLOW_ALL`) |
+| `allow` set (whitelist intent) | Implicit `DENY_ALL` — only listed paths survive |
+| `attribute_allow` set | Implicit `DENY_ALL` for non-secrets |
+
+Common postures:
+
+- **Secrets-only narrowing** (default) — set `allow` / `deny`, leave `attribute_*` empty. Matches pre-narrowing-of-non-secrets behavior.
+- **Strip debug surface** — `attribute_deny = ["debug.*"]` with `attribute_default = ALLOW_ALL` (implicit). Drops debug-only fields, keeps everything else.
+- **Hard whitelist** — `attribute_allow = ["public.*"]`. Only public surface ships; everything else (including non-secrets) is dropped.
+
+Patterns are validated at build time against the consumer schema: `allow` / `deny` match against the `secretcatalog` enumeration of `pxf.Secret` paths, and `attribute_allow` / `attribute_deny` match against the parallel non-secret-field enumeration. A pattern matching nothing in its catalog is a bundler error — never silently produces an over-restricted bundle.
+
+The bundler decrypts each layer, drops denied fields (secret and non-secret independently), then re-encrypts with the module's recipients. `recipients_by_env` opt-in encrypts each layer file to only the env that consumes it, so a single env-agnostic bundle still preserves env isolation in the ciphertext (a dev runtime physically can't decrypt the prod layer). When the chain spec declares per-env `key_name` (see [Naming the encryption key per environment](#naming-the-encryption-key-per-environment)), the bundler unions those recipients with `recipients_by_env`, so chains migrated to named keys don't need to duplicate the recipient list in the manifest.
 
 ### Building
 
