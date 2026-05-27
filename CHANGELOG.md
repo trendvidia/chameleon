@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-05-26
+
+Minor release — per-env named encryption keys land end-to-end. `chain.ChainSpec.Environment` gains a `key_name` field that names the age key its layers are encrypted with; `chameleon migrate` and `chameleon bundle build` both honor it automatically, and a new `chameleon rotate-key` subcommand closes the rotation loop by re-encrypting every layer to the chain spec's current key set. `chameleon keystore add` rounds out the workflow with a guarded helper for populating `SOPS_AGE_KEY_FILE` without hand-editing. `BundleManifest.Module` gains independent narrowing of non-secret fields (`attribute_allow` / `attribute_deny` / `attribute_default`) alongside the existing secret selector — both selectors are Compile-time typo-guarded against the schema catalog.
+
 ### Added
 
 - **Per-env named encryption keys in the chain spec** ([#93](https://github.com/trendvidia/chameleon/pull/93), [#96](https://github.com/trendvidia/chameleon/pull/96)). `Environment` gains a `key_name` field that names the age key its layers are encrypted with. The chain spec — not an out-of-band operator convention — is now the source of truth for "which key encrypts `prod`'s layers vs. `dev`'s". Resolution walks the ancestry leaf → root: a child env with empty `key_name` inherits the nearest non-empty ancestor's value, mirroring how `extends` already composes layer state.
