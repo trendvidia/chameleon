@@ -39,10 +39,10 @@ func TestCompile_NilManifestUsesDefaults(t *testing.T) {
 		t.Fatalf("nil manifest should compile fine: %v", err)
 	}
 	// Nil manifest → no module entry → default ALLOW_ALL → everything passes.
-	if !f.Allows("db.password") {
+	if !f.AllowsSecret("db.password") {
 		t.Errorf("nil manifest should allow everything (ALLOW_ALL default)")
 	}
-	if !f.Allows("anything.else") {
+	if !f.AllowsSecret("anything.else") {
 		t.Errorf("nil manifest should allow everything (ALLOW_ALL default)")
 	}
 }
@@ -60,7 +60,7 @@ func TestCompile_UnknownModuleUsesManifestDefault(t *testing.T) {
 		t.Fatalf("unknown module should compile via fallback: %v", err)
 	}
 	// Unknown module → manifest default DENY_ALL → nothing passes.
-	if f.Allows("db.password") {
+	if f.AllowsSecret("db.password") {
 		t.Errorf("unknown module under DENY_ALL default should deny")
 	}
 }
@@ -127,13 +127,13 @@ func TestAllows_DenyWinsOverAllow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	if !f.Allows("db.password") {
+	if !f.AllowsSecret("db.password") {
 		t.Errorf("db.password should be allowed (matches db.**)")
 	}
-	if f.Allows("db.admin_password") {
+	if f.AllowsSecret("db.admin_password") {
 		t.Errorf("db.admin_password should be denied (deny wins)")
 	}
-	if !f.Allows("db.user.token") {
+	if !f.AllowsSecret("db.user.token") {
 		t.Errorf("db.user.token should be allowed (matches db.**, not denied)")
 	}
 }
@@ -152,10 +152,10 @@ func TestAllows_ImplicitDenyAllWhenAllowSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	if !f.Allows("auth.token") {
+	if !f.AllowsSecret("auth.token") {
 		t.Errorf("auth.token should be allowed (matches allow)")
 	}
-	if f.Allows("db.password") {
+	if f.AllowsSecret("db.password") {
 		t.Errorf("db.password should be denied — non-empty allow implies DENY_ALL despite manifest default")
 	}
 }
@@ -177,17 +177,17 @@ func TestAllows_ExplicitDefaultOverridesImplicit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
-	if !f.Allows("auth.token") {
+	if !f.AllowsSecret("auth.token") {
 		t.Errorf("auth.token should be allowed (matches allow)")
 	}
-	if !f.Allows("db.password") {
+	if !f.AllowsSecret("db.password") {
 		t.Errorf("db.password should be allowed (explicit ALLOW_ALL default)")
 	}
 }
 
 func TestAllows_NilFilterAllowsEverything(t *testing.T) {
 	var f *Filter
-	if !f.Allows("anything") {
+	if !f.AllowsSecret("anything") {
 		t.Errorf("nil filter should allow everything (no narrowing)")
 	}
 }
@@ -203,5 +203,83 @@ func TestModule(t *testing.T) {
 	var nilFilter *Filter
 	if nilFilter.Module() != "" {
 		t.Errorf("nil Module() should return empty string")
+	}
+}
+
+func TestCompile_AttributeSelectorDefaultsToAllowAll(t *testing.T) {
+	// No attribute_* fields set → attribute selector defaults to
+	// ALLOW_ALL, preserving the historical non-secrets pass-through.
+	manifest := &chameleonv1.BundleManifest{
+		Modules: []*chameleonv1.BundleManifest_Module{
+			{Name: "billing", Allow: []string{"db.password"}},
+		},
+	}
+	f, err := Compile(manifest, "billing", fakeSites("db.password"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.AllowsAttribute("any.non.secret.path") {
+		t.Errorf("attribute selector with no patterns should ALLOW_ALL")
+	}
+}
+
+func TestCompile_AttributeAllowImpliesDenyAll(t *testing.T) {
+	// attribute_allow set with no attribute_default → implicit
+	// DENY_ALL (whitelist intent), mirroring the secret-side rule.
+	manifest := &chameleonv1.BundleManifest{
+		Modules: []*chameleonv1.BundleManifest_Module{
+			{
+				Name:           "billing",
+				AttributeAllow: []string{"public.*"},
+			},
+		},
+	}
+	f, err := Compile(manifest, "billing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.AllowsAttribute("public.banner_url") {
+		t.Errorf("public.banner_url should be allowed by attribute_allow=public.*")
+	}
+	if f.AllowsAttribute("private.debug_endpoint") {
+		t.Errorf("private.debug_endpoint should be denied (implicit DENY_ALL from attribute_allow)")
+	}
+}
+
+func TestCompile_AttributeDenyOverridesAllow(t *testing.T) {
+	manifest := &chameleonv1.BundleManifest{
+		Modules: []*chameleonv1.BundleManifest_Module{
+			{
+				Name:             "billing",
+				AttributeAllow:   []string{"**"},
+				AttributeDeny:    []string{"debug.*"},
+				AttributeDefault: chameleonv1.BundleManifest_ALLOW_ALL,
+			},
+		},
+	}
+	f, err := Compile(manifest, "billing", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.AllowsAttribute("public.banner_url") {
+		t.Errorf("public.banner_url should pass (** allows)")
+	}
+	if f.AllowsAttribute("debug.tracing_endpoint") {
+		t.Errorf("debug.tracing_endpoint should be denied (deny wins)")
+	}
+}
+
+func TestCompile_InvalidAttributeGlobErrors(t *testing.T) {
+	manifest := &chameleonv1.BundleManifest{
+		Modules: []*chameleonv1.BundleManifest_Module{
+			{
+				Name:           "billing",
+				AttributeAllow: []string{"***"}, // invalid glob
+			},
+		},
+	}
+	_, err := Compile(manifest, "billing", nil)
+	if err == nil {
+		t.Errorf("invalid attribute_allow glob should error")
 	}
 }

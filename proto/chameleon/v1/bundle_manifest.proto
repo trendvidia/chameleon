@@ -33,6 +33,20 @@ option go_package = "github.com/trendvidia/chameleon/proto/chameleon/v1;chameleo
 //   5. Packages chain spec + trimmed layer files into the output
 //      bundle.
 //
+// Two independent policies:
+//
+//   - `allow` / `deny` / `default` gate pxf.Secret-bearing fields
+//     (the historical narrowing surface).
+//   - `attribute_allow` / `attribute_deny` / `attribute_default` gate
+//     every other (non-secret) field. Useful for stripping
+//     non-secret config that a particular module has no business
+//     seeing — debug toggles, internal hostnames, etc.
+//
+// Each policy is evaluated independently against the field's schema
+// path: a secret field with no `allow` match is dropped (subject to
+// `default`) even if `attribute_allow` would have admitted it, and
+// vice versa.
+//
 // Patterns use schema-form paths (no `[i]` / `[key]` brackets):
 // `db.password`, `primary.auth_token`, `tenant_keys`. Glob `*`
 // matches one path segment; `**` matches zero or more. Filtering
@@ -115,6 +129,23 @@ message BundleManifest {
     // recipients_by_env at bundle build time; setting both is a
     // bundler error.
     RecipientSet recipients = 6;
+
+    // Schema-path globs the module is allowed to receive for
+    // non-secret (attribute) fields. Independent of the secret
+    // `allow` list above. Empty list with
+    // `attribute_default = ALLOW_ALL` (the default when this list
+    // is empty) preserves the historical "non-secrets pass
+    // through unchanged" behavior.
+    repeated string attribute_allow = 7;
+    // Schema-path globs explicitly stripped from non-secret
+    // fields after `attribute_allow` is applied.
+    repeated string attribute_deny = 8;
+    // Policy applied to non-secret schema paths matched by
+    // neither `attribute_allow` nor `attribute_deny`. Defaults to
+    // DENY_ALL when any `attribute_allow` pattern is set, and to
+    // ALLOW_ALL otherwise (so existing manifests that don't set
+    // any attribute_* fields keep their full non-secret payload).
+    Policy attribute_default = 9;
   }
 
   message RecipientSet {
