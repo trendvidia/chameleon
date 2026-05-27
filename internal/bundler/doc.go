@@ -14,8 +14,11 @@
 //     used to lint manifest patterns at Compile time (a pattern that
 //     matches no real path is a bundler error).
 //  2. Compile a Filter from the BundleManifest + the target
-//     `--module=NAME`. Filter.Allows(schemaPath) is the predicate
-//     the narrow pass consults.
+//     `--module=NAME`. Filter.AllowsSecret and Filter.AllowsAttribute
+//     are the two predicates the narrow pass consults — one per
+//     module-manifest selector (the historical `allow`/`deny` for
+//     secrets, and `attribute_allow`/`attribute_deny` for everything
+//     else).
 //  3. For each layer file declared by the chain spec: decrypt (via
 //     sops.Decrypter — existing), parse to a typed message, Narrow
 //     it against the Filter to clear denied secret fields, then
@@ -33,9 +36,9 @@
 // the signature is fixed so the next two PRs (sops.Encrypter and
 // then the pipeline wiring) compose cleanly.
 //
-// Narrowing only applies to pxf.Secret fields — the user-visible
-// goal is "smaller blast radius for secrets". Non-secret structural
-// fields are preserved verbatim. Generalizing the filter to non-
-// secret subtrees is plausibly a v2 ask and is deliberately not
-// designed for here.
+// Narrowing applies to pxf.Secret fields via the secret selector and
+// to every other field via the attribute selector. When a module
+// manifest sets no attribute_* patterns, the attribute selector
+// defaults to ALLOW_ALL and non-secrets pass through unchanged — the
+// historical "secrets-only narrowing" behavior.
 package bundler

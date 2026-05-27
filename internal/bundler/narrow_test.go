@@ -11,7 +11,16 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
+
+	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 )
+
+// allowAllAttrs is the attribute-selector init that matches what
+// Compile produces when a manifest sets no attribute_* fields:
+// non-secrets pass through unchanged. Tests that exercise only
+// secret-side narrowing use this so the new attribute filter
+// doesn't accidentally clear non-secret structural fields.
+var allowAllAttrs = selector{defaultPolicy: chameleonv1.BundleManifest_ALLOW_ALL}
 
 // buildTestDescriptor synthesizes a schema with all four
 // Secret-bearing shapes the narrow walker needs to cover:
@@ -202,7 +211,11 @@ func TestNarrow_DenyAllClearsEverySecret(t *testing.T) {
 	// Have to construct via Compile so the predicate resolves
 	// correctly; use a fake manifest entry that names this module
 	// but has no allow patterns.
-	f := &Filter{moduleName: "test"} // unexported field access — package-internal test
+	// Secret selector defaults to DENY_ALL via zero-value; attribute
+	// selector explicitly ALLOW_ALL so non-secret structural fields
+	// (primary, primary.url) survive — the historical semantics this
+	// test was written for.
+	f := &Filter{moduleName: "test", attribute: allowAllAttrs}
 	if err := Narrow(cfg, f); err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +250,8 @@ func TestNarrow_AllowSpecificPath(t *testing.T) {
 	// Whitelist: only db_password and primary.auth_token survive.
 	f := &Filter{
 		moduleName: "test",
-		allow:      []string{"db_password", "primary.auth_token"},
+		secret:     selector{allow: []string{"db_password", "primary.auth_token"}},
+		attribute:  allowAllAttrs,
 	}
 	if err := Narrow(cfg, f); err != nil {
 		t.Fatal(err)
@@ -264,8 +278,11 @@ func TestNarrow_DenyOverridesAllow(t *testing.T) {
 	// except the backup_keys list.
 	f := &Filter{
 		moduleName: "test",
-		allow:      []string{"**"},
-		deny:       []string{"backup_keys"},
+		secret: selector{
+			allow: []string{"**"},
+			deny:  []string{"backup_keys"},
+		},
+		attribute: allowAllAttrs,
 	}
 	if err := Narrow(cfg, f); err != nil {
 		t.Fatal(err)
@@ -286,7 +303,8 @@ func TestNarrow_GlobInsideNested(t *testing.T) {
 	// `db_password` is NOT under primary, gets dropped.
 	f := &Filter{
 		moduleName: "test",
-		allow:      []string{"primary.*"},
+		secret:     selector{allow: []string{"primary.*"}},
+		attribute:  allowAllAttrs,
 	}
 	if err := Narrow(cfg, f); err != nil {
 		t.Fatal(err)
@@ -302,5 +320,72 @@ func TestNarrow_GlobInsideNested(t *testing.T) {
 func TestNarrow_NilMessageIsNoop(t *testing.T) {
 	if err := Narrow(nil, nil); err != nil {
 		t.Errorf("Narrow(nil, nil) should be a no-op, got: %v", err)
+	}
+}
+
+// TestNarrow_AttributeDenyClearsNonSecretField — the new attribute
+// selector lets a module strip non-secret fields (here, the
+// non-secret `primary.url` string) while leaving secrets alone.
+func TestNarrow_AttributeDenyClearsNonSecretField(t *testing.T) {
+	md := buildTestDescriptor(t)
+	cfg := populated(t, md)
+
+	f := &Filter{
+		moduleName: "test",
+		secret:     selector{defaultPolicy: chameleonv1.BundleManifest_ALLOW_ALL},
+		attribute: selector{
+			deny:          []string{"primary.url"},
+			defaultPolicy: chameleonv1.BundleManifest_ALLOW_ALL,
+		},
+	}
+	if err := Narrow(cfg, f); err != nil {
+		t.Fatal(err)
+	}
+
+	primFd := md.Fields().ByName("primary")
+	primary := cfg.Get(primFd).Message()
+	if primary.Has(primary.Descriptor().Fields().ByName("url")) {
+		t.Errorf("primary.url should be cleared by attribute_deny")
+	}
+	// Secrets unaffected.
+	if !nestedHas(cfg, "primary", "auth_token") {
+		t.Errorf("primary.auth_token (secret) should survive — only attribute filter matched primary.url")
+	}
+	if !has(cfg, "db_password") {
+		t.Errorf("db_password (secret) should survive — secret filter is ALLOW_ALL here")
+	}
+}
+
+// TestNarrow_AttributeAllowOnlyKeepsWhitelistedNonSecrets — when
+// attribute_allow is set, the implicit DENY_ALL strips every other
+// non-secret field. Secrets are governed independently by the
+// secret selector.
+func TestNarrow_AttributeAllowOnlyKeepsWhitelistedNonSecrets(t *testing.T) {
+	md := buildTestDescriptor(t)
+	cfg := populated(t, md)
+
+	f := &Filter{
+		moduleName: "test",
+		secret:     selector{defaultPolicy: chameleonv1.BundleManifest_ALLOW_ALL},
+		attribute: selector{
+			allow:         []string{"primary", "primary.url"},
+			defaultPolicy: chameleonv1.BundleManifest_DENY_ALL,
+		},
+	}
+	if err := Narrow(cfg, f); err != nil {
+		t.Fatal(err)
+	}
+
+	primFd := md.Fields().ByName("primary")
+	if !cfg.Has(primFd) {
+		t.Fatalf("primary should survive (in attribute_allow)")
+	}
+	primary := cfg.Get(primFd).Message()
+	if !primary.Has(primary.Descriptor().Fields().ByName("url")) {
+		t.Errorf("primary.url should survive (in attribute_allow)")
+	}
+	// Secrets still pass through (secret filter is ALLOW_ALL).
+	if !has(cfg, "db_password") {
+		t.Errorf("db_password (secret) should survive")
 	}
 }
