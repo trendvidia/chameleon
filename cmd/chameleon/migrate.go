@@ -15,6 +15,7 @@ import (
 
 	"github.com/getsops/sops/v3/encrypt"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/trendvidia/chameleon/chain"
 	chsops "github.com/trendvidia/chameleon/sops"
@@ -91,6 +92,7 @@ Flags:`)
 	}
 
 	dec := chsops.Default()
+	enc := chsops.DefaultEncrypter()
 	var (
 		changed   int
 		skipped   int
@@ -100,7 +102,7 @@ Flags:`)
 		if *only != "" && ref.EntryID != *only {
 			continue
 		}
-		status, err := migrateOne(context.Background(), out, ref, *layersDir, t, *dryRun, dec)
+		status, err := migrateOne(context.Background(), out, ref, *layersDir, t, *dryRun, dec, enc, spec)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR\t%s\t%s\t%v\n", ref.EntryID, ref.Path, err)
 			return err
@@ -133,8 +135,10 @@ const (
 
 // migrateOne loads a single layer, applies the transform, and (unless
 // dry-run) writes the result back. Encrypted layers are decrypted via
-// sops and re-encrypted preserving the original key set.
-func migrateOne(ctx context.Context, w io.Writer, ref chain.LayerRef, layersDir string, t transform, dryRun bool, dec chsops.Decrypter) (migrateStatus, error) {
+// sops and re-encrypted under the env's configured key (resolved via
+// chain.EffectiveKeyName against the chain spec); envs without a
+// key_name fall back to preserving the existing ciphertext's key set.
+func migrateOne(ctx context.Context, w io.Writer, ref chain.LayerRef, layersDir string, t transform, dryRun bool, dec chsops.Decrypter, enc chsops.Encrypter, spec proto.Message) (migrateStatus, error) {
 	tag := fmt.Sprintf("%s\t%s", ref.EntryID, ref.Path)
 
 	if ref.Source != "" && ref.Source != "default" {
@@ -199,12 +203,34 @@ func migrateOne(ctx context.Context, w io.Writer, ref chain.LayerRef, layersDir 
 	// Write back.
 	var newBytes []byte
 	if ref.Encrypted {
-		// Re-encrypt with the same key set as the existing ciphertext.
-		ciph, err := encrypt.UsingSameKeysAsWithContext(ctx, newPlain, raw, "protowire")
-		if err != nil {
-			return migrateSkipped, fmt.Errorf("re-encrypt %q: %w", full, err)
+		var keyName string
+		if spec != nil {
+			n, err := chain.EffectiveKeyName(spec, ref.Env)
+			if err != nil {
+				return migrateSkipped, fmt.Errorf("resolve key_name for env %q: %w", ref.Env, err)
+			}
+			keyName = n
 		}
-		newBytes = ciph
+		if keyName != "" {
+			recipients, err := chsops.RecipientsFromKeyName(keyName)
+			if err != nil {
+				return migrateSkipped, fmt.Errorf("re-encrypt %q: %w", full, err)
+			}
+			ciph, err := enc.Encrypt(ctx, newPlain, chsops.FormatProtowire, recipients)
+			if err != nil {
+				return migrateSkipped, fmt.Errorf("re-encrypt %q: %w", full, err)
+			}
+			newBytes = ciph
+		} else {
+			// No env.key_name set — preserve the existing ciphertext's
+			// key set so chain specs that haven't migrated to named
+			// keys still round-trip cleanly.
+			ciph, err := encrypt.UsingSameKeysAsWithContext(ctx, newPlain, raw, "protowire")
+			if err != nil {
+				return migrateSkipped, fmt.Errorf("re-encrypt %q: %w", full, err)
+			}
+			newBytes = ciph
+		}
 	} else {
 		newBytes = newPlain
 	}
