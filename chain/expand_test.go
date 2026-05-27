@@ -40,6 +40,7 @@ message Environment {
   string name = 1;
   string extends = 2;
   map<string, string> labels = 3;
+  string key_name = 4;
 }
 
 message LayerEntry {

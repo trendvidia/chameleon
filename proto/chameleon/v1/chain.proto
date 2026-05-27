@@ -62,6 +62,16 @@ message Environment {
   // Free-form labels. The resolver does not interpret these; consumers
   // may use them for their own selectors (region tagging, tier, etc.).
   map<string, string> labels = 3;
+
+  // Name of the age key to use when encrypting layers for this
+  // environment. Resolved against SOPS_AGE_KEY_FILE (must be PXF
+  // multi-key format, .pxf extension) via the sops library's
+  // RecipientFromKeyFileByName. Empty means inherit from the parent
+  // environment; if no ancestor sets it, the resolver falls back to the
+  // default recipient (DefaultRecipientFromKeyFile). The editor and
+  // encrypt path use this to select per-env recipients without
+  // chameleon needing to know how keys are stored on disk.
+  string key_name = 4;
 }
 
 // LayerEntry declares one slot in the layer stack. After template

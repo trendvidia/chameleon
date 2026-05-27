@@ -37,7 +37,7 @@ func TestMigrateOne_PlaintextLayer(t *testing.T) {
 	tf := &addField{path: "feature", value: &pxf.BoolVal{Value: true}, raw: "true"}
 
 	var out bytes.Buffer
-	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false /*dryRun*/, chsops.Default())
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false /*dryRun*/, chsops.Default(), chsops.DefaultEncrypter(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, migrateChanged, status)
 	assert.Contains(t, out.String(), "CHANGED")
@@ -61,7 +61,7 @@ func TestMigrateOne_DryRunDoesNotWrite(t *testing.T) {
 	tf := &addField{path: "feature", value: &pxf.BoolVal{Value: true}, raw: "true"}
 
 	var out bytes.Buffer
-	status, err := migrateOne(context.Background(), &out, ref, dir, tf, true /*dryRun*/, chsops.Default())
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, true /*dryRun*/, chsops.Default(), chsops.DefaultEncrypter(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, migrateChanged, status)
 	assert.Contains(t, out.String(), "WOULD-CHANGE")
@@ -85,7 +85,7 @@ func TestMigrateOne_IdempotentSkip(t *testing.T) {
 	tf := &addField{path: "feature", value: &pxf.BoolVal{Value: false}, raw: "false"}
 
 	var out bytes.Buffer
-	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default())
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default(), chsops.DefaultEncrypter(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, migrateUnchanged, status)
 	assert.Contains(t, out.String(), "UNCHANGED")
@@ -99,7 +99,7 @@ func TestMigrateOne_OptionalMissingSkipped(t *testing.T) {
 	tf := &addField{path: "feature", value: &pxf.BoolVal{Value: true}, raw: "true"}
 
 	var out bytes.Buffer
-	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default())
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default(), chsops.DefaultEncrypter(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, migrateSkipped, status)
 	assert.Contains(t, out.String(), "SKIP")
@@ -113,7 +113,7 @@ func TestMigrateOne_RequiredMissingErrors(t *testing.T) {
 	tf := &addField{path: "feature", value: &pxf.BoolVal{Value: true}, raw: "true"}
 
 	var out bytes.Buffer
-	_, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default())
+	_, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default(), chsops.DefaultEncrypter(), nil)
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "read"), "got %v", err)
 }
@@ -126,7 +126,7 @@ func TestMigrateOne_NonDefaultSourceSkipped(t *testing.T) {
 	tf := &addField{path: "feature", value: &pxf.BoolVal{Value: true}, raw: "true"}
 
 	var out bytes.Buffer
-	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default())
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default(), chsops.DefaultEncrypter(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, migrateSkipped, status)
 	assert.Contains(t, out.String(), "non-default source")
@@ -144,7 +144,7 @@ func TestMigrateOne_DeleteField_Toplevel(t *testing.T) {
 	tf := &deleteField{path: "feature"}
 
 	var out bytes.Buffer
-	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default())
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default(), chsops.DefaultEncrypter(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, migrateChanged, status)
 
@@ -166,7 +166,7 @@ func TestMigrateOne_RenameField_Nested(t *testing.T) {
 	tf := &renameField{from: "db.user", to: "db.username"}
 
 	var out bytes.Buffer
-	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default())
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false, chsops.Default(), chsops.DefaultEncrypter(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, migrateChanged, status)
 
@@ -208,7 +208,7 @@ func TestMigrateOne_EncryptedLayer_AgeRoundTrip(t *testing.T) {
 	tf := &addField{path: "feature", value: &pxf.BoolVal{Value: true}, raw: "true"}
 
 	var out bytes.Buffer
-	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false /*dryRun*/, chsops.Default())
+	status, err := migrateOne(context.Background(), &out, ref, dir, tf, false /*dryRun*/, chsops.Default(), chsops.DefaultEncrypter(), nil)
 	require.NoError(t, err)
 	assert.Equal(t, migrateChanged, status)
 

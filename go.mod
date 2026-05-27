@@ -6,7 +6,7 @@ require (
 	filippo.io/age v1.3.1
 	github.com/awnumar/memguard v0.22.5
 	github.com/bufbuild/protocompile v0.14.1
-	github.com/getsops/sops/v3 v3.13.0
+	github.com/getsops/sops/v3 v3.14.0
 	github.com/stretchr/testify v1.11.1
 	github.com/trendvidia/protowire-go v1.0.0
 	go.opentelemetry.io/otel v1.43.0
@@ -149,8 +149,9 @@ require (
 // trendvidia/sops is a soft fork of getsops/sops/v3 with the additions
 // chameleon depends on (PXF store + comment directives in v3.13.1,
 // context.Context end-to-end + encrypt package + DataIntoWriter in
-// v3.13.2). The fork keeps the upstream module path so the replace
-// directive below is the canonical consumption pattern. When upstream
-// merges the relevant parts, the replace can be dropped and the
-// require version bumped to the merged upstream tag.
-replace github.com/getsops/sops/v3 => github.com/trendvidia/sops/v3 v3.13.2
+// v3.13.2, PXF multi-key age files + --age-key-name + name<->recipient
+// lookup helpers in v3.14.0). The fork keeps the upstream module path
+// so the replace directive below is the canonical consumption pattern.
+// When upstream merges the relevant parts, the replace can be dropped
+// and the require version bumped to the merged upstream tag.
+replace github.com/getsops/sops/v3 => github.com/trendvidia/sops/v3 v3.14.0
