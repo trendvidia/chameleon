@@ -199,9 +199,10 @@ type layerPlan struct {
 
 // planLayers iterates every environment declared in chainSpec,
 // calls chain.Expand for each, then collapses the per-env LayerRef
-// lists into one layerPlan per unique resolved path. The
-// recipient union is computed from the module's recipients_by_env
-// entries for those envs.
+// lists into one layerPlan per unique resolved path. The recipient
+// union is the union of the module's recipients_by_env entries and
+// each env's chain-spec key_name (resolved via the sops library).
+// See unionRecipients for the details.
 //
 // Rejects chain specs with any LayerEntry.path referencing
 // ${ctx.*} — bundling is build-time and has no runtime context
@@ -251,7 +252,11 @@ func planLayers(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleMani
 		sort.Strings(p.Envs)
 		p.Envs = dedupe(p.Envs)
 		if p.Encrypted {
-			p.Recipients = unionRecipients(module, p.Envs)
+			recipients, err := unionRecipients(chainSpec, module, p.Envs)
+			if err != nil {
+				return nil, fmt.Errorf("bundler: layer %q: %w", p.Path, err)
+			}
+			p.Recipients = recipients
 		}
 		plans = append(plans, p)
 	}
@@ -402,36 +407,63 @@ func chameleonVersion() string {
 // runtime must be able to decrypt it, so we union; for a layer
 // used by a single env, the union degenerates to that env's set.
 //
-// Falls back to module.recipients when recipients_by_env is empty
-// (the "no env isolation in ciphertext, only plaintext narrowing"
-// posture documented in BundleManifest.proto).
-func unionRecipients(module *chameleonv1.BundleManifest_Module, envs []string) sops.Recipients {
-	if module == nil {
-		return sops.Recipients{}
-	}
-	byEnv := module.GetRecipientsByEnv()
-	if len(byEnv) == 0 {
-		fallback := module.GetRecipients()
-		return sops.Recipients{
-			KMS: append([]string(nil), fallback.GetKms()...),
-			Age: append([]string(nil), fallback.GetAge()...),
-			PGP: append([]string(nil), fallback.GetPgp()...),
-		}
-	}
+// Two sources contribute (and the result is their union, deduped):
+//
+//   - BundleManifest.Module.recipients_by_env (or .recipients as
+//     fallback when by-env is empty) — externally authored KMS /
+//     age / PGP keys, including any not expressible as a chain
+//     spec key_name (cloud KMS ARNs, third-party PGP recipients,
+//     etc.).
+//   - chain.EffectiveKeyName per env — the in-config named age
+//     key declared on Environment. Resolved through the sops
+//     library so chameleon doesn't see keystore internals.
+//
+// Either source may be absent. A chain spec without any key_name
+// degenerates to the historical module-only behavior; a manifest
+// without recipients_by_env / recipients still produces a usable
+// recipient set if the chain spec carries key_name.
+func unionRecipients(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleManifest_Module, envs []string) (sops.Recipients, error) {
 	var out sops.Recipients
-	for _, env := range envs {
-		rs, ok := byEnv[env]
-		if !ok {
-			continue
+
+	if module != nil {
+		byEnv := module.GetRecipientsByEnv()
+		if len(byEnv) == 0 {
+			fallback := module.GetRecipients()
+			out.KMS = append(out.KMS, fallback.GetKms()...)
+			out.Age = append(out.Age, fallback.GetAge()...)
+			out.PGP = append(out.PGP, fallback.GetPgp()...)
+		} else {
+			for _, env := range envs {
+				if rs, ok := byEnv[env]; ok {
+					out.KMS = append(out.KMS, rs.GetKms()...)
+					out.Age = append(out.Age, rs.GetAge()...)
+					out.PGP = append(out.PGP, rs.GetPgp()...)
+				}
+			}
 		}
-		out.KMS = append(out.KMS, rs.GetKms()...)
-		out.Age = append(out.Age, rs.GetAge()...)
-		out.PGP = append(out.PGP, rs.GetPgp()...)
 	}
+
+	if chainSpec != nil {
+		for _, env := range envs {
+			keyName, err := chain.EffectiveKeyName(chainSpec, env)
+			if err != nil {
+				return sops.Recipients{}, fmt.Errorf("resolve key_name for env %q: %w", env, err)
+			}
+			if keyName == "" {
+				continue
+			}
+			r, err := sops.RecipientsFromKeyName(keyName)
+			if err != nil {
+				return sops.Recipients{}, fmt.Errorf("env %q: %w", env, err)
+			}
+			out.Age = append(out.Age, r.Age...)
+		}
+	}
+
 	out.KMS = dedupe(out.KMS)
 	out.Age = dedupe(out.Age)
 	out.PGP = dedupe(out.PGP)
-	return out
+	return out, nil
 }
 
 func dedupe(ss []string) []string {
