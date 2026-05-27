@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-env named encryption keys in the chain spec** ([#93](https://github.com/trendvidia/chameleon/pull/93), [#96](https://github.com/trendvidia/chameleon/pull/96)). `Environment` gains a `key_name` field that names the age key its layers are encrypted with. The chain spec — not an out-of-band operator convention — is now the source of truth for "which key encrypts `prod`'s layers vs. `dev`'s". Resolution walks the ancestry leaf → root: a child env with empty `key_name` inherits the nearest non-empty ancestor's value, mirroring how `extends` already composes layer state.
+
+  Two consumers honor `key_name`:
+  - **`chameleon migrate`** picks the env's `key_name` when re-encrypting a layer. Envs without a `key_name` fall back to the existing `UsingSameKeysAsWithContext` path so unmigrated chains round-trip unchanged.
+  - **`chameleon bundle build`** unions the `key_name`-derived recipient into the layer's recipient set alongside any `BundleManifest.recipients_by_env` entry. A typo'd or missing `key_name` fails at bundle-build, not at runtime decrypt.
+
+  Names are resolved against `SOPS_AGE_KEY_FILE` (PXF multi-key format, `.pxf` extension) via the sops library's `RecipientFromKeyFileByName` — chameleon never reads the keystore directly. The trendvidia/sops fork was bumped from v3.13.2 → v3.14.0 to pick up the API.
+
+- **Non-secret attribute narrowing in bundles** ([#94](https://github.com/trendvidia/chameleon/pull/94), [#95](https://github.com/trendvidia/chameleon/pull/95)). `BundleManifest.Module` gains three new fields — `attribute_allow`, `attribute_deny`, `attribute_default` — that gate non-secret schema-form field paths the same way the existing `allow` / `deny` / `default` gate `pxf.Secret`-bearing fields. The two selectors are evaluated independently: a secret field's verdict doesn't depend on the attribute filter and vice versa.
+
+  Use cases:
+  - Strip debug-only config from a production module's bundle (`attribute_deny: ["debug.*"]`).
+  - Whitelist a narrow non-secret surface for a third-party consumer (`attribute_allow: ["public.*"]` with implicit `DENY_ALL`).
+  - Mixed posture: `attribute_default: ALLOW_ALL` with selective `attribute_deny` carve-outs.
+
+  Behavior is unchanged for manifests that don't set any `attribute_*` field: the attribute selector defaults to `ALLOW_ALL` and non-secrets pass through verbatim, matching the pre-#94 "secrets-only narrowing" behavior.
+
+  `attribute_*` patterns get the same Compile-time typo guard as secret patterns: a new `secretcatalog.FindNonSecretFieldsInMessage` enumerates every non-secret field path in the consumer schema, and a pattern matching nothing is a bundler error. `bundler.Compile`'s third argument changed from `[]secretcatalog.Site` to a `Catalog{Secrets, NonSecrets}` struct to carry both enumerations; a zero `Catalog{}` (or a `Catalog` with one nil side) skips the membership check on that side while keeping glob syntax validation.
+
+### Changed
+
+- **`bundler.Filter.Allows` renamed to `AllowsSecret`** ([#94](https://github.com/trendvidia/chameleon/pull/94)). The historical method was always secret-only in semantics; the rename makes that explicit and pairs with the new `AllowsAttribute`. The package is internal (`internal/bundler`), so no public API surface broke.
+
 ## [0.19.1] — 2026-05-25
 
 Patch release — fixes the bundle-input source-registration gap shipped in v0.19.0. `reveal` / `get` / `explain` with `--bundle*` were only registering the bundle's FS as `"default"`, so chains declaring additional sources (most commonly `kind=env` for runtime overrides at the top of the chain) errored mid-resolve with `unregistered source`. The new `buildBundleSources` helper walks the chain spec the same way the on-disk path does, restoring on-disk-vs-bundle parity for every reveal/get/explain flag combination.
