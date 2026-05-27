@@ -158,8 +158,11 @@ func Build(ctx context.Context, opts BuildOptions) error {
 	manifest := opts.Manifest.(*chameleonv1.BundleManifest)
 	chainSpec := opts.ChainSpec.(*chameleonv1.ChainSpec)
 
-	sites := secretcatalog.FindInMessage(opts.Schema)
-	filter, err := Compile(manifest, opts.Module, sites)
+	catalog := Catalog{
+		Secrets:    secretcatalog.FindInMessage(opts.Schema),
+		NonSecrets: secretcatalog.FindNonSecretFieldsInMessage(opts.Schema),
+	}
+	filter, err := Compile(manifest, opts.Module, catalog)
 	if err != nil {
 		return err
 	}

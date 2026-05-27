@@ -89,11 +89,18 @@ func (f *Filter) AllowsAttribute(schemaPath string) bool {
 	return f.attribute.allows(schemaPath)
 }
 
+// Catalog bundles the two schema-site enumerations Compile uses to
+// typo-guard manifest patterns. Secrets are matched against
+// secretcatalog.FindInMessage; non-secrets against
+// secretcatalog.FindNonSecretFieldsInMessage. Nil slices skip the
+// corresponding catalog check (still surfaces glob-syntax errors).
+type Catalog struct {
+	Secrets    []secretcatalog.Site
+	NonSecrets []secretcatalog.Site
+}
+
 // Compile resolves a BundleManifest + target module name into a
-// Filter, validating every secret-side pattern against the schema
-// catalog. Attribute-side patterns are syntax-checked (validGlob)
-// but not catalog-checked: the catalog only enumerates Secret sites,
-// and a parallel non-secret catalog is out of scope here.
+// Filter, validating every pattern against the schema catalog.
 //
 // Resolution:
 //
@@ -113,13 +120,17 @@ func (f *Filter) AllowsAttribute(schemaPath string) bool {
 //       else DENY_ALL if module.attribute_allow is non-empty
 //       else ALLOW_ALL (non-secrets pass through by default)
 //
-//   - Catalog validation: every secret-side allow/deny pattern must
-//     match at least one site.SchemaPath. A pattern that matches
-//     nothing is almost always a typo.
+//   - Catalog validation: every allow/deny pattern must match at
+//     least one site's SchemaPath in the corresponding catalog
+//     (catalog.Secrets for allow/deny; catalog.NonSecrets for
+//     attribute_allow/attribute_deny). A pattern that matches
+//     nothing is almost always a typo. Passing a nil slice for
+//     either catalog skips the membership check on that side
+//     (glob-syntax is still verified).
 //
 // Returns the filter on success, or a multi-error describing every
 // invalid pattern (so authors can fix all typos in one round-trip).
-func Compile(manifest *chameleonv1.BundleManifest, moduleName string, sites []secretcatalog.Site) (*Filter, error) {
+func Compile(manifest *chameleonv1.BundleManifest, moduleName string, catalog Catalog) (*Filter, error) {
 	if moduleName == "" {
 		return nil, errors.New("bundler: module name is required")
 	}
@@ -143,10 +154,10 @@ func Compile(manifest *chameleonv1.BundleManifest, moduleName string, sites []se
 		defaultPolicy: resolveAttributeDefault(module),
 	}
 
-	if err := validateSecretPatterns(secretSel.allow, secretSel.deny, sites); err != nil {
+	if err := validatePatternsAgainst(secretSel.allow, secretSel.deny, catalog.Secrets, "allow", "deny"); err != nil {
 		return nil, fmt.Errorf("bundler: module %q manifest patterns: %w", moduleName, err)
 	}
-	if err := validateAttributeGlobSyntax(attrSel.allow, attrSel.deny); err != nil {
+	if err := validatePatternsAgainst(attrSel.allow, attrSel.deny, catalog.NonSecrets, "attribute_allow", "attribute_deny"); err != nil {
 		return nil, fmt.Errorf("bundler: module %q attribute patterns: %w", moduleName, err)
 	}
 
@@ -226,50 +237,39 @@ func resolveAttributeDefault(module *chameleonv1.BundleManifest_Module) chameleo
 	return chameleonv1.BundleManifest_ALLOW_ALL
 }
 
-// validateSecretPatterns runs each secret pattern through validGlob
-// (syntax) and checks it matches at least one site's SchemaPath
-// (typo guard). Errors are joined so authors see every problem in
-// one bundler invocation.
-func validateSecretPatterns(allow, deny []string, sites []secretcatalog.Site) error {
-	paths := make([]string, 0, len(sites))
-	for _, s := range sites {
-		paths = append(paths, s.SchemaPath())
+// validatePatternsAgainst runs each pattern through validGlob
+// (syntax) and, when `sites` is non-nil, checks it matches at least
+// one site's SchemaPath (typo guard). A nil `sites` slice means
+// "skip the membership check on this side" — callers pass nil when
+// they don't have a catalog handy (some tests, or codepaths that
+// only want syntax validation). Errors are joined so authors see
+// every problem in one bundler invocation.
+//
+// allowLabel / denyLabel parameterize the error message wording
+// so the same routine serves both selectors ("allow" vs
+// "attribute_allow", etc.).
+func validatePatternsAgainst(allow, deny []string, sites []secretcatalog.Site, allowLabel, denyLabel string) error {
+	var paths []string
+	if sites != nil {
+		paths = make([]string, 0, len(sites))
+		for _, s := range sites {
+			paths = append(paths, s.SchemaPath())
+		}
 	}
 	var errs []error
-	check := func(kind string, patterns []string) {
+	check := func(label string, patterns []string) {
 		for _, p := range patterns {
 			if err := validGlob(p); err != nil {
-				errs = append(errs, fmt.Errorf("%s %q: %w", kind, p, err))
+				errs = append(errs, fmt.Errorf("%s %q: %w", label, p, err))
 				continue
 			}
-			if !anyMatch(p, paths) {
-				errs = append(errs, fmt.Errorf("%s %q matches no schema path (typo? schema mismatch?)", kind, p))
+			if paths != nil && !anyMatch(p, paths) {
+				errs = append(errs, fmt.Errorf("%s %q matches no schema path (typo? schema mismatch?)", label, p))
 			}
 		}
 	}
-	check("allow", allow)
-	check("deny", deny)
-	return errors.Join(errs...)
-}
-
-// validateAttributeGlobSyntax is the lighter cousin of
-// validateSecretPatterns: it only checks glob syntax, not
-// catalog membership. The secretcatalog enumerates Secret sites
-// only, so a parallel non-secret catalog would be required for
-// typo-guard coverage on the attribute side; deferred until the
-// payoff is clear.
-func validateAttributeGlobSyntax(allow, deny []string) error {
-	var errs []error
-	for _, p := range allow {
-		if err := validGlob(p); err != nil {
-			errs = append(errs, fmt.Errorf("attribute_allow %q: %w", p, err))
-		}
-	}
-	for _, p := range deny {
-		if err := validGlob(p); err != nil {
-			errs = append(errs, fmt.Errorf("attribute_deny %q: %w", p, err))
-		}
-	}
+	check(allowLabel, allow)
+	check(denyLabel, deny)
 	return errors.Join(errs...)
 }
 

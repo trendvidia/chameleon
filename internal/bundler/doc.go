@@ -9,10 +9,13 @@
 // PR — Build is gated on sops.Encrypter landing):
 //
 //  1. Catalog the schema via internal/secretcatalog — enumerate
-//     every pxf.Secret-bearing field's SchemaPath. This is the
-//     universe of paths the filter operates on; the catalog is also
-//     used to lint manifest patterns at Compile time (a pattern that
-//     matches no real path is a bundler error).
+//     every Secret-bearing field's SchemaPath (FindInMessage) and
+//     every non-Secret field's SchemaPath
+//     (FindNonSecretFieldsInMessage). Together they form the
+//     universe of paths the filter operates on, and they back the
+//     Compile-time typo guard: a secret pattern that matches no
+//     real Secret site, or an attribute pattern that matches no
+//     real non-secret site, is a bundler error.
 //  2. Compile a Filter from the BundleManifest + the target
 //     `--module=NAME`. Filter.AllowsSecret and Filter.AllowsAttribute
 //     are the two predicates the narrow pass consults — one per
