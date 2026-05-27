@@ -1,22 +1,27 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 
-// Package secretcatalog enumerates every pxf.Secret-bearing field in
-// a protobuf schema. The enumeration is the same one the chameleon
-// parse.Move walker performs at resolve time, so a Site's path
-// matches the secret.Map key that runtime resolution stores the
-// Secret under.
+// Package secretcatalog enumerates schema-field paths for the
+// bundler and codegen. Two enumerations are exposed:
+//
+//   - FindInFile / FindInMessage return every pxf.Secret-bearing
+//     field. The path matches the secret.Map key that runtime
+//     resolution stores the Secret under.
+//   - FindNonSecretFieldsInFile / FindNonSecretFieldsInMessage
+//     return every non-Secret field (leaf scalars, intermediate
+//     non-secret messages, lists/maps of either). Used to
+//     typo-guard attribute_allow / attribute_deny patterns in
+//     BundleManifest.Module.
 //
 // Two consumers share this catalog:
 //
 //   - protoc-gen-chameleon-go (codegen-time): emits typed accessors,
-//     one per Site, so consumer code reaches secrets without raw
-//     path-string lookups.
+//     one per Secret Site, so consumer code reaches secrets without
+//     raw path-string lookups.
 //
-//   - chameleon bundle build (cli-time, planned): validates module
-//     manifest patterns against the catalog so a typo'd allow-glob
-//     fails the bundler instead of silently producing an empty
-//     bundle.
+//   - chameleon bundle build (cli-time): validates module manifest
+//     patterns against the catalog so a typo'd allow-glob fails the
+//     bundler instead of silently producing an empty bundle.
 //
 // The catalog operates on protoreflect descriptors only — no Go-side
 // type information — so it works against any source of descriptors

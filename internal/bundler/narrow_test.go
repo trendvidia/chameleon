@@ -169,7 +169,7 @@ func nestedHas(cfg *dynamicpb.Message, outer, inner string) bool {
 // baseline (un-narrowed) population test.
 func allowFilter(t *testing.T) *Filter {
 	t.Helper()
-	f, err := Compile(nil, "test", nil)
+	f, err := Compile(nil, "test", Catalog{})
 	if err != nil {
 		t.Fatal(err)
 	}
