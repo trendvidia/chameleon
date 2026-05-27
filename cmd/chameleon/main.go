@@ -55,6 +55,25 @@
 //	chameleon migrate --chain=chain.pxf --transform=add-field ...
 //	    Walk a chain spec and apply a field-level transform
 //	    (add-field / delete-field / rename-field) to every layer.
+//	    Encrypted layers are re-encrypted under the env's current
+//	    Environment.key_name (or the existing ciphertext's key set
+//	    if key_name is unset).
+//
+//	chameleon rotate-key --chain=chain.pxf --layers=./layers
+//	    Walk a chain spec, identify each unique encrypted layer +
+//	    the envs that reach it, and re-encrypt to the union of those
+//	    envs' Environment.key_name. The chain-aware companion to
+//	    `sops rotate` for per-env named-key rotation. Refuses to
+//	    rotate a layer reachable from an env without key_name (would
+//	    silently lock that env out). --dry-run to preflight.
+//
+//	chameleon keystore add --name=NAME [--file=PATH] [--identity=...]
+//	    Append a named entry to the PXF-formatted SOPS age key file.
+//	    Generates a fresh X25519 identity unless --identity is set;
+//	    refuses to overwrite an existing entry without --force.
+//	    Defaults --file to $SOPS_AGE_KEY_FILE. The new entry's
+//	    recipient is printed to stdout (the identity stays inside
+//	    the keystore file).
 //
 //	chameleon hash <file>
 //	    Print the canonical body SHA-256 of a single layer file —

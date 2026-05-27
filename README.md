@@ -437,12 +437,22 @@ keys = {
 }
 ```
 
+Use `chameleon keystore add` to populate it without hand-editing — generates a fresh X25519 identity (or adopts one you already have via `--identity=AGE-SECRET-KEY-...`) and writes the entry atomically:
+
+```sh
+chameleon keystore add --name=prod-key             # generates a new key
+chameleon keystore add --name=sandbox-key --default  # also mark as the file default
+```
+
+The recipient is printed to stdout (pipeable); the identity stays inside the keystore file.
+
 A child env with empty `key_name` inherits the nearest non-empty ancestor's value, mirroring how `extends` already composes layer state — so `dev` above encrypts to `sandbox-key`.
 
-Two consumers honor `key_name` automatically:
+Three consumers honor `key_name` automatically:
 
 - **`chameleon migrate`** uses the env's `key_name` when re-encrypting a layer after a schema transform.
 - **`chameleon bundle build`** unions the `key_name`-derived recipient into each layer's bundle recipient set, alongside any `BundleManifest.recipients_by_env` entry. A typo'd or missing `key_name` fails at bundle-build time, not at runtime decrypt.
+- **`chameleon rotate-key`** re-encrypts every encrypted layer to the chain spec's current key set. See [Rotation](#rotation) for the workflow.
 
 Envs without a `key_name` fall back to whatever recipient set the encrypted file already carries (for `migrate`) or the `BundleManifest` recipient list (for `bundle build`) — unmigrated chains keep working unchanged.
 
@@ -498,13 +508,36 @@ git commit -am "rotate db password"
 git push                # next resolve picks up the new value
 ```
 
-**Key rotation** (changing the KMS / age key used to encrypt the layer) goes through sops directly:
+**Key rotation** (replacing the age key that encrypts a layer) has two shapes:
 
-```sh
-sops rotate --in-place --add-age "age1new..." --rm-age "age1old..." secrets/prod.pxf
-```
+- **Per-file**, using sops directly — useful for ad-hoc rotation of a single file:
 
-For bulk schema changes across every layer (adding / removing / renaming a Secret field everywhere), use `chameleon migrate` — it decrypts every layer in a chain spec, applies the transform at the PXF AST level, and re-encrypts. Avoids the "find every encrypted file and edit by hand" footgun on multi-env setups.
+  ```sh
+  sops rotate --in-place --add-age "age1new..." --rm-age "age1old..." secrets/prod.pxf
+  ```
+
+- **Chain-wide**, using `chameleon rotate-key` — the right tool when the chain spec declares per-env named keys (see [Naming the encryption key per environment](#naming-the-encryption-key-per-environment)). It walks every encrypted layer, resolves the recipient set from `Environment.key_name`, and re-encrypts each file in place:
+
+  ```sh
+  # 1. Add the new key to the keystore.
+  chameleon keystore add --name=prod-key-2026
+  # → prints the new recipient; identity stays inside SOPS_AGE_KEY_FILE.
+
+  # 2. Edit chain.pxf: flip Environment.key_name from "prod-key-2025" to
+  #    "prod-key-2026". Open a PR, get it reviewed, merge.
+
+  # 3. Re-encrypt every encrypted layer to the new recipient set.
+  chameleon rotate-key --chain=config/chain.pxf --layers=./config
+
+  # 4. Once everything is verified, remove the old entry from
+  #    SOPS_AGE_KEY_FILE (manual edit; `keystore remove` is planned).
+  ```
+
+  Step 3 is idempotent and supports `--dry-run` so you can see exactly which files would change before committing. The transition window between steps 1 and 3 is operator-paced — both keys are in the keystore, so old files stay readable while new writes (from `migrate`, `bundle build`, or `rotate-key` itself) pick up the new key.
+
+  **Refusal rule.** `rotate-key` refuses to re-encrypt a layer that's reachable from any env without `key_name` set in the chain spec — re-encrypting to the union of just-the-envs-with-key_name would silently lock out the others. Set `key_name` on every env that reaches the layer, or accept that the layer can't be rotated yet.
+
+For bulk schema changes across every layer (adding / removing / renaming a Secret field everywhere), use `chameleon migrate` — it decrypts every layer in a chain spec, applies the transform at the PXF AST level, and re-encrypts under the env's current `key_name`. Avoids the "find every encrypted file and edit by hand" footgun on multi-env setups.
 
 ### Inspecting at resolve time
 

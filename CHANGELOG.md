@@ -28,6 +28,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   `attribute_*` patterns get the same Compile-time typo guard as secret patterns: a new `secretcatalog.FindNonSecretFieldsInMessage` enumerates every non-secret field path in the consumer schema, and a pattern matching nothing is a bundler error. `bundler.Compile`'s third argument changed from `[]secretcatalog.Site` to a `Catalog{Secrets, NonSecrets}` struct to carry both enumerations; a zero `Catalog{}` (or a `Catalog` with one nil side) skips the membership check on that side while keeping glob syntax validation.
 
+- **`chameleon rotate-key`** ([#98](https://github.com/trendvidia/chameleon/pull/98)). New subcommand that closes the per-env named-key rotation loop opened by #93 / #96. Walks the chain spec, identifies each unique encrypted layer plus the envs that reach it, resolves the union of those envs' `Environment.key_name` through the sops library, and re-encrypts each layer in place. Supports `--dry-run` for preflighting which files would change.
+
+  Typical workflow (replacing the hand-rolled `sops rotate --in-place --add-age ... --rm-age ...` per file):
+
+  ```sh
+  chameleon keystore add --name=prod-key-2026     # 1. add new key
+  # edit chain.pxf: Environment.key_name → "prod-key-2026"
+  chameleon rotate-key --chain=chain.pxf          # 2. re-encrypt every layer
+  # manually remove the old entry from SOPS_AGE_KEY_FILE
+  ```
+
+  Refusal rule: a shared layer reachable from an env without `key_name` is skipped (re-encrypting would lock that env out). The skip message names the unresolved envs so the operator can either set `key_name` on every reaching env or accept that the layer can't be rotated yet.
+
+- **`chameleon keystore add`** ([#99](https://github.com/trendvidia/chameleon/pull/99)). New subcommand that appends a named entry to the PXF-formatted SOPS age key file. Either generates a fresh X25519 identity or adopts a supplied one (`--identity=AGE-SECRET-KEY-...`). Writes atomically via temp-file + rename at `0o600`; refuses to overwrite an existing entry without `--force`. The new entry's recipient is printed to stdout (pipeable); the identity stays inside the keystore file.
+
+  Defaults `--file` to `$SOPS_AGE_KEY_FILE` and refuses paths not ending in `.pxf` (the sops fork dispatches its PXF parser on the suffix). X25519 only for first cut; plugin / hybrid identities (yubikey, post-quantum) need IPC-aware recipient derivation and are deferred.
+
 ### Changed
 
 - **`bundler.Filter.Allows` renamed to `AllowsSecret`** ([#94](https://github.com/trendvidia/chameleon/pull/94)). The historical method was always secret-only in semantics; the rename makes that explicit and pairs with the new `AllowsAttribute`. The package is internal (`internal/bundler`), so no public API surface broke.
