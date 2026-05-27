@@ -114,6 +114,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "chameleon rotate-key:", err)
 			os.Exit(1)
 		}
+	case "keystore":
+		if err := keystoreCmd(os.Stdout, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon keystore:", err)
+			os.Exit(1)
+		}
 	case "hash":
 		if err := hashCmd(os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon hash:", err)
@@ -158,6 +163,7 @@ Subcommands:
     verify      Check @header.content_sha256 of every layer in a chain.
     migrate     Bulk-edit layer files in a chain spec (add/rename/delete fields).
     rotate-key  Re-encrypt every encrypted layer to the chain spec's current key_name.
+    keystore    Manage the PXF-formatted SOPS age key file (add / list / ...).
     hash        Print the canonical body SHA-256 of a single layer file.
     lint        Flag pxfv1.Secret.Value reads / writes in consumer code.
     bundle      Build a per-module distribution bundle (decrypt → narrow → re-encrypt → zip).
