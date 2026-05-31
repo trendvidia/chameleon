@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped trendvidia/sops fork to v3.15.0**. The upstream-soft-fork bump picks up two additive changes that broaden where multi-key PXF age files can live: the fork now content-sniffs `SOPS_AGE_KEY` and `SOPS_AGE_KEY_CMD` for the PXF top-level marker (previously PXF dispatch was driven only by `SOPS_AGE_KEY_FILE`'s `.pxf` suffix), and the encrypt-side default/name lookup walks the full `SOPS_AGE_KEY_FILE > SOPS_AGE_KEY > SOPS_AGE_KEY_CMD` chain so `chameleon migrate` / `chameleon bundle build` / `chameleon rotate-key` can resolve a chain-spec `key_name` from any of the three SOPS env vars. No public API surface changed in chameleon; line-based callers see no behavior change because the probe only takes the PXF path when the bytes positively look like a PXF top-level entry.
+
 ## [0.20.0] — 2026-05-26
 
 Minor release — per-env named encryption keys land end-to-end. `chain.ChainSpec.Environment` gains a `key_name` field that names the age key its layers are encrypted with; `chameleon migrate` and `chameleon bundle build` both honor it automatically, and a new `chameleon rotate-key` subcommand closes the rotation loop by re-encrypting every layer to the chain spec's current key set. `chameleon keystore add` rounds out the workflow with a guarded helper for populating `SOPS_AGE_KEY_FILE` without hand-editing. `BundleManifest.Module` gains independent narrowing of non-secret fields (`attribute_allow` / `attribute_deny` / `attribute_default`) alongside the existing secret selector — both selectors are Compile-time typo-guarded against the schema catalog.
