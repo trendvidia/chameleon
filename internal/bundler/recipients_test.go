@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	sopsage "github.com/trendvidia/sops/v3/age"
-	"github.com/trendvidia/sops/v3/age/keypb"
+	sopsage "github.com/trendvidia/sops/v4/age"
+	"github.com/trendvidia/sops/v4/age/keypb"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"

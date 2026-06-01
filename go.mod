@@ -8,7 +8,7 @@ require (
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/stretchr/testify v1.11.1
 	github.com/trendvidia/protowire-go v1.0.0
-	github.com/trendvidia/sops/v3 v3.16.0
+	github.com/trendvidia/sops/v4 v4.0.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
@@ -151,7 +151,8 @@ require (
 // (PXF store + comment directives, context.Context end-to-end + encrypt
 // package + DataIntoWriter, PXF multi-key age files + --age-key-name +
 // name<->recipient lookup helpers, PXF dispatch on SOPS_AGE_KEY /
-// SOPS_AGE_KEY_CMD content + SOPS_AGE_KEY_FILE > SOPS_AGE_KEY >
-// SOPS_AGE_KEY_CMD lookup chain). Consumed directly under its own
-// module path (github.com/trendvidia/sops/v3); no replace directive is
-// needed.
+// SOPS_AGE_KEY_CMD content, unified four-source key resolution with a
+// hardcoded $HOME/.config/sops/age/keys.pxf default + CLI flags
+// --age-key-file / --age-key / --age-key-cmd that translate to the
+// SOPS_AGE_KEY* env vars). Consumed directly under its own module path
+// (github.com/trendvidia/sops/v4); no replace directive is needed.
