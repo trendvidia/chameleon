@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 
-// Package sops bridges trendvidia/sops/v3 into chameleon's memguard-aware
+// Package sops bridges trendvidia/sops/v4 into chameleon's memguard-aware
 // loading pipeline. The standard sops library returns plaintext as a
 // regular []byte; this package immediately copies that into a
 // memguard.LockedBuffer (which mlocks the page and wipes on Destroy)
@@ -16,13 +16,20 @@
 // for parse.Move.
 //
 // Credentials. Sops sources keys from the ambient environment exactly
-// like the sops CLI does. For age-encrypted files:
+// like the sops CLI does. For age-encrypted files the four-source
+// contract is identical on encrypt and decrypt sides (CLI flag values
+// override env; env overrides default file):
 //
-//	SOPS_AGE_KEY            inline private keys (comma-separated)
-//	SOPS_AGE_KEY_FILE       path to keys.txt
-//	SOPS_AGE_KEY_CMD        shell command that emits keys
-//	~/.config/sops/age/keys.txt          (XDG default)
+//	SOPS_AGE_KEY_FILE                    path to a key file (PXF if .pxf, else line-based)
+//	SOPS_AGE_KEY                         inline key material (PXF-sniffed or line-based)
+//	SOPS_AGE_KEY_CMD                     command whose stdout is a key file (sniffed)
+//	$HOME/.config/sops/age/keys.pxf      standardized default (PXF only, exists-gated)
+//
+// Plus a decrypt-only side channel:
+//
 //	SOPS_AGE_SSH_PRIVATE_KEY_FILE        SSH-derived
+//	SOPS_AGE_SSH_PRIVATE_KEY_CMD         command emitting an SSH private key
+//	~/.ssh/id_ed25519, ~/.ssh/id_rsa     default SSH-derived
 //
 // For KMS / GCP-KMS / Azure-KV / Vault, sops uses ambient cloud
 // credentials. For PGP, gpg-agent. None of these are configurable
@@ -37,7 +44,7 @@ import (
 	"strings"
 
 	"github.com/awnumar/memguard"
-	"github.com/trendvidia/sops/v3/decrypt"
+	"github.com/trendvidia/sops/v4/decrypt"
 )
 
 // Format identifies the sops store backend. Values mirror sops's
@@ -153,7 +160,7 @@ type Decrypter interface {
 	Decrypt(ctx context.Context, ciphertext []byte, format Format) (*memguard.LockedBuffer, error)
 }
 
-// Default returns a Decrypter wired to the in-process trendvidia/sops/v3
+// Default returns a Decrypter wired to the in-process trendvidia/sops/v4
 // decryption stack. Credentials are sourced from the ambient
 // environment (see package doc).
 func Default() Decrypter { return defaultDecrypter{} }

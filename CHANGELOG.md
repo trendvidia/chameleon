@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped trendvidia/sops to v4.0.0 and migrated to the v4 module path.** sops v4 unifies the age key-source resolution chain between encrypt and decrypt: both `pxfSources()` and `MasterKey.loadIdentities()` consult the same ordered list — `SOPS_AGE_KEY_FILE > SOPS_AGE_KEY > SOPS_AGE_KEY_CMD > $HOME/.config/sops/age/keys.pxf` (standardized default; PXF only, exists-gated) — plus a decrypt-only SSH side channel. sops also adds three CLI flags (`--age-key-file`, `--age-key`, `--age-key-cmd`) that translate to the corresponding env vars at subcommand entry so CLI > env > default precedence is symmetric on both paths. Module path bumps from `github.com/trendvidia/sops/v3` to `/v4` per Go semantic-import-versioning; every chameleon source file's `github.com/trendvidia/sops/v3/...` import was rewritten to `github.com/trendvidia/sops/v4/...`.
+
+  **Breaking for sops consumers**: the implicit `~/.config/sops/age/keys.txt` line-based fallback (driven by `XDG_CONFIG_HOME` / `os.UserConfigDir()`) is gone. Operators relying on that file must either migrate to a PXF-formatted `keys.pxf` at `$HOME/.config/sops/age/keys.pxf`, or set `SOPS_AGE_KEY_FILE` / `--age-key-file` explicitly. SSH identities, `SOPS_AGE_KEY{,_FILE,_CMD}` env vars, and `--age=age1...` inline recipients continue to work unchanged. See the [trendvidia/sops v4.0.0 CHANGELOG](https://github.com/trendvidia/sops/blob/trendvidia/CHANGELOG.md#400) for the full migration note.
+
+  **Breaking for chameleon Go consumers**: the import path bump v3 → v4. Downstream consumers need to rewrite their own `github.com/trendvidia/sops/v3/...` imports (if any direct dependency on the sops package surface) and bump their `require` line to `github.com/trendvidia/sops/v4 v4.0.0`. Code that only imports chameleon (not sops directly) needs no consumer-side change beyond `go get github.com/trendvidia/chameleon` to pick up the new version.
+
+  Chameleon's `sops/decrypt.go` package doc rewrites the Credentials enumeration for the new four-source contract; the README's runtime-decryption credential-source table cell and the key-name lookup section both updated to match.
+
 ## [0.21.0] — 2026-06-01
 
 Minor release — dependency-only release that promotes the `trendvidia/sops` soft-fork to direct consumption under its own canonical module path. **Action required for consumers** whose own `go.mod` carried `replace github.com/getsops/sops/v3 => github.com/trendvidia/sops/v3 ...`: that line must be dropped after upgrading to v0.21.0 (otherwise the consumer-side replace silently shadows chameleon's `require github.com/trendvidia/sops/v3 v3.16.0` and pins sops to whichever older fork tag the replace named). No chameleon Go API surface changed.

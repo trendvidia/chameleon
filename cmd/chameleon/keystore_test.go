@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"filippo.io/age"
-	"github.com/trendvidia/sops/v3/age/keypb"
+	"github.com/trendvidia/sops/v4/age/keypb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trendvidia/protowire-go/encoding/pxf"

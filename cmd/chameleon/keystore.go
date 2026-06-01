@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"filippo.io/age"
-	"github.com/trendvidia/sops/v3/age/keypb"
+	"github.com/trendvidia/sops/v4/age/keypb"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 

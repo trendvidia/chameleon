@@ -37,9 +37,9 @@ import (
 	"testing"
 
 	"filippo.io/age"
-	"github.com/trendvidia/sops/v3"
-	sopsage "github.com/trendvidia/sops/v3/age"
-	"github.com/trendvidia/sops/v3/encrypt"
+	"github.com/trendvidia/sops/v4"
+	sopsage "github.com/trendvidia/sops/v4/age"
+	"github.com/trendvidia/sops/v4/encrypt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -86,7 +86,7 @@ feature_flags = [
 		"individual leaf values should be wrapped in the AES256_GCM envelope")
 
 	// 5. Wire the private key into the ambient env so chameleon's
-	// Decrypter (which delegates to trendvidia/sops/v3/decrypt) finds it.
+	// Decrypter (which delegates to trendvidia/sops/v4/decrypt) finds it.
 	// t.Setenv handles cleanup automatically.
 	t.Setenv("SOPS_AGE_KEY", privateKey)
 

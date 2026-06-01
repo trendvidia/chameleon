@@ -6,7 +6,7 @@ package sops
 import (
 	"fmt"
 
-	sopsage "github.com/trendvidia/sops/v3/age"
+	sopsage "github.com/trendvidia/sops/v4/age"
 )
 
 // RecipientsFromKeyName resolves a named age key from the sops
