@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-06-01
+
+Minor release — dependency-only release that promotes the `trendvidia/sops` soft-fork to direct consumption under its own canonical module path. **Action required for consumers** whose own `go.mod` carried `replace github.com/getsops/sops/v3 => github.com/trendvidia/sops/v3 ...`: that line must be dropped after upgrading to v0.21.0 (otherwise the consumer-side replace silently shadows chameleon's `require github.com/trendvidia/sops/v3 v3.16.0` and pins sops to whichever older fork tag the replace named). No chameleon Go API surface changed.
+
 ### Changed
 
-- **Bumped trendvidia/sops to v3.16.0 and migrated to the fork's own module path**. Two related dependency changes:
+- **Bumped trendvidia/sops to v3.16.0 and migrated to the fork's own module path** ([#102](https://github.com/trendvidia/chameleon/pull/102), [#103](https://github.com/trendvidia/chameleon/pull/103)). Two related dependency changes:
   - **v3.15.0 → v3.16.0 bump.** v3.15.0 broadened where multi-key PXF age files can live: the fork now content-sniffs `SOPS_AGE_KEY` and `SOPS_AGE_KEY_CMD` for the PXF top-level marker (previously PXF dispatch was driven only by `SOPS_AGE_KEY_FILE`'s `.pxf` suffix), and the encrypt-side default/name lookup walks the full `SOPS_AGE_KEY_FILE > SOPS_AGE_KEY > SOPS_AGE_KEY_CMD` chain so `chameleon migrate` / `chameleon bundle build` / `chameleon rotate-key` can resolve a chain-spec `key_name` from any of the three SOPS env vars. v3.16.0 promotes the fork to consumption under its own module path. No public API surface changed in chameleon; line-based callers see no behavior change because the probe only takes the PXF path when the bytes positively look like a PXF top-level entry.
   - **Dropped the `replace github.com/getsops/sops/v3 => github.com/trendvidia/sops/v3` directive.** v3.16.0 is published under the fork's canonical module path (`github.com/trendvidia/sops/v3`), so chameleon now imports it directly and the `go.mod` `replace` is gone. Every chameleon source file that imported `github.com/getsops/sops/v3/...` was rewritten to `github.com/trendvidia/sops/v3/...`. **Consumers must drop the corresponding `replace github.com/getsops/sops/v3 => github.com/trendvidia/sops/v3 ...` line from their own `go.mod`** — keeping it would pin to an older fork tag and silently shadow chameleon's v3.16.0 require. See README → Compatibility → Replace directives for the updated single-fork (`trendvidia/protobuf-go` only) consumer-side guidance.
 
