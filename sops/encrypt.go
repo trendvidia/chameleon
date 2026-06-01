@@ -9,12 +9,12 @@ import (
 	"fmt"
 
 	"github.com/awnumar/memguard"
-	"github.com/getsops/sops/v3"
-	sopsage "github.com/getsops/sops/v3/age"
-	"github.com/getsops/sops/v3/encrypt"
-	"github.com/getsops/sops/v3/keys"
-	"github.com/getsops/sops/v3/kms"
-	"github.com/getsops/sops/v3/pgp"
+	"github.com/trendvidia/sops/v3"
+	sopsage "github.com/trendvidia/sops/v3/age"
+	"github.com/trendvidia/sops/v3/encrypt"
+	"github.com/trendvidia/sops/v3/keys"
+	"github.com/trendvidia/sops/v3/kms"
+	"github.com/trendvidia/sops/v3/pgp"
 )
 
 // Recipients is the set of master keys an encrypted layer can be
@@ -62,7 +62,7 @@ var ErrEmptyPlaintext = errors.New("sops: empty plaintext")
 // KeyGroup is required" check, with a less generic message.
 var ErrNoRecipients = errors.New("sops: no recipients (need at least one KMS / age / PGP key)")
 
-// Encrypter wraps getsops/sops/v3/encrypt for the in-process bundler
+// Encrypter wraps trendvidia/sops/v3/encrypt for the in-process bundler
 // pipeline. Implementations must be safe for concurrent use.
 type Encrypter interface {
 	// Encrypt produces sops ciphertext for plaintext under the
@@ -84,7 +84,7 @@ type Encrypter interface {
 }
 
 // DefaultEncrypter returns an Encrypter wired to the in-process
-// getsops/sops/v3 encryption stack. Credentials for KMS / age / PGP
+// trendvidia/sops/v3 encryption stack. Credentials for KMS / age / PGP
 // come from the ambient environment exactly as the sops CLI does
 // (see the package doc on Decrypter for the variable list).
 func DefaultEncrypter() Encrypter { return defaultEncrypter{} }

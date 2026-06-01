@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 
-// Package sops bridges getsops/sops/v3 into chameleon's memguard-aware
+// Package sops bridges trendvidia/sops/v3 into chameleon's memguard-aware
 // loading pipeline. The standard sops library returns plaintext as a
 // regular []byte; this package immediately copies that into a
 // memguard.LockedBuffer (which mlocks the page and wipes on Destroy)
@@ -37,7 +37,7 @@ import (
 	"strings"
 
 	"github.com/awnumar/memguard"
-	"github.com/getsops/sops/v3/decrypt"
+	"github.com/trendvidia/sops/v3/decrypt"
 )
 
 // Format identifies the sops store backend. Values mirror sops's
@@ -153,7 +153,7 @@ type Decrypter interface {
 	Decrypt(ctx context.Context, ciphertext []byte, format Format) (*memguard.LockedBuffer, error)
 }
 
-// Default returns a Decrypter wired to the in-process getsops/sops/v3
+// Default returns a Decrypter wired to the in-process trendvidia/sops/v3
 // decryption stack. Credentials are sourced from the ambient
 // environment (see package doc).
 func Default() Decrypter { return defaultDecrypter{} }
