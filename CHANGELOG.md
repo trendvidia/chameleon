@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped trendvidia/sops to v4.0.1.** Patch release on top of v4.0.0 — no API surface change, no operator action required. The diagnostic improvement: `time.Parse` errors in `sops { }` metadata blocks now name the offending field (`lastmodified`, `kms.created_at`, `gcp_kms.created_at`, `azure_kv.created_at`, `hc_vault.created_at`, `pgp.created_at`, `hc_kms.created_at`) instead of surfacing the bare `time` package message. Affects operators hand-editing sops files; chameleon's resolver pipeline is unchanged.
+
 ## [0.22.0] — 2026-06-01
 
 Minor release — adopts [trendvidia/sops v4.0.0](https://github.com/trendvidia/sops/releases/tag/v4.0.0), which unifies the age key-source resolution between encrypt and decrypt around a single four-source contract (`SOPS_AGE_KEY_FILE > SOPS_AGE_KEY > SOPS_AGE_KEY_CMD > $HOME/.config/sops/age/keys.pxf`) plus a decrypt-only SSH side channel. Adds CLI flags (`--age-key-file`, `--age-key`, `--age-key-cmd`) translated to env vars at subcommand entry. **Action required for two consumer classes**: (1) operators relying on the implicit `~/.config/sops/age/keys.txt` line-based fallback must migrate to PXF `keys.pxf` at the new standardized default path or set `SOPS_AGE_KEY_FILE` explicitly; (2) Go consumers depending directly on chameleon's `sops` package surface must rewrite their own `trendvidia/sops/v3/...` imports to `/v4/...` and bump `require` to `github.com/trendvidia/sops/v4 v4.0.0`. Pure chameleon consumers (no direct `chameleon/sops/...` import) need no changes beyond `go get`.
