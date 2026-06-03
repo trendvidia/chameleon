@@ -8,7 +8,7 @@ require (
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/stretchr/testify v1.11.1
 	github.com/trendvidia/protowire-go v1.0.0
-	github.com/trendvidia/sops/v4 v4.0.0
+	github.com/trendvidia/sops/v4 v4.0.1
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
