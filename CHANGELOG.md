@@ -7,9 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-06-03
+
+Patch release — dependency-only bump to [trendvidia/sops v4.0.1](https://github.com/trendvidia/sops/releases/tag/v4.0.1), plus a substantial round of test hardening across the chameleon code base (~25 PRs landed in `tests/` branches between #107 and #125). No chameleon API surface change, no operator action required. Drop-in upgrade for every consumer.
+
+The user-visible diagnostic gain comes from sops: `time.Parse` errors inside `sops { }` metadata blocks now identify which field failed instead of surfacing the bare Go `time` package message — affects operators hand-editing sops files, not the chameleon resolver pipeline.
+
 ### Changed
 
-- **Bumped trendvidia/sops to v4.0.1.** Patch release on top of v4.0.0 — no API surface change, no operator action required. The diagnostic improvement: `time.Parse` errors in `sops { }` metadata blocks now name the offending field (`lastmodified`, `kms.created_at`, `gcp_kms.created_at`, `azure_kv.created_at`, `hc_vault.created_at`, `pgp.created_at`, `hc_kms.created_at`) instead of surfacing the bare `time` package message. Affects operators hand-editing sops files; chameleon's resolver pipeline is unchanged.
+- **Bumped trendvidia/sops to v4.0.1** ([#126](https://github.com/trendvidia/chameleon/pull/126)). Patch release on top of v4.0.0 — no API surface change, no operator action required. The diagnostic improvement: `time.Parse` errors in `sops { }` metadata blocks now name the offending field (`lastmodified`, `kms.created_at`, `gcp_kms.created_at`, `azure_kv.created_at`, `hc_vault.created_at`, `pgp.created_at`, `hc_kms.created_at`) instead of surfacing the bare `time` package message. Affects operators hand-editing sops files; chameleon's resolver pipeline is unchanged.
+
+### Internal
+
+- **Substantial test hardening pass** (PRs [#107](https://github.com/trendvidia/chameleon/pull/107)–[#125](https://github.com/trendvidia/chameleon/pull/125)). No behavior change; mentioned here as a confidence signal to consumers. Coverage uplifts at the package level: `internal/secretcatalog` 49% → 91%, `sops` 74% → 94%, `internal/header` 67% → 85%, `cmd/chameleon` 71% → 79%, `resolver` 87% → 93%. New fuzz harness on `bundle.Open` / `OpenBase64`. New integration suite (`-tags=integration`) covering CLI binary smoke + cross-subcommand data flow, multi-env age round-trip, real-gpg PGP round-trip (single, multi-recipient, mixed age+PGP), real-`protoc` plugin invocation, bash/zsh/fish completion-script syntax validation, and the destructive `rotate-key` operation with a cross-decrypt canary (new-key must decrypt; old-key must NOT). One latent test bug was found and fixed during the work — the rotate-key canary's "old-key MUST NOT decrypt" assertion was passing for the wrong reason because the Decrypter's wipe-on-success contract had consumed the input buffer; PR #125 corrected it by passing each Decrypt call its own ciphertext copy.
 
 ## [0.22.0] — 2026-06-01
 
