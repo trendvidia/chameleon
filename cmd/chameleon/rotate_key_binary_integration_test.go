@@ -117,11 +117,21 @@ layers = [{ id = "secrets" path = "secrets/${env}.pxf" for_each = PER_ENV encryp
 	require.NotEqual(t, string(originalCT), string(rewritten),
 		"file must have been rewritten (recipient set + DEK changed)")
 
+	// chsops.Default().Decrypt WIPES its ciphertext input on
+	// success, so the two canary decrypts below MUST work on
+	// their own copies. Without this, the second decrypt would
+	// see a zero-filled buffer and unmarshal-fail — the assertion
+	// "old-key MUST NOT decrypt" would pass for the wrong reason
+	// (input was wiped, not because old-key actually couldn't
+	// decrypt).
+	ciphForNew := append([]byte(nil), rewritten...)
+	ciphForOld := append([]byte(nil), rewritten...)
+
 	// Canary 1: NEW key alone must decrypt the rewritten file.
 	t.Setenv("SOPS_AGE_KEY_FILE", "")
 	t.Setenv("SOPS_AGE_KEY", rotNewIdentity)
 	buf, err := chsops.Default().Decrypt(
-		context.Background(), rewritten, chsops.FormatProtowire,
+		context.Background(), ciphForNew, chsops.FormatProtowire,
 	)
 	require.NoError(t, err, "new-key alone must decrypt the rotated layer")
 	defer buf.Destroy()
@@ -133,7 +143,7 @@ layers = [{ id = "secrets" path = "secrets/${env}.pxf" for_each = PER_ENV encryp
 	// recipient set wasn't actually swapped.
 	t.Setenv("SOPS_AGE_KEY", rotOldIdentity)
 	_, err = chsops.Default().Decrypt(
-		context.Background(), rewritten, chsops.FormatProtowire,
+		context.Background(), ciphForOld, chsops.FormatProtowire,
 	)
 	require.Error(t, err,
 		"old-key MUST NOT decrypt the rotated layer; if it can, rotation didn't actually swap recipients")
