@@ -12,22 +12,13 @@ permissions:
 jobs:
   test:
     name: test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up go-plus
-        uses: trendvidia/setup-go-plus@da0dff727fa2ad30f98e5318191f39c2b55b9f20 # v1
-        with:
-          version: v1.26.5
-          app-id: ${{ secrets.GOPLUS_APP_ID }}
-          private-key: ${{ secrets.GOPLUS_APP_KEY }}
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: gomod-${{ runner.os }}-
+      - name: Assert go-plus toolchain
+        run: |
+          go version
+          go version | grep -q '(plus)' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
       - name: build
         run: go build ./...
       - name: vet
@@ -39,22 +30,13 @@ jobs:
 
   lint:
     name: lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
-      - name: Set up go-plus
-        uses: trendvidia/setup-go-plus@da0dff727fa2ad30f98e5318191f39c2b55b9f20 # v1
-        with:
-          version: v1.26.5
-          app-id: ${{ secrets.GOPLUS_APP_ID }}
-          private-key: ${{ secrets.GOPLUS_APP_KEY }}
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: gomod-${{ runner.os }}-
+      - name: Assert go-plus toolchain
+        run: |
+          go version
+          go version | grep -q '(plus)' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
         with:
@@ -63,24 +45,15 @@ jobs:
   bench:
     name: bench (vs main)
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Set up go-plus
-        uses: trendvidia/setup-go-plus@da0dff727fa2ad30f98e5318191f39c2b55b9f20 # v1
-        with:
-          version: v1.26.5
-          app-id: ${{ secrets.GOPLUS_APP_ID }}
-          private-key: ${{ secrets.GOPLUS_APP_KEY }}
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: gomod-${{ runner.os }}-
+      - name: Assert go-plus toolchain
+        run: |
+          go version
+          go version | grep -q '(plus)' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
       - name: install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest
       - name: benchmark PR head
