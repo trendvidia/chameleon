@@ -20,8 +20,8 @@ import (
 
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 
-	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/crypt"
+	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/sops"
 )
 

@@ -12,6 +12,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/trendvidia/chameleon/crypt"
+	"github.com/trendvidia/chameleon/resolver"
 )
 
 // CLI subcommand smoke tests. The *Cmd entry points went from 0%
@@ -612,4 +615,117 @@ func TestUsage(t *testing.T) {
 	assert.NotContains(t, got, "TODO",
 		"usage text shouldn't carry leftover placeholders")
 	_ = strings.Repeat // keep strings import
+}
+
+// --- --decrypter=none ---
+
+// encryptedFixture is a chain whose one layer is marked
+// `encrypted = true`, with garbage where the ciphertext should be.
+// Nothing here can be decrypted; the point is which error comes out.
+func encryptedFixture(t *testing.T) string {
+	t.Helper()
+	// $HOME/.chameleon can set `decrypter = "sops"` for the default
+	// app, and applyAppDefaults adopts it whenever --decrypter is
+	// absent or "none" — which would decide this test on the
+	// developer's machine config rather than on the code. Point HOME
+	// at an empty dir so there is no user config to adopt.
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	writeFixture(t, dir, map[string]string{
+		// A pxf.Secret field so `reveal` gets past its is-this-a-secret
+		// check and actually reaches the resolve — the case that would
+		// otherwise print decrypted plaintext to stdout.
+		"pxf/secret.proto": `syntax = "proto3";
+package pxf;
+message Secret {
+  string value = 1;
+  string hint = 2;
+  string fingerprint = 3;
+}
+`,
+		"app.proto": `syntax = "proto3";
+package smoke.v1;
+import "pxf/secret.proto";
+message Cfg {
+  string base_url = 1;
+  pxf.Secret api_key = 2;
+}
+`,
+		"chain.pxf": `version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "secret" path = "secret.pxf" for_each = ONCE encrypted = true required = true }]
+`,
+		"secret.pxf": "not-actually-ciphertext",
+	})
+	return dir
+}
+
+// TestDecrypterNone_RefusesEncryptedLayer pins the flag's documented
+// contract: "none" errors if any encrypted layer is hit.
+//
+// It regressed silently when the crypt registry landed
+// (trendvidia/chameleon#130). "none" produced a nil Decrypter, the
+// caller passed no option, and "no decrypter configured" used to be
+// the same thing as "do not decrypt" — but this binary links
+// chameleon/sops for bundle/migrate/rotate-key, so sops's init
+// registers the backend and the resolver's new fallback auto-selects
+// it. `--decrypter=none` reached for ambient KMS/age credentials the
+// operator had explicitly declined, and for `reveal` that means
+// plaintext on stdout.
+//
+// The tell is which error surfaces: ErrNoDecrypter means the layer
+// was refused, a sops unmarshal error means it was attempted.
+func TestDecrypterNone_RefusesEncryptedLayer(t *testing.T) {
+	require.NotEmpty(t, crypt.Registered(),
+		"this binary must link a backend, or this test cannot regress")
+
+	dir := encryptedFixture(t)
+	base := []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+		"--decrypter=none",
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(w *bytes.Buffer, args []string) error
+		args []string
+	}{
+		{"explain", func(w *bytes.Buffer, a []string) error { return explainCmd(nil, w, a) }, base},
+		{"get", func(w *bytes.Buffer, a []string) error { return getCmd(nil, w, a) }, base},
+		{"reveal", func(w *bytes.Buffer, a []string) error { return revealCmd(nil, w, a) },
+			append(append([]string{}, base...), "--field=api_key")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := tc.run(&out, tc.args)
+			require.Error(t, err, "an encrypted layer under --decrypter=none must fail")
+			assert.ErrorIs(t, err, resolver.ErrNoDecrypter,
+				"want the layer refused; got %v", err)
+			assert.NotContains(t, err.Error(), "sops:",
+				"sops must not have been invoked at all: %v", err)
+			assert.Empty(t, out.String(), "and nothing may reach the writer")
+		})
+	}
+}
+
+// TestDecrypterNone_IsTheDefault: the same refusal with the flag
+// omitted entirely, since "none" is the flag's default value.
+func TestDecrypterNone_IsTheDefault(t *testing.T) {
+	dir := encryptedFixture(t)
+
+	var out bytes.Buffer
+	err := explainCmd(nil, &out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, resolver.ErrNoDecrypter)
 }

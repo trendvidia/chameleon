@@ -24,8 +24,17 @@ type Backend struct {
 	// encrypt-only backend.
 	Decrypter Decrypter
 
-	// Encrypter is the write half, used by the bundler and the CLI's
-	// re-encrypting subcommands. Nil for a decrypt-only backend.
+	// Encrypter is the write half. Nil for a decrypt-only backend.
+	//
+	// Nothing in the registry selects on it yet: the bundler and the
+	// CLI's re-encrypting subcommands construct their Encrypter
+	// directly (sops.DefaultEncrypter), because the write side is a
+	// build-time authoring tool that already links sops and has no
+	// binary-size problem to solve. It is carried here so a backend
+	// registers as one thing rather than two, and so [Registered] can
+	// report a build's full crypto surface. Wiring the write side
+	// through the registry — a SoleEncrypter to match [SoleDecrypter]
+	// — is a separate change; see trendvidia/chameleon#130.
 	Encrypter Encrypter
 }
 
@@ -81,9 +90,10 @@ func Register(name string, b Backend) {
 // t.Cleanup.
 //
 // Unregistering is safe for concurrent use but does not reach a
-// Decrypter a caller already holds: the resolver reads the registry
-// once per encrypted layer, so an in-flight Resolve may still finish
-// against the removed backend.
+// Decrypter a caller already holds: the resolver reads the registry at
+// most once per Resolve — at the first encrypted layer, then reuses
+// that Decrypter for the rest of the call — so an in-flight Resolve may
+// still finish against the removed backend.
 func Unregister(name string) bool {
 	mu.Lock()
 	defer mu.Unlock()
@@ -98,12 +108,7 @@ func Unregister(name string) bool {
 func Registered() []string {
 	mu.RLock()
 	defer mu.RUnlock()
-	names := make([]string, 0, len(backends))
-	for name := range backends {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+	return names(backends)
 }
 
 // Get returns the backend registered under name, or a wrapped

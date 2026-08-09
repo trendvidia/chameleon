@@ -26,6 +26,7 @@ import (
 
 	"github.com/trendvidia/chameleon/chain"
 	"github.com/trendvidia/chameleon/crypt"
+	"github.com/trendvidia/chameleon/internal/bundlelayout"
 	"github.com/trendvidia/chameleon/internal/secretcatalog"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/sops"
@@ -344,9 +345,9 @@ func writeChainSpec(zw *zip.Writer, spec proto.Message) error {
 	if err != nil {
 		return fmt.Errorf("bundler: marshal chain spec: %w", err)
 	}
-	w, err := zw.Create(ChainEntryPath)
+	w, err := zw.Create(bundlelayout.ChainEntryPath)
 	if err != nil {
-		return fmt.Errorf("bundler: zip create %s: %w", ChainEntryPath, err)
+		return fmt.Errorf("bundler: zip create %s: %w", bundlelayout.ChainEntryPath, err)
 	}
 	_, err = w.Write(body)
 	return err
@@ -383,9 +384,9 @@ func writeAudit(zw *zip.Writer, opts BuildOptions, manifest *chameleonv1.BundleM
 	fmt.Fprintf(&b, "built_at: %s\n", now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(&b, "chameleon_version: %s\n", chameleonVersion())
 
-	w, err := zw.Create(AuditEntryPath)
+	w, err := zw.Create(bundlelayout.AuditEntryPath)
 	if err != nil {
-		return fmt.Errorf("bundler: zip create %s: %w", AuditEntryPath, err)
+		return fmt.Errorf("bundler: zip create %s: %w", bundlelayout.AuditEntryPath, err)
 	}
 	_, err = io.WriteString(w, b.String())
 	return err

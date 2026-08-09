@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,12 +26,15 @@ import (
 // plaintext path.
 
 // plaintextPath is every package a consumer can reach without opting
-// into decryption: the chameleon.Load shortcut, the resolver, and the
-// passes it runs. Deliberately excludes bundle / internal/bundler
-// (bundling re-encrypts, so it links a backend on purpose) and cmd
-// (binaries, not consumer surface).
+// into decryption: the chameleon.Load shortcut, the resolver, the
+// passes it runs, and the bundle reader (opening a bundle is a read,
+// and its output feeds straight into chameleon.Load). Deliberately
+// excludes internal/bundler (the *write* side — bundling re-encrypts,
+// so it links a backend on purpose) and cmd (binaries, not consumer
+// surface).
 var plaintextPath = []string{
 	"github.com/trendvidia/chameleon",
+	"github.com/trendvidia/chameleon/bundle",
 	"github.com/trendvidia/chameleon/chain",
 	"github.com/trendvidia/chameleon/crypt",
 	"github.com/trendvidia/chameleon/defaults",
@@ -44,10 +48,15 @@ var plaintextPath = []string{
 	"github.com/trendvidia/chameleon/wkt",
 }
 
+// selfPrefix is chameleon's own bridge package — the one entry in
+// keyManagement that is in this module. The negative control below
+// skips it; see the comment there.
+const selfPrefix = "github.com/trendvidia/chameleon/sops"
+
 // keyManagement is the weight #130 was about. Prefixes, matched
 // against every package in the graph.
 var keyManagement = []struct{ prefix, what string }{
-	{"github.com/trendvidia/chameleon/sops", "chameleon's sops bridge"},
+	{selfPrefix, "chameleon's sops bridge"},
 	{"github.com/trendvidia/sops/", "the sops library"},
 	{"github.com/getsops/", "upstream sops"},
 	{"github.com/aws/", "the AWS SDK"},
@@ -64,9 +73,16 @@ func deps(t *testing.T, pkgs ...string) []string {
 		t.Skip("no go toolchain on PATH; cannot inspect the package graph")
 	}
 
+	// stdout only: `go list` writes module-download progress ("go:
+	// downloading github.com/aws/aws-sdk-go-v2 v1.30.0") to stderr on
+	// a cold cache, and folding that in would feed the checks below
+	// package names that are not in the graph at all.
 	args := append([]string{"list", "-deps"}, pkgs...)
-	out, err := exec.CommandContext(t.Context(), "go", args...).CombinedOutput()
-	require.NoError(t, err, "go list -deps failed: %s", out)
+	cmd := exec.CommandContext(t.Context(), "go", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	require.NoError(t, err, "go list -deps failed: %s", stderr.String())
 
 	lines := strings.Fields(string(out))
 	require.NotEmpty(t, lines, "go list -deps returned nothing — the check below would pass vacuously")
@@ -99,15 +115,36 @@ func TestKeyManagementCheckCatchesTheSopsPackage(t *testing.T) {
 	// Negative control. The test above passes trivially if the prefix
 	// list stops matching anything real (a module path bump, say), so
 	// point the same check at the package that must fail it.
-	var hits int
+	//
+	// Counts hits on the *upstream* prefixes only. `go list -deps X`
+	// includes X itself, so counting every prefix would score a hit on
+	// keyManagement[0] ("chameleon/sops") unconditionally and the
+	// control could never fail — which is the exact failure mode it
+	// exists to rule out.
+	hits := map[string]int{}
 	for _, pkg := range deps(t, "github.com/trendvidia/chameleon/sops") {
 		for _, km := range keyManagement {
+			if km.prefix == selfPrefix {
+				continue
+			}
 			if strings.HasPrefix(pkg, km.prefix) {
-				hits++
+				hits[km.prefix]++
 			}
 		}
 	}
-	require.NotZero(t, hits,
-		"chameleon/sops must trip the key-management check; if it no longer does, "+
-			"the prefixes in keyManagement are stale and the plaintext-path test above proves nothing")
+
+	// Every upstream prefix must match something: chameleon/sops
+	// reaches all of them (the sops library pulls each KMS backend in
+	// unconditionally), so a prefix that matches nothing is a stale
+	// prefix, and a stale prefix silently weakens the plaintext-path
+	// test above.
+	for _, km := range keyManagement {
+		if km.prefix == selfPrefix {
+			continue
+		}
+		assert.NotZerof(t, hits[km.prefix],
+			"chameleon/sops links no package under %q (%s), so that prefix matches nothing and "+
+				"TestPlaintextPathLinksNoKeyManagement is not actually checking for it — "+
+				"the module path probably moved", km.prefix, km.what)
+	}
 }
