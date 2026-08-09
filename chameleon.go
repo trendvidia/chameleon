@@ -4,10 +4,10 @@
 // Package chameleon is the top-level entry point. Most callers reach
 // for resolver.New + Resolve directly; this package provides a single
 // shortcut, [Load], for the common simple case (one filesystem-backed
-// layer source, no sops, no extra options).
+// layer source, no extra options).
 //
-// For everything else — multiple sources, encrypted layers, trace
-// plumbing, request context — go straight to the resolver package.
+// For everything else — multiple sources, trace plumbing, request
+// context — go straight to the resolver package.
 package chameleon
 
 import (
@@ -20,9 +20,14 @@ import (
 )
 
 // Load is a one-call shortcut for the simplest case: a single
-// filesystem-rooted layer directory, no encrypted layers, no
-// caller-supplied request context, and the parsed ChainSpec already
-// in hand.
+// filesystem-rooted layer directory, no caller-supplied request
+// context, and the parsed ChainSpec already in hand.
+//
+// Encrypted layers work here too, without a decrypter argument, as
+// long as the build links a backend — blank-import
+// chameleon/sops (or any package that registers one; see the crypt
+// package doc). Without one, an encrypted layer fails the resolve
+// with resolver.ErrNoDecrypter.
 //
 // Equivalent to:
 //
@@ -39,8 +44,8 @@ import (
 // prescribe how to load it (file, embed, dynamic compile via
 // bufbuild/protocompile, etc.).
 //
-// For encrypted layers, multiple logical sources, request-context
-// values, or trace, use [resolver.New] directly.
+// For multiple logical sources, request-context values, trace, or an
+// explicitly constructed Decrypter, use [resolver.New] directly.
 func Load[T proto.Message](sample T, spec proto.Message, layersFS fs.FS, env string) (*resolver.Resolution[T], error) {
 	r, err := resolver.New[T](sample, spec,
 		resolver.WithSource("default", source.FS(layersFS)),

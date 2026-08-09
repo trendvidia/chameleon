@@ -43,6 +43,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
 )
 
@@ -92,7 +93,7 @@ feature_flags = [
 
 	// 6. Decrypt via the chameleon entry point — the same path
 	// production callers exercise through resolver.WithDecrypter.
-	buf, err := chsops.Default().Decrypt(context.Background(), ciphertext, chsops.FormatProtowire)
+	buf, err := chsops.Default().Decrypt(context.Background(), ciphertext, crypt.FormatProtowire)
 	require.NoError(t, err, "chameleon Decrypter on real ciphertext")
 	defer buf.Destroy()
 
@@ -127,7 +128,7 @@ func TestRoundTrip_Age_WrongKey(t *testing.T) {
 	// Wrong private key.
 	t.Setenv("SOPS_AGE_KEY", identityB.String())
 
-	_, err = chsops.Default().Decrypt(context.Background(), ciphertext, chsops.FormatProtowire)
+	_, err = chsops.Default().Decrypt(context.Background(), ciphertext, crypt.FormatProtowire)
 	require.Error(t, err, "wrong-key decrypt must fail")
 	assert.Contains(t, strings.ToLower(err.Error()), "decrypt",
 		"error should mention the failing operation")
@@ -153,8 +154,8 @@ db_password = "real-secret-do-not-leak"
 	ciphertext, err := chsops.DefaultEncrypter().Encrypt(
 		context.Background(),
 		plaintext,
-		chsops.FormatProtowire,
-		chsops.Recipients{Age: []string{publicKey}},
+		crypt.FormatProtowire,
+		crypt.Recipients{Age: []string{publicKey}},
 	)
 	require.NoError(t, err, "chameleon Encrypter on age recipient")
 	require.NotEmpty(t, ciphertext)
@@ -171,7 +172,7 @@ db_password = "real-secret-do-not-leak"
 
 	// Decrypt round-trips to the original.
 	t.Setenv("SOPS_AGE_KEY", privateKey)
-	buf, err := chsops.Default().Decrypt(context.Background(), ciphertext, chsops.FormatProtowire)
+	buf, err := chsops.Default().Decrypt(context.Background(), ciphertext, crypt.FormatProtowire)
 	require.NoError(t, err, "round-trip decrypt of chameleon-encrypted ciphertext")
 	defer buf.Destroy()
 

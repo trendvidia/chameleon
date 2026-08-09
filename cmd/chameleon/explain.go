@@ -23,6 +23,7 @@ import (
 	"github.com/trendvidia/chameleon/chain"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/resolver"
+	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
 	"github.com/trendvidia/chameleon/source"
 )
@@ -330,7 +331,7 @@ func format(path, value string, e resolver.TraceEntry) string {
 // so the dev workflow exercises the real path. Unknown values
 // error rather than silently falling back to "none", since a
 // typo'd flag should not silently disable decryption.
-func selectDecrypter(name string) (chsops.Decrypter, error) {
+func selectDecrypter(name string) (crypt.Decrypter, error) {
 	switch name {
 	case "", "none":
 		return nil, nil

@@ -8,13 +8,14 @@
 //
 // Lifecycle:
 //
+//	import _ "github.com/trendvidia/chameleon/sops"    // only if layers are encrypted
+//
 //	spec, _ := loadChainSpec("chain.pxf")              // proto.Message
 //	r, _ := resolver.New[*AppConfig](
 //	    &AppConfig{},                                   // type witness
 //	    spec,
 //	    resolver.WithSource("default", source.FS(os.DirFS("./layers"))),
 //	    resolver.WithSource("secrets", source.FS(os.DirFS("./layers/secrets"))),
-//	    resolver.WithDecrypter(sops.Default()),
 //	)
 //	res, _ := r.Resolve(ctx, resolver.Request{Environment: "dev"})
 //	defer res.Destroy()                                  // wipes Enclaves
@@ -22,6 +23,15 @@
 //	pw := res.Secrets.Get("db_password")
 //	buf, _ := pw.Open(); defer buf.Destroy()
 //	use(buf.Bytes())
+//
+// Decryption is opt-in at link time. The resolver depends on the
+// [crypt.Decrypter] contract, never on an implementation, so a program
+// with plaintext layers links no key-management code at all. A program
+// with encrypted layers picks a backend up by blank-importing one
+// (chameleon/sops is the in-tree one), or passes its own to
+// [WithDecrypter]. See the crypt package doc for the model, and
+// trendvidia/chameleon#130 for what it costs when the resolver gets
+// this wrong.
 //
 // Per-call pipeline:
 //
@@ -49,13 +59,13 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/trendvidia/chameleon/chain"
+	"github.com/trendvidia/chameleon/crypt"
 	"github.com/trendvidia/chameleon/defaults"
 	"github.com/trendvidia/chameleon/internal/header"
 	"github.com/trendvidia/chameleon/interpolate"
 	"github.com/trendvidia/chameleon/merge"
 	"github.com/trendvidia/chameleon/parse"
 	"github.com/trendvidia/chameleon/secret"
-	"github.com/trendvidia/chameleon/sops"
 	"github.com/trendvidia/chameleon/source"
 	"github.com/trendvidia/chameleon/validate"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
@@ -67,7 +77,12 @@ import (
 var ErrNoSource = errors.New("resolver: layer references unregistered source")
 
 // ErrNoDecrypter is returned when a LayerRef is encrypted but the
-// resolver has no Decrypter configured.
+// build has no Decrypter to hand it to: none was passed to
+// [WithDecrypter] / [WithDecrypterNamed] and no backend registered
+// itself with the crypt registry (blank-import chameleon/sops for the
+// in-tree one). Also returned when several backends are registered and
+// none was named — auto-selection is only defined for the single-
+// backend case. The diagnostic says which of the two happened.
 var ErrNoDecrypter = errors.New("resolver: encrypted layer without Decrypter")
 
 // ErrRequiredLayerMissing is returned when a LayerRef is marked
@@ -99,7 +114,7 @@ type Resolver[T proto.Message] struct {
 	sample            T
 	spec              proto.Message
 	sources           map[string]source.Source
-	dec               sops.Decrypter
+	dec               crypt.Decrypter
 	trace             bool
 	strictMetadata    bool
 	maxLayerBytes     int64
@@ -112,7 +127,8 @@ type Option func(*config)
 
 type config struct {
 	sources        map[string]source.Source
-	dec            sops.Decrypter
+	dec            crypt.Decrypter
+	decName        string
 	trace          bool
 	strictMetadata bool
 	maxLayerBytes  int64
@@ -131,10 +147,31 @@ func WithSource(name string, src source.Source) Option {
 	}
 }
 
-// WithDecrypter installs the sops decryption hook. Required only if at
-// least one LayerEntry has encrypted = true.
-func WithDecrypter(d sops.Decrypter) Option {
+// WithDecrypter installs a decryption hook explicitly. Use this for a
+// Decrypter the caller constructed — programmatic key injection, an
+// HSM, a test double — or to pin one implementation in a build that
+// links several.
+//
+// It is not needed for the common case: with exactly one backend
+// registered (say, a blank import of chameleon/sops), the resolver
+// selects it on its own the first time an encrypted layer appears.
+// Passing nil is the same as not passing the option.
+func WithDecrypter(d crypt.Decrypter) Option {
 	return func(c *config) { c.dec = d }
+}
+
+// WithDecrypterNamed selects a registered backend by name — the
+// resolver-side equivalent of naming a driver in sql.Open. Use it when
+// a build links more than one backend, where auto-selection is
+// deliberately undefined; the in-tree sops backend registers itself as
+// "sops" ([github.com/trendvidia/chameleon/sops.BackendName]).
+//
+// [New] fails if no backend is registered under that name, listing the
+// ones that are, so a typo or a missing import surfaces at
+// construction rather than at the first encrypted layer. Mutually
+// exclusive with [WithDecrypter].
+func WithDecrypterNamed(name string) Option {
+	return func(c *config) { c.decName = name }
 }
 
 // WithTrace turns on per-field provenance tracking. When enabled,
@@ -231,6 +268,19 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 		// `source`. Require it so a typo in the spec doesn't silently
 		// fall through to "unregistered source" later.
 		return nil, errors.New(`resolver: "default" source required (use WithSource("default", ...))`)
+	}
+	if cfg.dec != nil && cfg.decName != "" {
+		return nil, errors.New("resolver: WithDecrypter and WithDecrypterNamed are mutually exclusive")
+	}
+	if cfg.decName != "" {
+		b, err := crypt.Get(cfg.decName)
+		if err != nil {
+			return nil, fmt.Errorf("resolver: WithDecrypterNamed: %w", err)
+		}
+		if b.Decrypter == nil {
+			return nil, fmt.Errorf("resolver: WithDecrypterNamed: backend %q is encrypt-only", cfg.decName)
+		}
+		cfg.dec = b.Decrypter
 	}
 	if cfg.maxLayerBytes < 0 {
 		return nil, fmt.Errorf("resolver: WithMaxLayerBytes must be >= 0; got %d", cfg.maxLayerBytes)
@@ -461,17 +511,31 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 		trace = &Trace{Entries: make(map[string]TraceEntry)}
 	}
 
+	// dec is the Decrypter for this Resolve call: the one installed at
+	// construction, or — for a build that just blank-imported a
+	// backend — the sole registered one, looked up the first time an
+	// encrypted layer actually appears. Lazy on purpose: a chain with
+	// no encrypted entries must never require a backend, and the
+	// lookup result is cached here so a chain with twenty encrypted
+	// layers takes one read lock, not twenty.
+	dec := r.dec
+
 	for _, ref := range refs {
 		src, ok := r.sources[ref.Source]
 		if !ok {
 			return nil, fmt.Errorf("%w: layer=%q source=%q", ErrNoSource, ref.EntryID, ref.Source)
 		}
-		if ref.Encrypted && r.dec == nil {
-			return nil, fmt.Errorf("%w: layer=%q", ErrNoDecrypter, ref.EntryID)
+		if ref.Encrypted && dec == nil {
+			d, _, lookupErr := crypt.SoleDecrypter()
+			if lookupErr != nil {
+				return nil, fmt.Errorf("%w: layer=%q: %w%s",
+					ErrNoDecrypter, ref.EntryID, lookupErr, decrypterHint(lookupErr))
+			}
+			dec = d
 		}
 
 		layer := r.fresh()
-		result, err := loadAndParse(ctx, ref, src, r.dec, layer, secrets, r.maxLayerBytes)
+		result, err := loadAndParse(ctx, ref, src, dec, layer, secrets, r.maxLayerBytes)
 		if err != nil {
 			return nil, err
 		}
@@ -597,6 +661,22 @@ func (r *Resolver[T]) fresh() T {
 	return r.sample.ProtoReflect().New().Interface().(T)
 }
 
+// decrypterHint turns a [crypt.SoleDecrypter] failure into the next
+// thing the caller should type. The two failures have opposite fixes —
+// nothing linked in wants an import, several linked in want a choice —
+// and the registry package can't name the resolver options, so the
+// wording lands here.
+func decrypterHint(err error) string {
+	switch {
+	case errors.Is(err, crypt.ErrNoBackend):
+		return "; link one with `import _ \"github.com/trendvidia/chameleon/sops\"`, or pass resolver.WithDecrypter"
+	case errors.Is(err, crypt.ErrAmbiguousBackend):
+		return "; pick one with resolver.WithDecrypterNamed, or pass resolver.WithDecrypter"
+	default:
+		return ""
+	}
+}
+
 // loadAndParse pulls bytes for ref, decrypts if encrypted, and parses
 // PXF into msg. Returns (nil, nil) when the layer is optional and the
 // source reports ErrNotFound — caller treats that as "skip".
@@ -615,7 +695,7 @@ func (r *Resolver[T]) fresh() T {
 // tracked as future protowire-go work. Block-form hint/fingerprint
 // metadata still flows through the proto message and is folded
 // onto the Map entry by parse.MoveInto.
-func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, dec sops.Decrypter, msg proto.Message, secrets *secret.Map, maxBytes int64) (*pxf.Result, error) {
+func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, dec crypt.Decrypter, msg proto.Message, secrets *secret.Map, maxBytes int64) (*pxf.Result, error) {
 	rc, err := src.Open(ctx, ref.Path)
 	if err != nil {
 		if errors.Is(err, source.ErrNotFound) {
@@ -651,7 +731,7 @@ func loadAndParse(ctx context.Context, ref chain.LayerRef, src source.Source, de
 		// strings (immutable, unwipeable until GC) — see parse.Move
 		// godoc for the best-effort caveat that closes once codegen
 		// emits a custom protoreflect implementation.
-		buf, err := dec.Decrypt(ctx, raw, sops.FormatForPath(ref.Path))
+		buf, err := dec.Decrypt(ctx, raw, crypt.FormatForPath(ref.Path))
 		if err != nil {
 			return nil, fmt.Errorf("resolver: decrypt layer %q: %w", ref.EntryID, err)
 		}

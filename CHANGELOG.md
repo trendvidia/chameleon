@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`chameleon/crypt` — the decryption contract, split from the implementation** ([#130](https://github.com/trendvidia/chameleon/issues/130)). New leaf package holding `Decrypter`, `Encrypter`, `Format` (+ `FormatForPath`) and `Recipients`, plus a registry of named backends: `Register` / `Get` / `Registered` / `SoleDecrypter` / `Unregister`. Its entire dependency set is the standard library and memguard. The resolver now depends on this and nothing else for decryption, which is what makes the entry below possible; `chameleon/sops` became one implementation of it rather than the definition of it.
+
+  The registry is `database/sql`'s driver model: `chameleon/sops` calls `crypt.Register("sops", …)` from `init`, and a consumer selects it with `import _ "github.com/trendvidia/chameleon/sops"`. `crypt.Registered()` reports what a build actually linked — worth calling in a startup log line if you have several.
+
+- **`resolver.WithDecrypterNamed(name)`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). Selects a registered backend by name, the resolver-side equivalent of naming a driver in `sql.Open`. Needed only in a build that links more than one backend, where auto-selection is deliberately undefined. Fails at `resolver.New` — not at the first encrypted layer — if no backend is registered under that name, and lists the ones that are, so a missing import surfaces in a plaintext dev environment instead of in prod. Mutually exclusive with `WithDecrypter`; passing both is an error rather than a silent last-one-wins.
+
+### Changed
+
+- **Decryption is opt-in at link time: plaintext consumers no longer link the cloud KMS SDKs** ([#130](https://github.com/trendvidia/chameleon/issues/130)). `resolver` imported `chameleon/sops` at package level for the `Decrypter` interface and `FormatForPath`, so every consumer of `chameleon.Load` or `resolver.New` linked the whole sops key-management tree — AWS, Azure, GCP, Vault, Huawei KMS and their transitive weight — whether or not a single layer was encrypted. Measured on a program that resolves two plaintext layers and nothing else:
+
+  | | v0.22.1 | this release |
+  |---|---|---|
+  | binary (darwin/arm64) | 67.5 MB | **11.7 MB** |
+  | `go list -deps` on `./resolver` | 1057 packages | **207** |
+  | …of those, key-management packages | 264 | **0** |
+
+  7.0 MB of what remains is the protobuf runtime any protobuf program pays; chameleon's own share is ~4.7 MB.
+
+  **Nothing you have written stops compiling.** `resolver.WithDecrypter(sops.Default())` still works and still wins over the registry — `sops.Default()` returns a `crypt.Decrypter`, and the old `sops` type names are aliases (see *Deprecated*). What changes is that the wiring is no longer required: with exactly one backend registered, the resolver looks it up the first time an encrypted layer appears, so a consumer can drop the option and keep a blank import instead.
+
+  **What to do.** Nothing, if your layers are plaintext — you get the binary back for free. If you have encrypted layers, either keep `WithDecrypter(sops.Default())` as is, or replace it with `import _ "github.com/trendvidia/chameleon/sops"`. If you wrote your own `Decrypter`, switch its import from `chameleon/sops` to `chameleon/crypt`; that is the change that actually sheds the weight for you, since naming the type was enough to link the tree.
+
+  **The failure mode moved, and says more.** An encrypted layer with no decrypter still returns `resolver.ErrNoDecrypter`, now wrapping the registry's cause and naming the fix:
+
+  ```
+  resolver: encrypted layer without Decrypter: layer="secrets": crypt: no decryption
+  backend registered; link one with `import _ "github.com/trendvidia/chameleon/sops"`,
+  or pass resolver.WithDecrypter
+  ```
+
+  A build that links **several** decrypt-capable backends without naming one is a new failure rather than an arbitrary pick — `… crypt: multiple decryption backends registered (alpha, beta); pick one with resolver.WithDecrypterNamed, or pass resolver.WithDecrypter`. It wraps `ErrNoDecrypter` too, so existing `errors.Is` handling still catches it. Naming one that isn't linked fails at construction: `resolver: WithDecrypterNamed: crypt: unknown backend "gamma" (registered: alpha, beta)`.
+
+  **The scope of "linked in" is the module graph, not configuration** — the same trade `database/sql` makes. A dependency that imports `chameleon/sops` for its own reasons registers the backend in your build too. `crypt.Registered()` tells you what you ended up with.
+
+  **What this does not fix.** The KMS SDKs stay in the *module* graph: chameleon's `go.mod` still requires them for the `chameleon/sops` package and the CLI, so a consumer's `go list -m all` is unchanged (347 modules in the measurement above) and `go.mod`-reading SBOM / dependency-review tooling still sees them. Binary size, link time, and reachability-based scanners (`govulncheck`) do not. Removing them from the module graph as well means splitting `chameleon/sops` into its own module, which is the open half of [#130](https://github.com/trendvidia/chameleon/issues/130).
+
+  The split is pinned by a test rather than by discipline: `linkage_test.go` shells out to `go list -deps` over the public plaintext path (`chameleon`, `resolver`, `chain`, `crypt`, `merge`, `parse`, `secret`, `source`, `defaults`, `validate`, `interpolate`, `wkt`) and fails if a sops or cloud-SDK package reappears, with a negative control asserting the same check does trip on `chameleon/sops`. A single stray import compiles fine and costs every consumer 56 MB, so the graph itself is the assertion.
+
+### Deprecated
+
+- **`sops.Decrypter`, `sops.Encrypter`, `sops.Format`, `sops.Recipients`, the `sops.Format*` constants, and `sops.FormatForPath`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). These are now aliases for their `chameleon/crypt` counterparts — identical types, so existing code compiles and interoperates unchanged — but importing `chameleon/sops` to *name* a type is what put 56 MB of cloud SDKs into binaries that never decrypted anything. Change the import to `chameleon/crypt`; the identifiers keep their spelling. `sops.Default()`, `sops.DefaultEncrypter()`, `sops.RecipientsFromKeyName()` and the `sops.Err*` values are not deprecated — they are the implementation, and a build that wants sops should have them.
+
 ### Changed
 
 - **A `(pxf.default)` the defaults pass cannot honor is now a resolve-time error instead of a silent no-op** ([#129](https://github.com/trendvidia/chameleon/issues/129)). Read this if you have a `(pxf.default)` on a message-typed field. A default on a message type PXF cannot parse a literal for — `google.protobuf.Any`, `pxf.Secret`, `google.protobuf.Struct`, any user-defined message, and also `google.protobuf.BytesValue` (see below) — now fails the resolve with `resolver: defaults: <path>: default values not supported for message type <T>` where it was previously ignored. That is the deliberate other half of the WKT fix below: a silently ignored annotation is the worst of the available states, and plain `pxf.Unmarshal` already errors on these. The gate is unchanged otherwise — the annotation is consulted only for a path no layer set, so a field some layer did set is untouched. **Note this makes the error data-dependent:** an environment whose layers set the path resolves fine while one that leaves it to the default fails, so re-resolve every environment after upgrading rather than just one.

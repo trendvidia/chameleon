@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/trendvidia/chameleon/chain"
+	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
 )
 
@@ -138,7 +139,7 @@ const (
 // sops and re-encrypted under the env's configured key (resolved via
 // chain.EffectiveKeyName against the chain spec); envs without a
 // key_name fall back to preserving the existing ciphertext's key set.
-func migrateOne(ctx context.Context, w io.Writer, ref chain.LayerRef, layersDir string, t transform, dryRun bool, dec chsops.Decrypter, enc chsops.Encrypter, spec proto.Message) (migrateStatus, error) {
+func migrateOne(ctx context.Context, w io.Writer, ref chain.LayerRef, layersDir string, t transform, dryRun bool, dec crypt.Decrypter, enc crypt.Encrypter, spec proto.Message) (migrateStatus, error) {
 	tag := fmt.Sprintf("%s\t%s", ref.EntryID, ref.Path)
 
 	if ref.Source != "" && ref.Source != "default" {
@@ -159,13 +160,13 @@ func migrateOne(ctx context.Context, w io.Writer, ref chain.LayerRef, layersDir 
 	// Decrypt if encrypted; otherwise treat raw as PXF.
 	var plain []byte
 	if ref.Encrypted {
-		// chsops.Decrypter wipes the input ciphertext after a successful
+		// crypt.Decrypter wipes the input ciphertext after a successful
 		// decrypt — security feature: bytes on disk → memory → wipe.
 		// migrate needs the original ciphertext later (as the reference
 		// for UsingSameKeysAs, which extracts metadata from it). Pass a
 		// disposable copy so raw stays intact.
 		rawForDec := append([]byte{}, raw...)
-		buf, err := dec.Decrypt(ctx, rawForDec, chsops.FormatProtowire)
+		buf, err := dec.Decrypt(ctx, rawForDec, crypt.FormatProtowire)
 		if err != nil {
 			return migrateSkipped, fmt.Errorf("decrypt %q: %w", full, err)
 		}
@@ -216,7 +217,7 @@ func migrateOne(ctx context.Context, w io.Writer, ref chain.LayerRef, layersDir 
 			if err != nil {
 				return migrateSkipped, fmt.Errorf("re-encrypt %q: %w", full, err)
 			}
-			ciph, err := enc.Encrypt(ctx, newPlain, chsops.FormatProtowire, recipients)
+			ciph, err := enc.Encrypt(ctx, newPlain, crypt.FormatProtowire, recipients)
 			if err != nil {
 				return migrateSkipped, fmt.Errorf("re-encrypt %q: %w", full, err)
 			}

@@ -21,6 +21,7 @@ import (
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
+	"github.com/trendvidia/chameleon/crypt"
 	"github.com/trendvidia/chameleon/sops"
 )
 
@@ -124,7 +125,7 @@ func TestBuild_EndToEnd_Age(t *testing.T) {
 	for _, name := range []string{"base.pxf", "env/prod.pxf", "env/sandbox.pxf"} {
 		t.Run("decrypt+narrow/"+name, func(t *testing.T) {
 			ct := readZipEntry(t, zr, name)
-			buf, err := dec.Decrypt(ctx, ct, sops.FormatProtowire)
+			buf, err := dec.Decrypt(ctx, ct, crypt.FormatProtowire)
 			if err != nil {
 				t.Fatalf("decrypt %s: %v", name, err)
 			}
@@ -248,7 +249,7 @@ func TestBuild_ValidateRejectsMissingRequired(t *testing.T) {
 // narrow_test.go (which constructs messages directly without the
 // PXF round-trip). Once the protowire-go asymmetry is fixed,
 // restore the map field here.
-func encryptPopulated(t *testing.T, ctx context.Context, enc sops.Encrypter, schema protoreflect.MessageDescriptor, publicKey string) []byte {
+func encryptPopulated(t *testing.T, ctx context.Context, enc crypt.Encrypter, schema protoreflect.MessageDescriptor, publicKey string) []byte {
 	t.Helper()
 	msg := populated(t, schema)
 	msg.Clear(schema.Fields().ByName("tenant_keys"))
@@ -256,7 +257,7 @@ func encryptPopulated(t *testing.T, ctx context.Context, enc sops.Encrypter, sch
 	if err != nil {
 		t.Fatalf("marshal populated: %v", err)
 	}
-	ct, err := enc.Encrypt(ctx, plaintext, sops.FormatProtowire, sops.Recipients{Age: []string{publicKey}})
+	ct, err := enc.Encrypt(ctx, plaintext, crypt.FormatProtowire, crypt.Recipients{Age: []string{publicKey}})
 	if err != nil {
 		t.Fatalf("encrypt fixture: %v", err)
 	}

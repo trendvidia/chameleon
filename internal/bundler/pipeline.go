@@ -25,13 +25,14 @@ import (
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 
 	"github.com/trendvidia/chameleon/chain"
+	"github.com/trendvidia/chameleon/crypt"
 	"github.com/trendvidia/chameleon/internal/secretcatalog"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/sops"
 )
 
-// sops.Encrypter + sops.Recipients carry the per-layer re-encrypt
-// contract. The bundler computes a sops.Recipients per layer from
+// crypt.Encrypter + crypt.Recipients carry the per-layer re-encrypt
+// contract. The bundler computes a crypt.Recipients per layer from
 // the module's recipients_by_env entry (or recipients fallback) so
 // each layer file inside an env-agnostic bundle is encrypted only
 // to the env that consumes it.
@@ -72,11 +73,11 @@ type BuildOptions struct {
 
 	// Decrypter reads sops-encrypted layers. Required when any
 	// LayerEntry in ChainSpec is marked encrypted; ignored otherwise.
-	Decrypter sops.Decrypter
+	Decrypter crypt.Decrypter
 
 	// Encrypter writes sops-encrypted layers in the output bundle.
-	// Required when any layer's resolved sops.Recipients are non-empty.
-	Encrypter sops.Encrypter
+	// Required when any layer's resolved crypt.Recipients are non-empty.
+	Encrypter crypt.Encrypter
 
 	// Output is the io.Writer the zip bundle is streamed to.
 	// Required. The caller is responsible for any wrapping
@@ -197,7 +198,7 @@ type layerPlan struct {
 	Encrypted  bool
 	Required   bool
 	Envs       []string // sorted; the envs that share this path
-	Recipients sops.Recipients
+	Recipients crypt.Recipients
 }
 
 // planLayers iterates every environment declared in chainSpec,
@@ -285,7 +286,7 @@ func processLayer(ctx context.Context, zw *zip.Writer, opts BuildOptions, filter
 		if opts.Decrypter == nil {
 			return fmt.Errorf("bundler: layer %q is encrypted but no Decrypter was provided", plan.Path)
 		}
-		buf, err := opts.Decrypter.Decrypt(ctx, raw, sops.FormatForPath(plan.Path))
+		buf, err := opts.Decrypter.Decrypt(ctx, raw, crypt.FormatForPath(plan.Path))
 		if err != nil {
 			return fmt.Errorf("bundler: decrypt %q: %w", plan.Path, err)
 		}
@@ -315,7 +316,7 @@ func processLayer(ctx context.Context, zw *zip.Writer, opts BuildOptions, filter
 		if plan.Recipients.IsEmpty() {
 			return fmt.Errorf("bundler: layer %q is encrypted but module %q lists no recipients for envs %v", plan.Path, opts.Module, plan.Envs)
 		}
-		ct, err := opts.Encrypter.Encrypt(ctx, narrowed, sops.FormatForPath(plan.Path), plan.Recipients)
+		ct, err := opts.Encrypter.Encrypt(ctx, narrowed, crypt.FormatForPath(plan.Path), plan.Recipients)
 		if err != nil {
 			return fmt.Errorf("bundler: encrypt %q: %w", plan.Path, err)
 		}
@@ -425,8 +426,8 @@ func chameleonVersion() string {
 // degenerates to the historical module-only behavior; a manifest
 // without recipients_by_env / recipients still produces a usable
 // recipient set if the chain spec carries key_name.
-func unionRecipients(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleManifest_Module, envs []string) (sops.Recipients, error) {
-	var out sops.Recipients
+func unionRecipients(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleManifest_Module, envs []string) (crypt.Recipients, error) {
+	var out crypt.Recipients
 
 	if module != nil {
 		byEnv := module.GetRecipientsByEnv()
@@ -450,14 +451,14 @@ func unionRecipients(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.Bundl
 		for _, env := range envs {
 			keyName, err := chain.EffectiveKeyName(chainSpec, env)
 			if err != nil {
-				return sops.Recipients{}, fmt.Errorf("resolve key_name for env %q: %w", env, err)
+				return crypt.Recipients{}, fmt.Errorf("resolve key_name for env %q: %w", env, err)
 			}
 			if keyName == "" {
 				continue
 			}
 			r, err := sops.RecipientsFromKeyName(keyName)
 			if err != nil {
-				return sops.Recipients{}, fmt.Errorf("env %q: %w", env, err)
+				return crypt.Recipients{}, fmt.Errorf("env %q: %w", env, err)
 			}
 			out.Age = append(out.Age, r.Age...)
 		}

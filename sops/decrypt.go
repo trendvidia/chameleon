@@ -7,6 +7,21 @@
 // memguard.LockedBuffer (which mlocks the page and wipes on Destroy)
 // and wipes both the ciphertext and the transient plaintext slice.
 //
+// # Selecting this backend
+//
+// The package registers itself with chameleon/crypt from init, so a
+// program that wants the default wiring links it with a blank import
+// and never mentions it again:
+//
+//	import _ "github.com/trendvidia/chameleon/sops"
+//
+// The resolver picks the registered backend up the first time an
+// encrypted layer appears. Nothing in chameleon imports this package
+// on its own — that is the point. Importing it is what pulls in the
+// AWS / Azure / GCP / Vault key-management tree, which is why the
+// resolver takes crypt.Decrypter rather than anything from here
+// (trendvidia/chameleon#130).
+//
 // Best-effort caveat: sops itself reads the entire ciphertext into a
 // regular []byte to verify its MAC, and produces plaintext as a Go
 // []byte. We can't avoid those allocations — only narrow the window in
@@ -34,111 +49,23 @@
 // For KMS / GCP-KMS / Azure-KV / Vault, sops uses ambient cloud
 // credentials. For PGP, gpg-agent. None of these are configurable
 // through this package — that's a deliberate non-goal. If you need
-// programmatic key injection, build a custom Decrypter.
+// programmatic key injection, implement crypt.Decrypter yourself and
+// pass it to resolver.WithDecrypter (or register it under your own
+// name).
 package sops
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/awnumar/memguard"
 	"github.com/trendvidia/sops/v4/decrypt"
+
+	"github.com/trendvidia/chameleon/crypt"
 )
 
-// Format identifies the sops store backend. Values mirror sops's
-// internal `formats.Format` enum so callers don't have to import the
-// sops cmd subpackage.
-type Format int
-
-const (
-	// FormatAuto defers to sops's own auto-detection. Useful when
-	// neither the path nor an explicit format is known.
-	FormatAuto Format = iota
-
-	// FormatBinary is sops's opaque-byte-string store. The plaintext
-	// is treated as a single value; layers using this format produce
-	// raw bytes, not field-structured PXF.
-	FormatBinary
-
-	// FormatDotenv is the `KEY=VALUE` newline-delimited store. Layer
-	// content is a flat key-value list; sops encrypts the values.
-	FormatDotenv
-
-	// FormatINI is the classic `[section]\nkey=value` store. Sops
-	// encrypts string values; sections and keys stay clear.
-	FormatINI
-
-	// FormatJSON is sops's JSON store. Layer content is a JSON
-	// object; sops encrypts leaf string values and any field
-	// matching the encrypted_regex / encrypted_suffix rules.
-	FormatJSON
-
-	// FormatYAML is sops's YAML store. Same encryption semantics as
-	// FormatJSON; comment-preserving round-trip via sops's YAML
-	// codec.
-	FormatYAML
-
-	// FormatProtowire is the PXF text format (recognized by sops as
-	// "protowire" or "pxf"). The canonical store for chameleon
-	// layers; provides field-typed encryption with PXF's
-	// presence-aware grammar.
-	FormatProtowire
-)
-
-// String returns the canonical string spelling sops accepts for this
-// format. FormatAuto returns "" so [decrypt.Data]'s "infer from MIME"
-// path engages.
-func (f Format) String() string {
-	switch f {
-	case FormatBinary:
-		return "binary"
-	case FormatDotenv:
-		return "dotenv"
-	case FormatINI:
-		return "ini"
-	case FormatJSON:
-		return "json"
-	case FormatYAML:
-		return "yaml"
-	case FormatProtowire:
-		return "pxf"
-	default:
-		return ""
-	}
-}
-
-// FormatForPath infers a Format from a filename extension. Returns
-// FormatAuto for unrecognized extensions; sops itself will then
-// auto-detect from the ciphertext envelope.
-//
-// Recognized extensions match sops's defaults: .json, .yaml, .yml,
-// .env, .ini, .pxf, .bin (binary).
-func FormatForPath(path string) Format {
-	low := strings.ToLower(path)
-	// Strip any sops convention suffix like ".sops.yaml" — the
-	// rightmost extension is what matters.
-	if i := strings.LastIndex(low, "."); i >= 0 {
-		switch low[i+1:] {
-		case "json":
-			return FormatJSON
-		case "yaml", "yml":
-			return FormatYAML
-		case "env":
-			return FormatDotenv
-		case "ini":
-			return FormatINI
-		case "pxf":
-			return FormatProtowire
-		case "bin":
-			return FormatBinary
-		}
-	}
-	return FormatAuto
-}
-
-// ErrEmptyCiphertext is returned by [Decrypter.Decrypt] when handed an
+// ErrEmptyCiphertext is returned by [crypt.Decrypter.Decrypt] when handed an
 // empty byte slice. Sops itself errors on this with a less obvious
 // message.
 var ErrEmptyCiphertext = errors.New("sops: empty ciphertext")
@@ -146,28 +73,23 @@ var ErrEmptyCiphertext = errors.New("sops: empty ciphertext")
 // ErrPlaintextTooLarge is returned when decrypted plaintext would
 // exceed the memguard sink's hard ceiling. The resolver caps ciphertext
 // upstream via [resolver.ErrLayerTooLarge]; this is defense-in-depth
-// for direct [Decrypter.Decrypt] callers and guards the growth loop
+// for direct [crypt.Decrypter.Decrypt] callers and guards the growth loop
 // against int overflow.
 var ErrPlaintextTooLarge = errors.New("sops: decrypted plaintext exceeds size limit")
 
-// Decrypter is the in-process sops decryption hook used by the
-// resolver. Implementations must be safe for concurrent use.
-type Decrypter interface {
-	// Decrypt consumes ciphertext and returns plaintext sealed in a
-	// memguard.LockedBuffer. The ciphertext slice is wiped on success;
-	// on error it is left intact and the caller may retry. The caller
-	// owns the returned LockedBuffer — Destroy when done.
-	Decrypt(ctx context.Context, ciphertext []byte, format Format) (*memguard.LockedBuffer, error)
-}
-
-// Default returns a Decrypter wired to the in-process trendvidia/sops/v4
-// decryption stack. Credentials are sourced from the ambient
-// environment (see package doc).
-func Default() Decrypter { return defaultDecrypter{} }
+// Default returns a [crypt.Decrypter] wired to the in-process
+// trendvidia/sops/v4 decryption stack. Credentials are sourced from
+// the ambient environment (see package doc).
+//
+// Importing this package for its side effect registers the same
+// Decrypter under the name "sops", so a program that only needs the
+// default wiring can blank-import instead of calling this — see the
+// package doc.
+func Default() crypt.Decrypter { return defaultDecrypter{} }
 
 type defaultDecrypter struct{}
 
-func (defaultDecrypter) Decrypt(ctx context.Context, ciphertext []byte, format Format) (*memguard.LockedBuffer, error) {
+func (defaultDecrypter) Decrypt(ctx context.Context, ciphertext []byte, format crypt.Format) (*memguard.LockedBuffer, error) {
 	if len(ciphertext) == 0 {
 		return nil, ErrEmptyCiphertext
 	}

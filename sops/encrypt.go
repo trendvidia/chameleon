@@ -15,41 +15,9 @@ import (
 	"github.com/trendvidia/sops/v4/keys"
 	"github.com/trendvidia/sops/v4/kms"
 	"github.com/trendvidia/sops/v4/pgp"
+
+	"github.com/trendvidia/chameleon/crypt"
 )
-
-// Recipients is the set of master keys an encrypted layer can be
-// decrypted by. Mirrors chameleonv1.BundleManifest_RecipientSet's
-// three fields, decoupled from the proto type so this package
-// doesn't depend on the generated bindings.
-//
-// At least one recipient across all three fields is required for
-// Encrypt to succeed. The fields are concatenated into a single
-// sops.KeyGroup — every listed key can decrypt the resulting
-// ciphertext on its own (no Shamir splitting).
-type Recipients struct {
-	// KMS is the comma-equivalent list of AWS KMS ARNs. Each entry
-	// is one full ARN (arn:aws:kms:region:account:key/UUID); the
-	// caller, not this package, is responsible for sourcing them.
-	KMS []string
-
-	// Age is the list of age recipients in the canonical
-	// `age1...` Bech32 encoding. Use this for self-hosted or
-	// air-gapped deployments where cloud KMS isn't an option.
-	Age []string
-
-	// PGP is the list of OpenPGP public-key fingerprints. Kept for
-	// parity with sops's input surface; discouraged for new
-	// deployments because gpg-agent state is operationally painful
-	// compared to KMS / age.
-	PGP []string
-}
-
-// IsEmpty reports whether r lists no recipients. Used by Encrypt to
-// fail fast before invoking sops's pipeline (sops returns a less
-// obvious "at least one KeyGroup" error otherwise).
-func (r Recipients) IsEmpty() bool {
-	return len(r.KMS) == 0 && len(r.Age) == 0 && len(r.PGP) == 0
-}
 
 // ErrEmptyPlaintext is returned when Encrypt is handed a zero-length
 // plaintext. Sops itself accepts empty input but emits a structurally
@@ -62,36 +30,18 @@ var ErrEmptyPlaintext = errors.New("sops: empty plaintext")
 // KeyGroup is required" check, with a less generic message.
 var ErrNoRecipients = errors.New("sops: no recipients (need at least one KMS / age / PGP key)")
 
-// Encrypter wraps trendvidia/sops/v4/encrypt for the in-process bundler
-// pipeline. Implementations must be safe for concurrent use.
-type Encrypter interface {
-	// Encrypt produces sops ciphertext for plaintext under the
-	// given recipients. The plaintext slice is wiped on success;
-	// on error it is left intact and the caller may retry.
-	//
-	// The plaintext input may alias a memguard.LockedBuffer's
-	// Bytes() — slices into mlocked memory pass by reference
-	// without copy, so the plaintext stays mlock-resident
-	// through encryption. Caller owns the LockedBuffer's
-	// lifecycle (Encrypt does not Destroy it; the post-call
-	// WipeBytes on success leaves the LockedBuffer valid but
-	// zeroed, which is the appropriate state for an encrypted-
-	// then-released secret).
-	//
-	// The returned ciphertext lives on the regular heap; it
-	// carries no plaintext residue and does not need wiping.
-	Encrypt(ctx context.Context, plaintext []byte, format Format, recipients Recipients) ([]byte, error)
-}
-
-// DefaultEncrypter returns an Encrypter wired to the in-process
+// DefaultEncrypter returns a [crypt.Encrypter] wired to the in-process
 // trendvidia/sops/v4 encryption stack. Credentials for KMS / age / PGP
 // come from the ambient environment exactly as the sops CLI does
-// (see the package doc on Decrypter for the variable list).
-func DefaultEncrypter() Encrypter { return defaultEncrypter{} }
+// (see the package doc for the variable list).
+//
+// Importing this package for its side effect registers the same
+// Encrypter under the name "sops"; see the package doc.
+func DefaultEncrypter() crypt.Encrypter { return defaultEncrypter{} }
 
 type defaultEncrypter struct{}
 
-func (defaultEncrypter) Encrypt(ctx context.Context, plaintext []byte, format Format, recipients Recipients) ([]byte, error) {
+func (defaultEncrypter) Encrypt(ctx context.Context, plaintext []byte, format crypt.Format, recipients crypt.Recipients) ([]byte, error) {
 	if len(plaintext) == 0 {
 		return nil, ErrEmptyPlaintext
 	}
@@ -124,7 +74,7 @@ func (defaultEncrypter) Encrypt(ctx context.Context, plaintext []byte, format Fo
 // string; we Join with ',' rather than calling it per-ARN to keep
 // the sops-side parsing logic centralized (it splits, trims, and
 // validates). Age and PGP follow the same convention.
-func buildKeyGroup(r Recipients) (sops.KeyGroup, error) {
+func buildKeyGroup(r crypt.Recipients) (sops.KeyGroup, error) {
 	var group sops.KeyGroup
 
 	for _, arn := range r.KMS {
@@ -161,6 +111,6 @@ func buildKeyGroup(r Recipients) (sops.KeyGroup, error) {
 // kept as a small named helper so any future divergence between
 // our Format and sops's FormatFromString table has one place to
 // land.
-func sopsFormat(f Format) string {
+func sopsFormat(f crypt.Format) string {
 	return f.String()
 }
