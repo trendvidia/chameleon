@@ -16,6 +16,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/defaults"
+	"github.com/trendvidia/chameleon/interpolate"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
@@ -53,20 +54,7 @@ message Endpoint {
 
 func compileApp(t *testing.T) protoreflect.MessageDescriptor {
 	t.Helper()
-	sources := map[string]string{
-		"app.proto":             appProtoSrc,
-		"pxf/annotations.proto": annotationsProtoSrc,
-	}
-	comp := protocompile.Compiler{
-		Resolver: protocompile.WithStandardImports(
-			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(sources)},
-		),
-	}
-	files, err := comp.Compile(context.Background(), "app.proto")
-	require.NoError(t, err)
-	d, err := files.AsResolver().FindDescriptorByName("def_test.v1.AppConfig")
-	require.NoError(t, err)
-	return d.(protoreflect.MessageDescriptor)
+	return compileMessage(t, appProtoSrc, "def_test.v1.AppConfig")
 }
 
 // parseInput uses SkipPostDecode so this test exercises chameleon's
@@ -233,6 +221,9 @@ message WKTConfig {
   google.protobuf.Duration undecorated = 11;
   Timeouts timeouts = 12;
   Timeouts absent_timeouts = 13;
+  google.protobuf.FloatValue gain = 14 [(pxf.default) = "1.25"];
+  google.protobuf.Int64Value offset = 15 [(pxf.default) = "-9000000000"];
+  google.protobuf.UInt32Value slots = 16 [(pxf.default) = "64"];
 }
 
 message Timeouts {
@@ -287,7 +278,11 @@ func inner(t *testing.T, m protoreflect.Message, name string) protoreflect.Value
 
 // TestApply_WKTDefaultsApplied is the issue #129 regression: a
 // (pxf.default) on an atomic-WKT field must set the whole value
-// instead of being dropped by the atomic check.
+// instead of being dropped by the atomic check. The table covers
+// every type pxf can parse a default literal for: Timestamp,
+// Duration, BigInt, Decimal, BigFloat, and eight of the nine
+// google.protobuf wrappers. The ninth, BytesValue, is rejected
+// upstream — see TestApply_BytesValueWrapperDefaultRejected.
 func TestApply_WKTDefaultsApplied(t *testing.T) {
 	desc := compileWKT(t)
 	msg, present := parseInput(t, desc, ``) // nothing set by any layer
@@ -329,6 +324,15 @@ func TestApply_WKTDefaultsApplied(t *testing.T) {
 		}},
 		{"bf", func(t *testing.T, m protoreflect.Message) {
 			assert.Greater(t, inner(t, m, "prec").Uint(), uint64(0))
+		}},
+		{"gain", func(t *testing.T, m protoreflect.Message) {
+			assert.InDelta(t, 1.25, inner(t, m, "value").Float(), 0.0001)
+		}},
+		{"offset", func(t *testing.T, m protoreflect.Message) {
+			assert.Equal(t, int64(-9_000_000_000), inner(t, m, "value").Int())
+		}},
+		{"slots", func(t *testing.T, m protoreflect.Message) {
+			assert.Equal(t, uint64(64), inner(t, m, "value").Uint())
 		}},
 	}
 	for _, c := range cases {
@@ -502,4 +506,191 @@ i {
 `)
 	require.NoError(t, defaults.Apply(msg, present))
 	assert.Equal(t, "filled", get(t, msg, "i", "x").String())
+}
+
+// --- oneof members ---
+
+const oneofProtoSrc = `
+syntax = "proto3";
+package def_test.v1;
+
+import "pxf/annotations.proto";
+import "google/protobuf/duration.proto";
+
+message OneofConfig {
+  oneof backend {
+    string file = 1;
+    google.protobuf.Duration timeout = 2 [(pxf.default) = "250ms"];
+  }
+  optional string nickname = 3 [(pxf.default) = "anon"];
+}
+`
+
+// TestApply_OneofSiblingSetIsNotClobbered is the data-loss case: a
+// layer picked one member of a oneof, and a (pxf.default) on a
+// sibling must not silently swap the operator's choice. Setting any
+// member clears the rest, so applying the default here would drop
+// file="/tmp/x" on the floor and substitute a timeout nobody asked
+// for. The presence gate alone cannot catch it — "timeout" really is
+// absent from the union; it is "file" that is present.
+func TestApply_OneofSiblingSetIsNotClobbered(t *testing.T) {
+	desc := compileMessage(t, oneofProtoSrc, "def_test.v1.OneofConfig")
+	msg, present := parseInput(t, desc, `file = "/tmp/x"`)
+	require.NoError(t, defaults.Apply(msg, present))
+
+	r := msg.ProtoReflect()
+	fields := r.Descriptor().Fields()
+	fileFd, timeoutFd := fields.ByName("file"), fields.ByName("timeout")
+
+	assert.True(t, r.Has(fileFd), "the layer-selected oneof member must survive")
+	assert.Equal(t, "/tmp/x", r.Get(fileFd).String())
+	assert.False(t, r.Has(timeoutFd),
+		"a default must not take over a oneof whose case a layer already set")
+	_, marked := present["timeout"]
+	assert.False(t, marked, "a skipped default must not join the presence union")
+}
+
+// TestApply_OneofDefaultAppliesWhenCaseUnset is the other half: with
+// no member selected, the oneof default behaves like any other.
+func TestApply_OneofDefaultAppliesWhenCaseUnset(t *testing.T) {
+	desc := compileMessage(t, oneofProtoSrc, "def_test.v1.OneofConfig")
+	msg, present := parseInput(t, desc, ``)
+	require.NoError(t, defaults.Apply(msg, present))
+
+	g := sub(t, msg, "timeout")
+	assert.Equal(t, int64(250_000_000), inner(t, g, "nanos").Int())
+	_, marked := present["timeout"]
+	assert.True(t, marked)
+}
+
+// TestApply_SyntheticOneofStillDefaults guards the guard: proto3
+// `optional` compiles to a synthetic one-field oneof. There is no
+// sibling to protect and no choice to override, so those fields must
+// stay defaultable.
+func TestApply_SyntheticOneofStillDefaults(t *testing.T) {
+	desc := compileMessage(t, oneofProtoSrc, "def_test.v1.OneofConfig")
+	require.True(t, desc.Fields().ByName("nickname").ContainingOneof().IsSynthetic(),
+		"proto3 optional must compile to a synthetic oneof for this test to mean anything")
+
+	msg, present := parseInput(t, desc, ``)
+	require.NoError(t, defaults.Apply(msg, present))
+	assert.Equal(t, "anon", get(t, msg, "nickname").String())
+}
+
+// --- pinned protowire-go divergences ---
+
+// TestApply_BytesValueWrapperDefaultRejected pins the one wrapper
+// type that does NOT accept a default. protowire-go's wrapper path
+// routes through parseScalarDefault, which has no BytesKind branch,
+// so a BytesValue default is an error even though the identical
+// literal on a plain `bytes` scalar decodes fine. Upstream pins the
+// same limitation (encoding/pxf/layered_config_test.go). If a future
+// protowire-go bump adds the branch, this test flips and the godoc
+// caveat in defaults.go comes out.
+func TestApply_BytesValueWrapperDefaultRejected(t *testing.T) {
+	const src = `
+syntax = "proto3";
+package def_test.v1;
+import "pxf/annotations.proto";
+import "google/protobuf/wrappers.proto";
+message M {
+  google.protobuf.BytesValue wrapped = 1 [(pxf.default) = "aGVsbG8="];
+}`
+	desc := compileMessage(t, src, "def_test.v1.M")
+	msg := dynamicpb.NewMessage(desc)
+	err := defaults.Apply(msg, map[string]struct{}{})
+	require.Error(t, err, "BytesValue defaults are not supported by pxf")
+	assert.Contains(t, err.Error(), "defaults: wrapped:", "error must name the field path")
+	assert.Contains(t, err.Error(), "unsupported default kind bytes")
+}
+
+// TestApply_PlainBytesScalarDefaultWorks is the contrast case that
+// makes the one above a wrapper limitation rather than a bytes one.
+func TestApply_PlainBytesScalarDefaultWorks(t *testing.T) {
+	const src = `
+syntax = "proto3";
+package def_test.v1;
+import "pxf/annotations.proto";
+message M { bytes raw = 1 [(pxf.default) = "aGVsbG8="]; }`
+	desc := compileMessage(t, src, "def_test.v1.M")
+	msg := dynamicpb.NewMessage(desc)
+	require.NoError(t, defaults.Apply(msg, map[string]struct{}{}))
+	assert.Equal(t, []byte("hello"), get(t, msg, "raw").Bytes())
+}
+
+// TestApply_NonCanonicalBoolDefaultCoercesToFalse pins a sharp edge
+// this PR newly exposes to WKT wrappers: protowire-go parses bool
+// defaults as `def == "true"`, so "True" silently becomes false
+// instead of erroring the way every other literal kind does — and the
+// path still joins the presence union, so a (pxf.required) on it
+// validates as satisfied with the wrong value. Documented in the
+// package godoc; pinned here so an upstream fix is noticed.
+func TestApply_NonCanonicalBoolDefaultCoercesToFalse(t *testing.T) {
+	const src = `
+syntax = "proto3";
+package def_test.v1;
+import "pxf/annotations.proto";
+import "google/protobuf/wrappers.proto";
+message M {
+  google.protobuf.BoolValue wrapped = 1 [(pxf.default) = "True"];
+  bool plain = 2 [(pxf.default) = "yes"];
+}`
+	desc := compileMessage(t, src, "def_test.v1.M")
+	msg := dynamicpb.NewMessage(desc)
+	present := map[string]struct{}{}
+	require.NoError(t, defaults.Apply(msg, present),
+		"a non-canonical bool literal is coerced, not rejected")
+
+	assert.False(t, inner(t, sub(t, msg, "wrapped"), "value").Bool(),
+		`"True" != "true", so the wrapper lands on false`)
+	assert.False(t, get(t, msg, "plain").Bool())
+	_, marked := present["wrapped"]
+	assert.True(t, marked, "the coerced value still counts as satisfying (pxf.required)")
+}
+
+// TestApply_WKTDefaultIsNotInterpolated pins the gap between "defaults
+// run before interpolation so a default may be a template" and the
+// atomic boundary interpolate draws. A `${...}` in a default on a
+// google.protobuf.StringValue is never expanded, while the same
+// literal on a plain string field is. Documented in the package
+// godoc and README; pinned so closing the gap is a deliberate change.
+func TestApply_WKTDefaultIsNotInterpolated(t *testing.T) {
+	const src = `
+syntax = "proto3";
+package def_test.v1;
+import "pxf/annotations.proto";
+import "google/protobuf/wrappers.proto";
+message M {
+  string base = 1 [(pxf.default) = "example.com"];
+  string api_plain = 2 [(pxf.default) = "api.${base}"];
+  google.protobuf.StringValue api_wrapped = 3 [(pxf.default) = "api.${base}"];
+}`
+	desc := compileMessage(t, src, "def_test.v1.M")
+	msg, present := parseInput(t, desc, ``)
+	require.NoError(t, defaults.Apply(msg, present))
+	require.NoError(t, interpolate.Apply(msg))
+
+	assert.Equal(t, "api.example.com", get(t, msg, "api_plain").String(),
+		"a scalar default is a template, as documented")
+	assert.Equal(t, "api.${base}", inner(t, sub(t, msg, "api_wrapped"), "value").String(),
+		"a WKT default is NOT interpolated: interpolate stops at the atomic boundary")
+}
+
+// TestApply_ExplicitNullIsNotReDefaulted pins the invariant that
+// keeps a deliberately-cleared WKT cleared. `x = null` in a higher
+// layer must not be quietly refilled by the schema default one pass
+// later. This holds because pxf.Result records nulled paths in
+// PresentFields, so the path is in the presence union and the default
+// is gated out — an upstream coupling worth a chameleon-side test.
+func TestApply_ExplicitNullIsNotReDefaulted(t *testing.T) {
+	desc := compileWKT(t)
+	msg, present := parseInput(t, desc, `shutdown_grace = null`)
+	require.Contains(t, present, "shutdown_grace",
+		"an explicit null must reach the presence union, or the default resurrects it")
+
+	require.NoError(t, defaults.Apply(msg, present))
+
+	r := msg.ProtoReflect()
+	assert.False(t, r.Has(r.Descriptor().Fields().ByName("shutdown_grace")),
+		"an explicitly nulled WKT must stay cleared, not fall back to (pxf.default)")
 }

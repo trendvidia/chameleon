@@ -1051,6 +1051,65 @@ api_key = "k"
 	})
 }
 
+// TestResolve_UnsupportedDefaultErrorIsNotDoubledPrefixed pins the
+// operator-facing shape of the new defaults rejection. defaults.Apply
+// already prefixes "defaults: ", so the resolver wraps with a bare
+// "resolver: " — otherwise the error reads "resolver: defaults:
+// defaults: …" and anyone grepping logs for the documented text
+// misses it.
+func TestResolve_UnsupportedDefaultErrorIsNotDoubledPrefixed(t *testing.T) {
+	const badAppSrc = `
+syntax = "proto3";
+package badapp.v1;
+
+import "pxf/annotations.proto";
+
+message BadApp {
+  string base_url = 1;
+  Inner inner = 2 [(pxf.default) = "nope"];
+}
+
+message Inner { string x = 1; }
+`
+	sources := map[string]string{
+		"chain.proto":           chainSpecProtoSrc,
+		"app.proto":             badAppSrc,
+		"pxf/annotations.proto": annotationsProtoSrcResolver,
+	}
+	comp := protocompile.Compiler{
+		Resolver: protocompile.WithStandardImports(
+			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(sources)},
+		),
+	}
+	files, err := comp.Compile(context.Background(), "chain.proto", "app.proto")
+	require.NoError(t, err)
+	rl := files.AsResolver()
+	cd, err := rl.FindDescriptorByName("chameleon.v1.ChainSpec")
+	require.NoError(t, err)
+	ad, err := rl.FindDescriptorByName("badapp.v1.BadApp")
+	require.NoError(t, err)
+
+	spec := parseSpec(t, cd.(protoreflect.MessageDescriptor), `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`)
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x"`)},
+	}
+	sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)))
+	require.NoError(t, err)
+
+	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolver: defaults: inner:")
+	assert.Contains(t, err.Error(), "badapp.v1.Inner")
+	assert.NotContains(t, err.Error(), "defaults: defaults:",
+		"the pass name must appear once, not twice")
+}
+
 func TestResolve_RequiredFieldMissingFails(t *testing.T) {
 	chainDesc, appDesc := compileAnnotated(t)
 
