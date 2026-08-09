@@ -913,12 +913,14 @@ syntax = "proto3";
 package annapp.v1;
 
 import "pxf/annotations.proto";
+import "google/protobuf/duration.proto";
 
 message AnnApp {
   string base_url = 1 [(pxf.required) = true];
   string api_url = 2 [(pxf.default) = "api.${base_url}"];
   string region = 3 [(pxf.default) = "us"];
   string api_key = 4 [(pxf.required) = true];
+  google.protobuf.Duration shutdown_grace = 5 [(pxf.default) = "250ms"];
 }
 `
 
@@ -982,6 +984,130 @@ api_key = "k"
 	assert.Equal(t, "api.mybigproject.com", get("api_url"),
 		"api_url default is a template; interpolation resolved it against base_url")
 	assert.Equal(t, "us", get("region"), "region got its literal default")
+}
+
+// TestResolve_WKTDefault is the end-to-end shape of issue #129: a
+// (pxf.default) on a google.protobuf.Duration field must survive the
+// full pipeline, not resolve to a zero Duration.
+func TestResolve_WKTDefault(t *testing.T) {
+	chainDesc, appDesc := compileAnnotated(t)
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [
+  { name = "prod" }
+  { name = "dev" extends = "prod" }
+]
+layers = [
+  { id = "base" path = "base.pxf" for_each = ONCE required = true }
+  { id = "env"  path = "env/${env}.pxf" for_each = PER_ENV }
+]
+`)
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`
+base_url = "x"
+api_key = "k"
+`)},
+		// prod leaves shutdown_grace to the schema default; dev overrides.
+		"env/prod.pxf": &fstest.MapFile{Data: []byte(``)},
+		"env/dev.pxf":  &fstest.MapFile{Data: []byte(`shutdown_grace = 1s`)},
+	}
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)),
+		resolver.WithTrace())
+	require.NoError(t, err)
+
+	grace := func(t *testing.T, cfg *dynamicpb.Message) (secs, nanos int64) {
+		t.Helper()
+		fd := cfg.Descriptor().Fields().ByName("shutdown_grace")
+		require.True(t, cfg.Has(fd), "shutdown_grace must be set")
+		d := cfg.Get(fd).Message()
+		return d.Get(d.Descriptor().Fields().ByName("seconds")).Int(),
+			d.Get(d.Descriptor().Fields().ByName("nanos")).Int()
+	}
+
+	t.Run("default applies when no layer sets it", func(t *testing.T) {
+		res, err := r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+		require.NoError(t, err)
+		defer res.Destroy()
+
+		secs, nanos := grace(t, res.Config)
+		assert.Equal(t, int64(0), secs)
+		assert.Equal(t, int64(250_000_000), nanos, "(pxf.default) = 250ms must reach the Duration")
+		assert.True(t, res.Trace.Get("shutdown_grace").FromDefault)
+	})
+
+	t.Run("layer value wins over the default", func(t *testing.T) {
+		res, err := r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+		require.NoError(t, err)
+		defer res.Destroy()
+
+		secs, nanos := grace(t, res.Config)
+		assert.Equal(t, int64(1), secs)
+		assert.Equal(t, int64(0), nanos)
+		trace := res.Trace.Get("shutdown_grace")
+		assert.False(t, trace.FromDefault)
+		assert.Equal(t, "env", trace.LayerID)
+	})
+}
+
+// TestResolve_UnsupportedDefaultErrorIsNotDoubledPrefixed pins the
+// operator-facing shape of the new defaults rejection. defaults.Apply
+// already prefixes "defaults: ", so the resolver wraps with a bare
+// "resolver: " — otherwise the error reads "resolver: defaults:
+// defaults: …" and anyone grepping logs for the documented text
+// misses it.
+func TestResolve_UnsupportedDefaultErrorIsNotDoubledPrefixed(t *testing.T) {
+	const badAppSrc = `
+syntax = "proto3";
+package badapp.v1;
+
+import "pxf/annotations.proto";
+
+message BadApp {
+  string base_url = 1;
+  Inner inner = 2 [(pxf.default) = "nope"];
+}
+
+message Inner { string x = 1; }
+`
+	sources := map[string]string{
+		"chain.proto":           chainSpecProtoSrc,
+		"app.proto":             badAppSrc,
+		"pxf/annotations.proto": annotationsProtoSrcResolver,
+	}
+	comp := protocompile.Compiler{
+		Resolver: protocompile.WithStandardImports(
+			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(sources)},
+		),
+	}
+	files, err := comp.Compile(context.Background(), "chain.proto", "app.proto")
+	require.NoError(t, err)
+	rl := files.AsResolver()
+	cd, err := rl.FindDescriptorByName("chameleon.v1.ChainSpec")
+	require.NoError(t, err)
+	ad, err := rl.FindDescriptorByName("badapp.v1.BadApp")
+	require.NoError(t, err)
+
+	spec := parseSpec(t, cd.(protoreflect.MessageDescriptor), `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`)
+	fs := fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x"`)},
+	}
+	sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)))
+	require.NoError(t, err)
+
+	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolver: defaults: inner:")
+	assert.Contains(t, err.Error(), "badapp.v1.Inner")
+	assert.NotContains(t, err.Error(), "defaults: defaults:",
+		"the pass name must appear once, not twice")
 }
 
 func TestResolve_RequiredFieldMissingFails(t *testing.T) {

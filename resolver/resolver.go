@@ -528,7 +528,11 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 		}))
 	}
 	if err := defaults.Apply(dst, presenceUnion, defaultsOpts...); err != nil {
-		return nil, fmt.Errorf("resolver: defaults: %w", err)
+		// defaults.Apply already prefixes "defaults: "; wrapping with
+		// the pass name again would stutter. Same shape as the
+		// validate wrap below. (interpolate keeps its prefix here
+		// because its errors are bare sentinels.)
+		return nil, fmt.Errorf("resolver: %w", err)
 	}
 
 	// Interpolation runs BEFORE secrets are moved into Enclaves: the
