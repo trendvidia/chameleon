@@ -3,7 +3,8 @@
 
 // Package defaults runs chameleon's post-merge (pxf.default) pass.
 // After merge produces the final layered message, [Apply] walks the
-// schema and fills in defaults for scalar fields that no layer set.
+// schema and fills in defaults for the scalar and atomic-WKT fields
+// that no layer set.
 //
 // "No layer set" means the field's dotted path is NOT in the
 // presence union — the set computed by combining each layer's
@@ -19,13 +20,22 @@
 //     is live (has at least one sub-field set by some layer). A
 //     defaults pass that conjures up an empty parent message just to
 //     fill its inner default would be surprising.
-//   - WKT subtrees are skipped — the WKT atomic boundary applies here
-//     too. (pxf.default) on a WKT field should set the whole WKT, but
-//     the (pxf.default) annotation is documented for scalar values
-//     only.
+//   - WKT subtrees are never descended into — the atomic boundary
+//     applies here too — but a (pxf.default) on the WKT field itself
+//     does apply, setting the whole value: `(pxf.default) = "250ms"`
+//     on a google.protobuf.Duration field yields 250ms. The literal
+//     is parsed by protowire-go's [pxf.ApplyDefault], which covers
+//     Timestamp, Duration, the ten wrapper types, pxf.BigInt,
+//     pxf.Decimal and pxf.BigFloat. A (pxf.default) on any other
+//     message-typed field — google.protobuf.Any, pxf.Secret, a
+//     google.protobuf.Struct, a user-defined message — is an error
+//     rather than a silent no-op, because pxf has no literal form to
+//     parse it from.
 //   - Repeated and map fields are skipped — defaulting a list to
 //     non-empty is surprise-prone; users who need it can declare a
-//     scalar default for each element separately.
+//     scalar default for each element separately. A (pxf.default) on
+//     a repeated or map field is ignored rather than rejected; see
+//     https://github.com/trendvidia/chameleon/issues/131.
 //
 // Apply mutates `present` to mark default-applied paths as present.
 // This lets the validation pass treat "had a default" as satisfying
@@ -48,16 +58,17 @@ type options struct {
 	onApplied func(path string)
 }
 
-// OnApplied registers a callback that fires once per scalar field
-// whose default was applied. The path is the dotted field path,
+// OnApplied registers a callback that fires once per field whose
+// default was applied. The path is the dotted field path,
 // matching parse.Move's format. Used by the resolver's Trace plumbing
 // to mark default-applied paths in the per-field provenance map.
 func OnApplied(fn func(path string)) Option {
 	return func(o *options) { o.onApplied = fn }
 }
 
-// Apply walks msg and applies (pxf.default) values to scalar fields
-// not present in the union set. Mutates both msg and present.
+// Apply walks msg and applies (pxf.default) values to the scalar and
+// atomic-WKT fields not present in the union set. Mutates both msg
+// and present.
 func Apply(msg proto.Message, present map[string]struct{}, opts ...Option) error {
 	if msg == nil {
 		return fmt.Errorf("defaults: nil message")
@@ -86,36 +97,44 @@ func apply(m protoreflect.Message, present map[string]struct{}, onApplied func(p
 		if fd.IsList() || fd.IsMap() {
 			continue
 		}
-		if fd.Kind() == protoreflect.MessageKind {
-			md := fd.Message()
-			if md == nil || wkt.Atomic(md) {
+
+		// The (pxf.default) lookup comes before the message dispatch
+		// below, so an annotation on an atomic WKT field reaches
+		// pxf.ApplyDefault instead of being dropped by the atomic
+		// check. The atomic boundary is about merge semantics —
+		// whole-value replacement — and does not imply "cannot be
+		// defaulted". Same ordering as validate's (pxf.required)
+		// check, and as protowire-go's own per-parse pass.
+		if _, isPresent := present[path]; !isPresent {
+			if def, ok := pxf.Default(fd); ok {
+				if err := pxf.ApplyDefault(m, fd, def); err != nil {
+					return fmt.Errorf("defaults: %s: %w", path, err)
+				}
+				present[path] = struct{}{}
+				if onApplied != nil {
+					onApplied(path)
+				}
+				// The default is the field's whole value: a WKT has
+				// no inner defaults to fill, and any other message
+				// type would have errored above.
 				continue
 			}
-			if !m.Has(fd) {
-				// Nested message not live; don't materialize it just
-				// to fill a default.
-				continue
-			}
-			if err := apply(m.Mutable(fd).Message(), present, onApplied, path); err != nil {
-				return err
-			}
-			continue
 		}
 
-		// Scalar.
-		if _, isPresent := present[path]; isPresent {
+		if fd.Kind() != protoreflect.MessageKind {
 			continue
 		}
-		def, ok := pxf.Default(fd)
-		if !ok {
+		md := fd.Message()
+		if md == nil || wkt.Atomic(md) {
 			continue
 		}
-		if err := pxf.ApplyDefault(m, fd, def); err != nil {
-			return fmt.Errorf("defaults: %s: %w", path, err)
+		if !m.Has(fd) {
+			// Nested message not live; don't materialize it just to
+			// fill a default.
+			continue
 		}
-		present[path] = struct{}{}
-		if onApplied != nil {
-			onApplied(path)
+		if err := apply(m.Mutable(fd).Message(), present, onApplied, path); err != nil {
+			return err
 		}
 	}
 	return nil

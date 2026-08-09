@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`(pxf.default)` on a well-known-type field is applied instead of silently dropped** ([#129](https://github.com/trendvidia/chameleon/issues/129)). `defaults.Apply` walked message-kind fields and `continue`d on the atomic-WKT check before ever reaching the annotation lookup, so `(pxf.default) = "250ms"` on a `google.protobuf.Duration` resolved to a nil Duration — no error, no warning, just the proto zero. The capability existed one layer down the whole time: protowire-go's `pxf.ApplyDefault` binds WKT message fields directly and pins the behavior in its own tests. The lookup now runs **before** the message dispatch, matching how `validate` already orders its `(pxf.required)` check and how protowire-go's own per-parse pass is ordered.
+
+  Covered types are the ones PXF has a literal form for: `Duration`, `Timestamp`, the ten `google.protobuf` wrapper types, `pxf.BigInt`, `pxf.Decimal`, `pxf.BigFloat`. The default sets the **whole** WKT value — the atomic boundary governs *merge* semantics (whole-value replacement), and never implied "cannot be defaulted". Default-filled WKT paths join the presence union like any other default, so `(pxf.required)` counts them as satisfied and `Resolution.Trace` marks them `FromDefault`.
+
+  **Behavior change worth reading if you have a `(pxf.default)` on a non-WKT message field.** A default on a message type PXF cannot parse a literal for — `google.protobuf.Any`, `pxf.Secret`, `google.protobuf.Struct`, any user-defined message — is now a resolve-time error (`defaults: <path>: default values not supported for message type <T>`) where it was previously ignored. That is the deliberate other half of the fix: a silently ignored annotation is the worst of the available states, and plain `pxf.Unmarshal` already errors on these. The gate is unchanged otherwise — the annotation is consulted only for a path no layer set, so a field some layer did set is untouched.
+
+  Still ignored rather than rejected: `(pxf.default)` on a `repeated` or `map` field. Left as-is deliberately (defaulting a list to non-empty is surprise-prone, and the annotation's single string literal has no grammar for multi-element defaults); the silence is tracked in [#131](https://github.com/trendvidia/chameleon/issues/131). Found on the way: protowire-go's own per-parse pass has no list guard at all and **panics** on the same schema — chameleon is insulated (it guards, and decodes with `SkipPostDecode`), filed upstream as [trendvidia/protowire-go#66](https://github.com/trendvidia/protowire-go/issues/66).
+
 ## [0.22.1] — 2026-06-03
 
 Patch release — dependency-only bump to [trendvidia/sops v4.0.1](https://github.com/trendvidia/sops/releases/tag/v4.0.1), plus a substantial round of test hardening across the chameleon code base (~25 PRs landed in `tests/` branches between #107 and #125). No chameleon API surface change, no operator action required. Drop-in upgrade for every consumer.
