@@ -11,10 +11,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"filippo.io/age"
-
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
-	"github.com/trendvidia/chameleon/sops"
 )
 
 // BuildBase64 is a one-line wrapper that piped Build's output
@@ -28,16 +25,11 @@ import (
 // unencrypted-PXF fixture. Used as the success-path fixture below.
 func buildMinimalUnencryptedBundle(t *testing.T, ctx context.Context, output *bytes.Buffer) error {
 	t.Helper()
-	// Even an unencrypted bundle's recipients still need a non-nil
-	// keystore source — sops's age fork resolves the empty-recipient
-	// case fine, but we use a real recipient to keep the manifest
-	// well-formed. encryptPopulated isn't invoked, so no actual
-	// encryption runs.
-	identity, err := age.GenerateX25519Identity()
-	if err != nil {
-		t.Fatalf("age key generation: %v", err)
-	}
-	publicKey := identity.Recipient().String()
+	// The layer below is plaintext, so nothing here encrypts and no
+	// Decrypter / Encrypter is needed. The manifest still carries a
+	// recipient to stay well-formed; its value never leaves the
+	// manifest, so a literal is as good as a generated key.
+	const publicKey = "age1testrecipient000000000000000000000000000000000000000000000"
 
 	schema := buildTestDescriptor(t)
 	chainSpec := &chameleonv1.ChainSpec{
@@ -68,8 +60,6 @@ func buildMinimalUnencryptedBundle(t *testing.T, ctx context.Context, output *by
 		Schema:    schema,
 		ChainSpec: chainSpec,
 		LayersFS:  layersFS,
-		Decrypter: sops.Default(),
-		Encrypter: sops.DefaultEncrypter(),
 		Output:    output,
 	})
 }

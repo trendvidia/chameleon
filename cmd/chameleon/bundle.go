@@ -163,15 +163,19 @@ Flags:`)
 		build = bundler.BuildBase64
 	}
 	if err := build(context.Background(), bundler.BuildOptions{
-		Manifest:     manifestMsg,
-		Module:       *module,
-		Schema:       schemaDesc,
-		ChainSpec:    chainSpec,
-		LayersFS:     layersFS,
-		Decrypter:    dec,
-		Encrypter:    sops.DefaultEncrypter(),
-		Output:       &buf,
-		ManifestName: filepath.Base(*manifest),
+		Manifest:  manifestMsg,
+		Module:    *module,
+		Schema:    schemaDesc,
+		ChainSpec: chainSpec,
+		LayersFS:  layersFS,
+		Decrypter: dec,
+		Encrypter: sops.DefaultEncrypter(),
+		// The bundler takes the key store as a hook so the library
+		// module doesn't link a backend to build a bundle; the CLI,
+		// which links sops regardless, supplies the real lookup.
+		RecipientsForKeyName: sops.RecipientsFromKeyName,
+		Output:               &buf,
+		ManifestName:         filepath.Base(*manifest),
 	}); err != nil {
 		return err
 	}

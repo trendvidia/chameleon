@@ -22,14 +22,27 @@ jobs:
           # version string depending on how it was built — match the prefix, not
           # the bare token, so a toolchain bump doesn't red every job in the repo.
           go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
+      # Three modules live in this repo (library, sops backend, CLI) —
+      # see docs/RELEASING.md. `./...` stops at a module boundary, so
+      # every step below iterates instead of relying on the root.
       - name: build
-        run: go build ./...
+        run: for m in . sops cmd/chameleon; do (cd "$m" && go build ./...); done
       - name: vet
-        run: go vet ./...
+        run: for m in . sops cmd/chameleon; do (cd "$m" && go vet ./...); done
       - name: test (with race detector)
-        run: go test -race -timeout 5m ./...
+        run: for m in . sops cmd/chameleon; do echo "== $m" && (cd "$m" && go test -race -timeout 5m ./...); done
       - name: integration tests (real sops round-trip)
-        run: go test -tags=integration -timeout 5m ./sops/...
+        run: |
+          (cd sops && go test -tags=integration -timeout 5m ./...)
+          (cd cmd/chameleon && go test -tags=integration -timeout 10m ./...)
+      - name: modules are tidy
+        run: |
+          # A stray import that drags the KMS tree back into the library
+          # module's go.mod is the regression #130 was about;
+          # TestLibraryModuleRequiresNoKeyManagement catches it, but only
+          # if go.mod reflects the imports.
+          for m in . sops cmd/chameleon; do (cd "$m" && go mod tidy); done
+          git diff --exit-code -- '**/go.mod' '**/go.sum' go.mod go.sum
 
   lint:
     name: lint
@@ -43,10 +56,20 @@ jobs:
           # version string depending on how it was built — match the prefix, not
           # the bare token, so a toolchain bump doesn't red every job in the repo.
           go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
-      - name: golangci-lint
+      - name: golangci-lint (library)
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
+      - name: golangci-lint (sops)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          working-directory: sops
+      - name: golangci-lint (cli)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          working-directory: cmd/chameleon
 
   bench:
     name: bench (vs main)
@@ -65,6 +88,8 @@ jobs:
           go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
       - name: install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest
+      # Benchmarks live in the library module; the sops and CLI modules
+      # have none. Add them here if that changes.
       - name: benchmark PR head
         run: go test -bench=. -benchmem -count=5 -run='^$' -benchtime=500ms ./... | tee /tmp/bench-new.txt
       - name: benchmark main baseline

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`docs/RELEASING.md`** — the tag order the three modules have to be released in, and what a stale `require` looks like when it goes wrong. Worth reading before cutting v0.23.0.
+
 - **`chameleon/crypt` — the decryption contract, split from the implementation** ([#130](https://github.com/trendvidia/chameleon/issues/130)). New leaf package holding `Decrypter`, `Encrypter`, `Format` (+ `FormatForPath`) and `Recipients`, plus a registry of named backends: `Register` / `Get` / `Registered` / `SoleDecrypter` / `Unregister`. Its entire dependency set is the standard library and memguard. The resolver now depends on this and nothing else for decryption, which is what makes the entry below possible; `chameleon/sops` became one implementation of it rather than the definition of it.
 
   The registry is `database/sql`'s driver model: `chameleon/sops` calls `crypt.Register("sops", …)` from `init`, and a consumer selects it with `import _ "github.com/trendvidia/chameleon/sops"`. `crypt.Registered()` reports what a build actually linked — worth calling in a startup log line if you have several.
@@ -16,6 +18,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`resolver.WithDecrypterNamed(name)`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). Selects a registered backend by name, the resolver-side equivalent of naming a driver in `sql.Open`. Needed only in a build that links more than one backend, where auto-selection is deliberately undefined. Fails at `resolver.New` — not at the first encrypted layer — if no backend is registered under that name, and lists the ones that are, so a missing import surfaces in a plaintext dev environment instead of in prod. Mutually exclusive with `WithDecrypter`; passing both is an error rather than a silent last-one-wins.
 
 ### Changed
+
+- **The sops backend and the CLI are now separate modules; the library's dependency graph no longer carries key management** ([#130](https://github.com/trendvidia/chameleon/issues/130)). The entry below stopped consumers *linking* the KMS SDKs. This stops them *requiring* them: Go's module graph is per-module, so as long as any package or test in the library module imported `chameleon/sops`, `go mod tidy` kept the whole tree in the library's `go.mod` — and a consumer's `go list -m all`, dependency review and SBOM inherit our requirements whether or not their build reaches the code.
+
+  Measured on the same plaintext two-layer consumer:
+
+  | | v0.22.1 | this release |
+  |---|---|---|
+  | `go list -m all` | 347 modules | **35** |
+  | …key-management modules of those | 164 | **0** |
+  | library `go.mod` require lines | 134 | **22** |
+
+  **Three modules, tagged separately** — `github.com/trendvidia/chameleon` (`vX.Y.Z`), `github.com/trendvidia/chameleon/sops` (`sops/vX.Y.Z`), and `github.com/trendvidia/chameleon/cmd/chameleon` (`cmd/chameleon/vX.Y.Z`). The CLI had to move too: it links the backend by nature, and a binary in the library module put the whole tree back in every consumer's graph — splitting only `sops/` was measured to change nothing at all. `protoc-gen-chameleon-go` has no backend dependency and stays in the library module. Import paths are unchanged for every package; a `go.work` at the repo root wires the three together for local development.
+
+  **What consumers do.** Plaintext consumers: nothing. Encrypted-layer consumers: one extra `require github.com/trendvidia/chameleon/sops`, which `go get` / `go mod tidy` adds the first time the blank import appears. CLI users: `go install github.com/trendvidia/chameleon/cmd/chameleon@latest` is unchanged, but a version-pinned install now names the CLI's own tag (`@cmd/chameleon/v0.23.0`, not `@v0.23.0`); an existing `@v0.22.1` pin still resolves, because that revision predates the split. `protoc-gen-chameleon-go` pins are unaffected.
+
+  **One API change fell out of it.** `bundler.BuildOptions` (internal, reached through the CLI) gained `RecipientsForKeyName func(string) (crypt.Recipients, error)`: the bundler used to call `sops.RecipientsFromKeyName` directly, which is precisely the import that would have kept the KMS tree in the library module. The CLI passes `sops.RecipientsFromKeyName`; a chain spec that declares no `key_name` never needs it. A spec that *does* declare one with the hook unset is now an error rather than a silent drop — dropping it would encrypt the layer to a smaller recipient set than the chain asked for, and surface in production as a layer nobody can open.
+
+  **Test coverage moved with the code, deliberately.** The bundler's end-to-end test now runs against a fake backend in the library module (it enforces the same wipe-on-success contract as sops, and can assert *which recipients* each layer was encrypted to — something the real-age version could not see through sops's envelope), and the real age round-trip through `bundler.Build` lives in the sops module (`sops/bundle_test.go`), along with the first coverage of `RecipientsForKeyName` wired to the real key store. `TestLibraryModuleRequiresNoKeyManagement` pins the go.mod half the same way the linkage test pins the link half, and CI fails if any module's `go.mod` is untidy.
 
 - **Decryption is opt-in at link time: plaintext consumers no longer link the cloud KMS SDKs** ([#130](https://github.com/trendvidia/chameleon/issues/130)). `resolver` imported `chameleon/sops` at package level for the `Decrypter` interface and `FormatForPath`, so every consumer of `chameleon.Load` or `resolver.New` linked the whole sops key-management tree — AWS, Azure, GCP, Vault, Huawei KMS and their transitive weight — whether or not a single layer was encrypted. Measured on a program that resolves two plaintext layers and nothing else:
 
@@ -43,7 +63,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   **The scope of "linked in" is the module graph, not configuration** — the same trade `database/sql` makes. A dependency that imports `chameleon/sops` for its own reasons registers the backend in your build too. `crypt.Registered()` tells you what you ended up with.
 
-  **What this does not fix.** The KMS SDKs stay in the *module* graph: chameleon's `go.mod` still requires them for the `chameleon/sops` package and the CLI, so a consumer's `go list -m all` is unchanged (347 modules in the measurement above) and `go.mod`-reading SBOM / dependency-review tooling still sees them. Binary size, link time, and reachability-based scanners (`govulncheck`) do not. Removing them from the module graph as well means splitting `chameleon/sops` into its own module, which is the open half of [#130](https://github.com/trendvidia/chameleon/issues/130).
+  This is half of #130 — it fixes what a consumer *links*. What a consumer *requires* is fixed by the module split below.
 
   The split is pinned by a test rather than by discipline: `linkage_test.go` shells out to `go list -deps` over the public plaintext path (`chameleon`, `resolver`, `chain`, `crypt`, `merge`, `parse`, `secret`, `source`, `defaults`, `validate`, `interpolate`, `wkt`) and fails if a sops or cloud-SDK package reappears, with a negative control asserting the same check does trip on `chameleon/sops`. A single stray import compiles fine and costs every consumer 56 MB, so the graph itself is the assertion.
 
