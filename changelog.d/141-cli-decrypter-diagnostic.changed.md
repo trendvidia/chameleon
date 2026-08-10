@@ -10,11 +10,13 @@
   chameleon get: layer "base" is encrypted: --decrypter is "none" (the fail-closed default); pass --decrypter=sops to decrypt it, or set decrypter = "sops" on this app in /home/you/.chameleon
   ```
 
-  and, when `--decrypter=none` was actually typed, the statement without the instruction — being refused is the flag doing its job:
+  and, when the flag was actually typed, the statement without the instruction — being refused is the flag doing its job:
 
   ```
   chameleon get: layer "base" is encrypted: --decrypter=none was passed on the command line
   ```
+
+  That second message **echoes the value you passed** rather than naming `"none"`. `--decrypter=` — what `--decrypter=$DECRYPTER` expands to with the variable unset — disables decryption exactly as `"none"` does, so it reports `--decrypter= was passed on the command line`. Seeing the empty value is also the answer to "why was the `decrypter` in my `~/.chameleon` ignored": a typed flag outranks the config file, empty value included.
 
   The `~/.chameleon` path in the first message is the one the loader would really read, `CHAMELEON_USER_CONFIG` included.
 
