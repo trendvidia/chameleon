@@ -137,7 +137,9 @@ matches one path element at a time, so --exclude=third_party prunes
 any directory of that name at whatever depth, and needs no `+"`"+`**`+"`"+`; the
 usual pattern syntax works within an element (--exclude='*_test.proto').
 For the same reason a pattern cannot contain a path separator. Nothing
-is excluded unless you ask.
+is excluded unless you ask, and what a pattern pruned is counted on the
+OK line — a well-formed pattern can take more than you meant, and the
+run is green either way.
 
 Two things --exclude does NOT do. It does not touch --include, so an
 excluded file stays importable — which is the point for a vendored
@@ -186,11 +188,12 @@ Flags:`)
 		return fmt.Errorf("unexpected argument %q (schemas are named by --schema, one flag each)", fs.Arg(0))
 	}
 
-	roots, importPaths, err := resolveSchemaRoots(schemas, includePaths, excludes)
+	search, err := resolveSchemaRoots(schemas, includePaths, excludes)
 	if err != nil {
 		return err
 	}
-	files, err := compileRoots(roots, importPaths)
+	roots := search.roots
+	files, err := compileRoots(roots, search.importPaths)
 	if err != nil {
 		return err
 	}
@@ -220,16 +223,63 @@ Flags:`)
 	// The closure size is worth printing rather than a bare "OK": the
 	// whole reason this command exists is that the checked set is
 	// larger than the files named, so the count is what tells an author
-	// how much of it this run actually spoke for. With several roots
-	// both numbers are printed, because they answer different
-	// questions — how much was asked, and how much was covered — and
-	// the second alone cannot say whether --include is wrong.
-	if len(roots) == 1 {
-		fmt.Fprintf(out, "OK\t%s\t%d file(s) checked\n", roots[0].arg, report.closure)
+	// how much of it this run actually spoke for. A directory search
+	// prints both numbers, because they answer different questions —
+	// how much was asked, and how much was covered — and the second
+	// alone cannot say whether --include is wrong.
+	//
+	// Which shape is printed follows what --schema named, not how many
+	// roots came out of it: see [schemaSearch.named].
+	if search.named != "" {
+		fmt.Fprintf(out, "OK\t%s\t%d file(s) checked\n", search.named, report.closure)
 		return nil
 	}
-	fmt.Fprintf(out, "OK\t%d root(s)\t%d file(s) checked\n", len(roots), report.closure)
+	// The skipped count appears only when something was skipped, so no
+	// run without --exclude grows a field — though such a run's line can
+	// still change shape, since a directory holding a single .proto now
+	// prints the root(s) form. Its absence is not a claim that nothing
+	// was pruned by some other means, only that no pattern pruned
+	// anything.
+	skipped := ""
+	if search.skipped > 0 {
+		skipped = fmt.Sprintf("\t%d skipped", search.skipped)
+	}
+	fmt.Fprintf(out, "OK\t%d root(s)\t%d file(s) checked%s\n", len(roots), report.closure, skipped)
 	return nil
+}
+
+// schemaSearch is what the --schema / --include / --exclude values
+// resolved to: the files to compile, the import paths to compile them
+// against, and the two facts the OK line needs that the root list
+// alone cannot supply.
+type schemaSearch struct {
+	roots       []schemaRoot
+	importPaths []string
+
+	// skipped counts the .proto files --exclude pruned out of the
+	// directory searches and nothing else made a root. Reported rather
+	// than merely applied: a well-formed pattern can prune more than
+	// the operator meant — `--exclude=v*` takes v1/ along with vendor/
+	// — and the run is green either way, so without this the only
+	// signal is a file count nobody has a baseline for (chameleon#166).
+	//
+	// Roots the patterns took away, not files left unread. An excluded
+	// file that a surviving root imports is compiled and validated like
+	// any other member of the closure, so it lands in both counts: the
+	// file count says it was checked, and this one says it no longer
+	// has a line of its own in the report. That follows from --exclude
+	// leaving the import paths alone (chameleon#159), which is the
+	// ordinary shape rather than a corner.
+	skipped int
+
+	// named is the one --schema value when exactly one was given and
+	// it named a file, and "" otherwise. It decides the OK line's
+	// shape. Deliberately NOT "how many roots survived": exclusion can
+	// prune a directory search down to one root, and letting that flip
+	// the output to the single-file form means a CI job matching
+	// `N root(s)` stops matching exactly when a pattern over-prunes.
+	// What the operator asked for does not move under it.
+	named string
 }
 
 // schemaRoot is one .proto file this run was asked to check, as
@@ -295,7 +345,7 @@ type schemaRoot struct {
 //     form has always done, and it is also what a lone --schema=a.proto
 //     keeps regardless of the rules above: with one root nothing else
 //     is compiled to collide with it.
-func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot, []string, error) {
+func resolveSchemaRoots(schemas, includePaths, excludes []string) (schemaSearch, error) {
 	// candidate is a file some --schema value named, before duplicates
 	// are folded together and before it is given its compile name.
 	type candidate struct {
@@ -313,6 +363,11 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot,
 		fileDirs       []string
 		dirImports     []string
 		includeImports []string
+		// pruned holds every .proto path an --exclude took out of a
+		// directory search, across all of them. Paths rather than a
+		// running total, because whether one of them is a root the run
+		// lost depends on the final root set; resolved at the end.
+		pruned = map[string]bool{}
 	)
 	// The same file named twice — `--schema=proto --schema=proto/a.proto`,
 	// or a repeated flag — is one root, not two, and has to be folded
@@ -330,19 +385,45 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot,
 	for _, arg := range schemas {
 		abs, err := filepath.Abs(arg)
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolve --schema %q: %w", arg, err)
+			return schemaSearch{}, fmt.Errorf("resolve --schema %q: %w", arg, err)
 		}
 		st, err := os.Stat(abs)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read schema %s: %w", arg, err)
+			return schemaSearch{}, fmt.Errorf("read schema %s: %w", arg, err)
 		}
 		if st.IsDir() {
 			found, err := protoFilesUnder(abs, excludes)
 			if err != nil {
-				return nil, nil, fmt.Errorf("search --schema %q: %w", arg, err)
+				return schemaSearch{}, fmt.Errorf("search --schema %q: %w", arg, err)
 			}
 			if len(found) == 0 {
-				return nil, nil, emptySearchError(arg, abs, excludes)
+				return schemaSearch{}, emptySearchError(arg, abs, excludes)
+			}
+			// What the patterns took out of this directory. The
+			// unfiltered walk is redone rather than counted during the
+			// first, because pruning a directory with fs.SkipDir is
+			// what makes the filtered walk cheap and it cannot report
+			// what it never descended into. Only paid when --exclude
+			// was passed, and it lists paths rather than compiling
+			// anything — but it does descend into precisely the
+			// subtrees the operator asked to skip, which is why it is
+			// [allProtoFilesUnder] and cannot fail the run.
+			//
+			// Paths, not a count: a file this walk pruned may still be
+			// named directly by another --schema, and then it is a root
+			// anyway and must not be reported as skipped. Resolved
+			// against the final root set below, once every argument
+			// has been seen.
+			if len(excludes) > 0 {
+				kept := make(map[string]bool, len(found))
+				for _, f := range found {
+					kept[f] = true
+				}
+				for _, f := range allProtoFilesUnder(abs) {
+					if !kept[f] {
+						pruned[f] = true
+					}
+				}
 			}
 			dirImports = appendUnique(dirImports, abs)
 			for _, f := range found {
@@ -355,14 +436,14 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot,
 		// (a device, a dangling symlink target) would reach
 		// protocompile as "read <x>: is a directory"-shaped noise.
 		if !st.Mode().IsRegular() {
-			return nil, nil, fmt.Errorf("read schema %s: not a regular file", arg)
+			return schemaSearch{}, fmt.Errorf("read schema %s: not a regular file", arg)
 		}
 		addCand(abs, arg, "")
 	}
 	for _, p := range includePaths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
-			return nil, nil, fmt.Errorf("resolve --include %q: %w", p, err)
+			return schemaSearch{}, fmt.Errorf("resolve --include %q: %w", p, err)
 		}
 		includeImports = appendUnique(includeImports, abs)
 	}
@@ -400,7 +481,7 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot,
 		if prefix != "" {
 			rel, err := filepath.Rel(prefix, c.path)
 			if err != nil {
-				return nil, nil, fmt.Errorf("name %s relative to %s: %w", c.path, prefix, err)
+				return schemaSearch{}, fmt.Errorf("name %s relative to %s: %w", c.path, prefix, err)
 			}
 			name = filepath.ToSlash(rel)
 		} else {
@@ -411,7 +492,7 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot,
 		}
 
 		if prev, clash := byName[name]; clash {
-			return nil, nil, fmt.Errorf(
+			return schemaSearch{}, fmt.Errorf(
 				"%s and %s both compile as %q: pass --include=<common root> so they can be told apart",
 				prev, c.path, name)
 		}
@@ -427,7 +508,27 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot,
 	for _, p := range slices.Concat(fileDirs, dirImports, includeImports) {
 		importPaths = appendUnique(importPaths, p)
 	}
-	return roots, importPaths, nil
+
+	// The single-file form is exactly one --schema naming a file. Not
+	// "one root": a directory search that exclusion narrowed to one
+	// root was still a directory search, and saying so is the point of
+	// #166.
+	named := ""
+	if len(schemas) == 1 && len(dirImports) == 0 {
+		named = schemas[0]
+	}
+
+	// A pruned file that another --schema named directly is a root by
+	// the more specific instruction, so the patterns took nothing away
+	// there and it is not counted. What is left is roots lost to the
+	// patterns — not files left unread; see [schemaSearch.skipped].
+	skipped := 0
+	for path := range pruned {
+		if !seenPath[path] {
+			skipped++
+		}
+	}
+	return schemaSearch{roots: roots, importPaths: importPaths, skipped: skipped, named: named}, nil
 }
 
 // emptySearchError explains a directory --schema that produced no
@@ -439,14 +540,50 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot,
 // to create for the walk root, and an over-broad pattern reaches it by
 // the other door. The unfiltered walk is redone rather than counted
 // during the first one, because this runs at most once, on the way out
-// of a run that has already failed.
+// of a run that has already failed. It counts with
+// [allProtoFilesUnder], so a corner of the tree that cannot be read
+// costs a smaller number here, never a different diagnosis.
 func emptySearchError(arg, abs string, excludes []string) error {
 	if len(excludes) > 0 {
-		if all, err := protoFilesUnder(abs, nil); err == nil && len(all) > 0 {
+		if all := allProtoFilesUnder(abs); len(all) > 0 {
 			return fmt.Errorf("--schema %q: --exclude pruned all %d .proto file(s) under this directory", arg, len(all))
 		}
 	}
 	return fmt.Errorf("--schema %q: no .proto files found under this directory", arg)
+}
+
+// allProtoFilesUnder is [protoFilesUnder] with no patterns and no
+// verdict: it answers "what is under here, unpruned" for the two
+// reports that describe what --exclude did — the skipped count and
+// [emptySearchError] — and a directory it cannot read is left out
+// rather than failing the walk.
+//
+// Tolerating that is the point of having it. This walk descends into
+// exactly the subtrees the filtered one pruned, so an error returned
+// from here would fail runs that --exclude is what makes work:
+// `--schema=./proto --exclude=secret` over an unreadable secret/ is a
+// search that succeeded, and it must not be turned into a failure by
+// the code that reports on it afterwards. What cannot be read goes
+// uncounted, which is also what the run itself never read.
+func allProtoFilesUnder(dir string) []string {
+	var found []string
+	// WalkDir only ever returns what the callback returned, and this
+	// one returns nil however the walk goes, so there is nothing left
+	// to report here.
+	_ = filepath.WalkDir(dir, func(path string, d iofs.DirEntry, err error) error {
+		// A directory whose entries cannot be listed — WalkDir reports
+		// it on a second visit to the same path — is skipped, and its
+		// siblings are still walked.
+		if err != nil {
+			return nil //nolint:nilerr // an unreadable subtree undercounts the report; it must not fail the run
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".proto") {
+			return nil
+		}
+		found = append(found, path)
+		return nil
+	})
+	return found
 }
 
 // appendUnique appends p to dst unless it is already there. The lists

@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -775,7 +776,7 @@ message Cfg { repeated string tags = 1 [(pxf.default) = "nope"]; }
 func TestCheckSchema_IncludeNamingAFileIsNotAPrefix(t *testing.T) {
 	dir := schemaRepo(t, false)
 	a := filepath.Join(dir, "svc", "a.proto")
-	roots, _, err := resolveSchemaRoots(
+	search, err := resolveSchemaRoots(
 		[]string{a, filepath.Join(dir, "svc", "b.proto")},
 		[]string{a},
 		nil,
@@ -783,7 +784,7 @@ func TestCheckSchema_IncludeNamingAFileIsNotAPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSchemaRoots: %v", err)
 	}
-	for _, r := range roots {
+	for _, r := range search.roots {
 		if r.name == "." || r.name == "" {
 			t.Errorf("root %s got the degenerate name %q", r.path, r.name)
 		}
@@ -795,12 +796,12 @@ func TestCheckSchema_IncludeNamingAFileIsNotAPrefix(t *testing.T) {
 // handed to protocompile twice.
 func TestCheckSchema_ImportPathsAreDeduplicatedAcrossFlags(t *testing.T) {
 	dir := schemaRepo(t, false)
-	_, importPaths, err := resolveSchemaRoots([]string{dir}, []string{dir, dir}, nil)
+	search, err := resolveSchemaRoots([]string{dir}, []string{dir, dir}, nil)
 	if err != nil {
 		t.Fatalf("resolveSchemaRoots: %v", err)
 	}
-	if len(importPaths) != 1 || importPaths[0] != dir {
-		t.Errorf("importPaths = %v, want exactly [%s]", importPaths, dir)
+	if len(search.importPaths) != 1 || search.importPaths[0] != dir {
+		t.Errorf("importPaths = %v, want exactly [%s]", search.importPaths, dir)
 	}
 }
 
@@ -859,7 +860,7 @@ func TestCheckSchema_ExcludePrunesAVendoredDuplicate(t *testing.T) {
 	// pxf/annotations.proto and svc/a.proto are roots; the closure adds
 	// descriptor.proto. The vendored copy is neither a root nor
 	// imported by one.
-	if want := "OK\t2 root(s)\t3 file(s) checked\n"; out.String() != want {
+	if want := "OK\t2 root(s)\t3 file(s) checked\t1 skipped\n"; out.String() != want {
 		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }
@@ -916,8 +917,12 @@ message ATest { string x = 1; }
 	if err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=*_test.proto"}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := "OK\t" + dir + "\t1 file(s) checked\n"; out.String() != want {
-		t.Errorf("output = %q, want %q (one root left, so the single-root line)", out.String(), want)
+	// One root survives, and the line still says so rather than
+	// switching to the single-file form: --schema named a directory,
+	// and what the operator asked for does not move under a pattern
+	// (#166). The skipped count is why the narrowing is visible at all.
+	if want := "OK\t1 root(s)\t1 file(s) checked\t1 skipped\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 
 	// A malformed pattern fails the run, naming the flag and the
@@ -965,7 +970,7 @@ message B { string x = 1; }
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Both pruned, so the one surviving root takes the single-root line.
-	if want := "OK\t" + dir + "\t1 file(s) checked\n"; out.String() != want {
+	if want := "OK\t1 root(s)\t1 file(s) checked\t2 skipped\n"; out.String() != want {
 		t.Errorf("output = %q, want %q (only the last --exclude was honoured?)", out.String(), want)
 	}
 }
@@ -1020,8 +1025,13 @@ message Cfg { common.v1.Shared shared = 1; }
 		t.Fatalf("an excluded file must stay importable: %v", err)
 	}
 	// One root (app.proto); the closure still counts the import it
-	// resolved out of the excluded directory.
-	if want := "OK\t" + dir + "\t2 file(s) checked\n"; out.String() != want {
+	// resolved out of the excluded directory. That same file is in both
+	// counts, and deliberately: it was checked (as part of app.proto's
+	// closure) and it was skipped (it no longer has a line of its own
+	// in the report). The skipped count is of roots the pattern took
+	// away, not of files left unread — the two numbers answer different
+	// questions, and this is the shape where they overlap.
+	if want := "OK\t1 root(s)\t2 file(s) checked\t1 skipped\n"; out.String() != want {
 		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }
@@ -1177,5 +1187,204 @@ message B { string x = 1; }
 	}
 	if !strings.Contains(out.String(), "2 root(s)") {
 		t.Errorf("nothing should have been pruned\ngot: %q", out.String())
+	}
+}
+
+// --- the OK line's skipped count and format rule (#166) ---
+
+// The format follows what --schema NAMED, not how many roots came out
+// of it. Before #166 a pattern that narrowed a directory search to one
+// root flipped the line to the single-file form, so a CI job matching
+// `N root(s)` stopped matching at exactly the moment a pattern
+// over-pruned — the failure it was watching for.
+func TestCheckSchema_OKLineShapeFollowsWhatSchemaNamed(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "keep.proto"), `
+syntax = "proto3";
+package keep.v1;
+message K { string x = 1; }
+`)
+	write(t, filepath.Join(dir, "vendor", "drop.proto"), `
+syntax = "proto3";
+package drop.v1;
+message D { string x = 1; }
+`)
+
+	t.Run("directory narrowed to one root keeps the root(s) form", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=vendor"}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "OK\t1 root(s)\t1 file(s) checked\t1 skipped\n"; out.String() != want {
+			t.Errorf("output = %q, want %q", out.String(), want)
+		}
+	})
+
+	t.Run("one file named directly keeps the single-file form", func(t *testing.T) {
+		schema := filepath.Join(dir, "keep.proto")
+		var out bytes.Buffer
+		if err := checkSchemaCmd(&out, []string{"--schema=" + schema}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "OK\t" + schema + "\t1 file(s) checked\n"; out.String() != want {
+			t.Errorf("output = %q, want %q", out.String(), want)
+		}
+	})
+
+	t.Run("two files named directly use the root(s) form", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := checkSchemaCmd(&out, []string{
+			"--schema=" + filepath.Join(dir, "keep.proto"),
+			"--schema=" + filepath.Join(dir, "vendor", "drop.proto"),
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "OK\t2 root(s)\t2 file(s) checked\n"; out.String() != want {
+			t.Errorf("output = %q, want %q", out.String(), want)
+		}
+	})
+
+	// The two shapes that move without any --exclude in play, pinned
+	// because the changelog tells operators matching on stdout exactly
+	// which runs can change: `N root(s)` is now reachable with N = 1,
+	// and not only by over-pruning.
+	t.Run("a directory holding one .proto keeps the root(s) form", func(t *testing.T) {
+		lone := t.TempDir()
+		write(t, filepath.Join(lone, "only.proto"), `
+syntax = "proto3";
+package only.v1;
+message O { string x = 1; }
+`)
+		var out bytes.Buffer
+		if err := checkSchemaCmd(&out, []string{"--schema=" + lone}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "OK\t1 root(s)\t1 file(s) checked\n"; out.String() != want {
+			t.Errorf("output = %q, want %q (a directory search, however few roots it found)", out.String(), want)
+		}
+	})
+
+	t.Run("the same file named twice is not the single-file form", func(t *testing.T) {
+		schema := filepath.Join(dir, "keep.proto")
+		var out bytes.Buffer
+		if err := checkSchemaCmd(&out, []string{"--schema=" + schema, "--schema=" + schema}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// Folded to one root, as it always was — but two --schema flags
+		// are not "one --schema naming a file", and the shape follows
+		// what was asked for.
+		if want := "OK\t1 root(s)\t1 file(s) checked\n"; out.String() != want {
+			t.Errorf("output = %q, want %q", out.String(), want)
+		}
+	})
+}
+
+// The count is of roots the patterns took away, not of files the
+// patterns matched. A file pruned from the walk and then named directly
+// by another --schema is a root anyway, and counting it would report a
+// loss that did not happen.
+func TestCheckSchema_SkippedCountExcludesFilesCheckedAnotherWay(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "keep.proto"), `
+syntax = "proto3";
+package keep.v1;
+message K { string x = 1; }
+`)
+	for _, n := range []string{"a", "b"} {
+		write(t, filepath.Join(dir, "vendor", n+".proto"), `
+syntax = "proto3";
+package `+n+`.v1;
+message M`+n+` { string x = 1; }
+`)
+	}
+
+	// Both vendor files pruned, neither named: 2 skipped.
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=vendor"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "OK\t1 root(s)\t1 file(s) checked\t2 skipped\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+
+	// One of them named directly: pruned from the walk, a root anyway,
+	// so only the other is skipped.
+	out.Reset()
+	if err := checkSchemaCmd(&out, []string{
+		"--schema=" + dir,
+		"--schema=" + filepath.Join(dir, "vendor", "a.proto"),
+		"--exclude=vendor",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "OK\t2 root(s)\t2 file(s) checked\t1 skipped\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// A run that excludes nothing grows no field — the count appears only
+// when there is something to report. (The line's shape can still move
+// for such a run, when the directory holds a single .proto; that rule
+// is pinned by TestCheckSchema_OKLineShapeFollowsWhatSchemaNamed.)
+func TestCheckSchema_NoSkippedFieldWithoutExclusions(t *testing.T) {
+	dir := schemaRepo(t, false)
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + filepath.Join(dir, "svc"), "--include=" + dir}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "OK\t3 root(s)\t6 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+	// And an --exclude that matches nothing is the same: no gap, no field.
+	out.Reset()
+	if err := checkSchemaCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "svc"), "--include=" + dir, "--exclude=nothing-matches-this",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "OK\t3 root(s)\t6 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// Counting what was pruned must not be able to fail a run the search
+// itself completed. The count comes from a second, unfiltered walk, and
+// that walk descends into exactly the subtrees the first one pruned: an
+// unreadable directory the filtered walk never opens (fs.SkipDir) is
+// one the counting walk does, and returning its error would make
+// `--exclude=secret` — the flag that made the tree checkable — the
+// thing that breaks the run.
+func TestCheckSchema_CountingPrunedFilesCannotFailTheRun(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "keep.proto"), `
+syntax = "proto3";
+package keep.v1;
+message K { string x = 1; }
+`)
+	secret := filepath.Join(dir, "secret")
+	write(t, filepath.Join(secret, "s.proto"), `
+syntax = "proto3";
+package s.v1;
+message S { string x = 1; }
+`)
+	if err := os.Chmod(secret, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	// Restored first (Cleanup is LIFO) so t.TempDir can remove the tree.
+	t.Cleanup(func() { _ = os.Chmod(secret, 0o700) })
+	if _, err := os.ReadDir(secret); err == nil {
+		t.Skip("a mode-000 directory is still readable here (running as root?)")
+	}
+
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=secret"}); err != nil {
+		t.Fatalf("excluding an unreadable subtree must stay green: %v", err)
+	}
+	// One root, and no skipped field: what could not be read could not
+	// be counted, and an undercounted report is the price of not failing
+	// a run that answered the question it was asked. The count is a
+	// note about the search, never a verdict on it.
+	if want := "OK\t1 root(s)\t1 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }
