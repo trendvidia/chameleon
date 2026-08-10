@@ -72,17 +72,25 @@ func checkSchemaCmd(out io.Writer, args []string) error {
 		if s == "" {
 			return errors.New("empty pattern")
 		}
-		// Reject a malformed pattern where the operator can still see
-		// which flag they typed. filepath.Match only reports
-		// ErrBadPattern once it reaches the bad syntax, so a pattern
-		// tested against "" can come back clean; a name with a
-		// character in it forces the walk.
-		if _, err := filepath.Match(s, "x"); err != nil {
-			return err
+		// A pattern is tested against one element name at a time, and an
+		// element name never holds a separator, so a pattern that does
+		// can only ever match nothing — refused here rather than left to
+		// prune nothing quietly. os.IsPathSeparator rather than a
+		// comparison against filepath.Separator, because the platforms
+		// diverge in both directions: Windows takes `/` as a separator
+		// too, and everywhere else `\` is [filepath.Match]'s escape
+		// character, so `a\*b` — a literal star — has to stay legal.
+		for i := range len(s) {
+			if os.IsPathSeparator(s[i]) {
+				return fmt.Errorf("matches one path element, so it cannot contain %q", s[i:i+1])
+			}
 		}
-		if strings.Contains(s, string(filepath.Separator)) {
-			return errors.New("matches one path element, so it cannot contain " + string(filepath.Separator))
-		}
+		// Syntax is deliberately NOT checked here. filepath.Match only
+		// reports ErrBadPattern once its scan reaches the bad syntax,
+		// and it stops scanning at the first chunk that fails the name,
+		// so no probe name settles the question: Match("vendor*[0-9",
+		// "x") is (false, nil) because "vendor" already failed. The
+		// verdict comes from the match site instead — see [matchesAny].
 		excludes = append(excludes, s)
 		return nil
 	})
@@ -334,7 +342,7 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot,
 				return nil, nil, fmt.Errorf("search --schema %q: %w", arg, err)
 			}
 			if len(found) == 0 {
-				return nil, nil, fmt.Errorf("--schema %q: no .proto files found under this directory", arg)
+				return nil, nil, emptySearchError(arg, abs, excludes)
 			}
 			dirImports = appendUnique(dirImports, abs)
 			for _, f := range found {
@@ -422,6 +430,25 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot,
 	return roots, importPaths, nil
 }
 
+// emptySearchError explains a directory --schema that produced no
+// roots. Blaming the directory is right when it holds no .proto files
+// at all, and wrong once --exclude has pruned every one of them: the
+// operator reads "no .proto files found under this directory", looks
+// at a directory plainly full of them, and debugs the path instead of
+// the pattern. That is the same misdiagnosis [protoFilesUnder] refuses
+// to create for the walk root, and an over-broad pattern reaches it by
+// the other door. The unfiltered walk is redone rather than counted
+// during the first one, because this runs at most once, on the way out
+// of a run that has already failed.
+func emptySearchError(arg, abs string, excludes []string) error {
+	if len(excludes) > 0 {
+		if all, err := protoFilesUnder(abs, nil); err == nil && len(all) > 0 {
+			return fmt.Errorf("--schema %q: --exclude pruned all %d .proto file(s) under this directory", arg, len(all))
+		}
+	}
+	return fmt.Errorf("--schema %q: no .proto files found under this directory", arg)
+}
+
 // appendUnique appends p to dst unless it is already there. The lists
 // it guards are import roots — a handful, typically one — so a linear
 // scan beats carrying a parallel set, and it keeps the order the
@@ -458,7 +485,9 @@ func firstContaining(dirs []string, path string) string {
 // directory of that name at any depth, because the walk stops there
 // rather than because the pattern spans the rest of the path. Within
 // an element the usual Match syntax applies, so "*_test.proto" skips
-// those files wherever they are.
+// those files wherever they are, and a malformed one stops the walk
+// instead of quietly matching nothing — see [matchesAny] for why that
+// verdict can only be reached here.
 //
 // dir itself is never tested. Excluding the directory the operator
 // just named is a contradiction, and reading it as one would turn
@@ -470,13 +499,19 @@ func protoFilesUnder(dir string, excludes []string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if path != dir && matchesAny(excludes, d.Name()) {
-			// Pruning the whole subtree is the point for a directory;
-			// a file is simply not collected.
-			if d.IsDir() {
-				return iofs.SkipDir
+		if path != dir {
+			skip, err := matchesAny(excludes, d.Name())
+			if err != nil {
+				return err
 			}
-			return nil
+			if skip {
+				// Pruning the whole subtree is the point for a directory;
+				// a file is simply not collected.
+				if d.IsDir() {
+					return iofs.SkipDir
+				}
+				return nil
+			}
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".proto") {
 			return nil
@@ -490,18 +525,36 @@ func protoFilesUnder(dir string, excludes []string) ([]string, error) {
 	return found, nil
 }
 
-// matchesAny reports whether name matches any of the patterns. A
-// malformed pattern cannot reach here — the --exclude flag rejects one
-// at parse time, where the operator can still see which flag they
-// typed — so a Match error is treated as "no match" rather than
-// swallowing a name into an exclusion it does not belong in.
-func matchesAny(patterns []string, name string) bool {
+// matchesAny reports whether name matches any of the patterns, and is
+// also where a malformed pattern is caught, because it is the only
+// place that can be: [filepath.Match] reports ErrBadPattern once its
+// scan reaches the bad syntax, and it stops scanning at the first
+// chunk that fails the name, so the same pattern is well-formed or not
+// depending on what it is tested against — Match("vendor*[0-9", "x")
+// is (false, nil) while Match("vendor*[0-9", "vendor") is
+// ErrBadPattern. No probe at flag-parse time settles that.
+//
+// The error is returned rather than read as "no match": swallowing it
+// is how an operator's typo becomes a tree checked unpruned under a
+// green OK line, the silent no-op --exclude already refuses for a
+// pattern with a separator in it. It surfaces wherever it could have
+// mattered, because Match reaches bad syntax only once the chunks
+// before it have matched — a pattern whose leading chunk matches no
+// name in the tree would have pruned nothing however it was completed,
+// and one that does match reaches the bad chunk and fails the run.
+//
+// Every pattern is tried even after one has matched, so an earlier
+// pattern claiming a name cannot hide a later one's syntax error.
+func matchesAny(patterns []string, name string) (bool, error) {
+	matched := false
 	for _, p := range patterns {
-		if ok, err := filepath.Match(p, name); err == nil && ok {
-			return true
+		ok, err := filepath.Match(p, name)
+		if err != nil {
+			return false, fmt.Errorf("--exclude %q: %w", p, err)
 		}
+		matched = matched || ok
 	}
-	return false
+	return matched, nil
 }
 
 // under reports whether path is strictly inside dir. Both must be

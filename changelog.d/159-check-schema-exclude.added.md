@@ -2,13 +2,15 @@
 
   ```sh
   chameleon check-schema --schema=./proto --include=./proto
-  # compile 3 schema root(s): pxf/annotations.proto:4:44: symbol "pxf.required" already defined at third_party/pxf/annotations.proto:4:44
+  # chameleon check-schema: compile 3 schema root(s): pxf/annotations.proto:5:8: symbol "pxf.required" already defined at third_party/pxf/annotations.proto:5:8
 
   chameleon check-schema --schema=./proto --include=./proto --exclude=third_party
   # OK    2 root(s)    3 file(s) checked
   ```
 
-  A pattern matches **one path element** at a time — a directory's or a file's own name — with `filepath.Match` syntax. That is what lets `--exclude=third_party` prune the directory at whatever depth it appears without needing a `**`: the walk stops there, rather than the pattern spanning the rest of the path. Within an element the usual syntax works (`--exclude='*_test.proto'`). A pattern containing a path separator cannot match an element, so it is rejected rather than silently matching nothing — as are a malformed pattern and an empty one.
+  (Which of the two copies that first line names as the offender, and which as the "already defined at", swaps between runs of the same command.)
+
+  A pattern matches **one path element** at a time — a directory's or a file's own name — with `filepath.Match` syntax. That is what lets `--exclude=third_party` prune the directory at whatever depth it appears without needing a `**`: the walk stops there, rather than the pattern spanning the rest of the path. Within an element the usual syntax works (`--exclude='*_test.proto'`). A pattern containing a path separator cannot match an element, so it is rejected rather than silently matching nothing — as is an empty one. A malformed pattern fails the run as well, naming both the flag and the pattern; it is caught while searching rather than while parsing flags, because `filepath.Match` only reports bad syntax once its scan reaches it, so `--exclude='vendor*[0-9'` looks well-formed against every name that does not start with `vendor`. A pattern that prunes *every* `.proto` under the directory says so, instead of reporting the "no .proto files found" that would send you off to check the path.
 
   **What it does not do**, all three deliberate:
 

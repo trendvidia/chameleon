@@ -920,12 +920,80 @@ message ATest { string x = 1; }
 		t.Errorf("output = %q, want %q (one root left, so the single-root line)", out.String(), want)
 	}
 
-	// A malformed pattern is refused at parse time, where the operator
-	// can still see which flag they typed.
+	// A malformed pattern fails the run, naming the flag and the
+	// pattern, rather than quietly matching nothing. Both spellings are
+	// pinned because they fail in different places: "[bad" is bad from
+	// its first character, while "a_test*[0-9" only gives itself away
+	// once a name gets past the leading chunk — filepath.Match stops
+	// scanning where a chunk fails, so Match("a_test*[0-9", "x") is
+	// (false, nil) and no single probe at flag-parse time can tell.
+	for _, pattern := range []string{"[bad", "a_test*[0-9"} {
+		out.Reset()
+		err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=" + pattern})
+		if err == nil || !strings.Contains(err.Error(), "-exclude") || !strings.Contains(err.Error(), pattern) {
+			t.Errorf("--exclude=%s: got %v, want the bad pattern reported by name", pattern, err)
+		}
+	}
+}
+
+// --exclude is repeatable — the flag help, the zsh completion and the
+// fish completion all say so. Pinned because collapsing it to a single
+// value (one fs.String, say) would keep every other test in this file
+// green while honouring only the last flag.
+func TestCheckSchema_ExcludeIsRepeatable(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "keep.proto"), `
+syntax = "proto3";
+package keep.v1;
+message Keep { string x = 1; }
+`)
+	write(t, filepath.Join(dir, "vendor", "a.proto"), `
+syntax = "proto3";
+package vend.v1;
+message A { string x = 1; }
+`)
+	write(t, filepath.Join(dir, "third_party", "b.proto"), `
+syntax = "proto3";
+package tp.v1;
+message B { string x = 1; }
+`)
+
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{
+		"--schema=" + dir, "--exclude=vendor", "--exclude=third_party",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Both pruned, so the one surviving root takes the single-root line.
+	if want := "OK\t" + dir + "\t1 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q (only the last --exclude was honoured?)", out.String(), want)
+	}
+}
+
+// An --exclude that prunes every root has to say so. Reporting "no
+// .proto files found under this directory" sends the operator off to
+// debug a path that is plainly full of them — the same misdiagnosis
+// the walk root is already protected from.
+func TestCheckSchema_ExcludeThatPrunesEverythingBlamesThePattern(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "sub", "a.proto"), `
+syntax = "proto3";
+package a.v1;
+message A { string x = 1; }
+`)
+
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=*.proto"})
+	if err == nil || !strings.Contains(err.Error(), "--exclude pruned all 1 .proto file(s)") {
+		t.Fatalf("got %v, want the pattern blamed rather than the directory", err)
+	}
+
+	// A directory that really holds nothing still blames the directory:
+	// the patterns are innocent there.
 	out.Reset()
-	err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=[bad"})
-	if err == nil || !strings.Contains(err.Error(), "-exclude") {
-		t.Fatalf("got %v, want the bad pattern rejected by name", err)
+	err = checkSchemaCmd(&out, []string{"--schema=" + t.TempDir(), "--exclude=*.proto"})
+	if err == nil || !strings.Contains(err.Error(), "no .proto files found") {
+		t.Fatalf("got %v, want the empty-directory error", err)
 	}
 }
 
@@ -963,24 +1031,39 @@ message Cfg { common.v1.Shared shared = 1; }
 // directory itself, which would otherwise read as "check nothing".
 func TestCheckSchema_ExcludeDoesNotApplyToWhatSchemaNames(t *testing.T) {
 	dir := t.TempDir()
+	write(t, filepath.Join(dir, "own.proto"), `
+syntax = "proto3";
+package own.v1;
+message Own { string x = 1; }
+`)
 	write(t, filepath.Join(dir, "third_party", "a.proto"), `
 syntax = "proto3";
 package a.v1;
 message A { string x = 1; }
 `)
 
-	t.Run("file named directly", func(t *testing.T) {
-		var out bytes.Buffer
-		if err := checkSchemaCmd(&out, []string{
-			"--schema=" + filepath.Join(dir, "third_party", "a.proto"),
-			"--exclude=a.proto",
-		}); err != nil {
-			t.Fatalf("an explicitly named schema must still be checked: %v", err)
-		}
-		if !strings.HasPrefix(out.String(), "OK\t") {
-			t.Errorf("want the file checked\ngot: %q", out.String())
-		}
-	})
+	// The load-bearing shape is one run that both searches a directory
+	// and names a file inside the subtree that search prunes: only the
+	// walk is filtered, so the file the operator pointed at survives.
+	// An --exclude applied to the assembled candidate list instead
+	// would pass a test that never enters the walk at all, and drop the
+	// second root here. Both orders, since first mention decides how a
+	// duplicate is named.
+	for name, order := range map[string][]string{
+		"file named directly, after the directory":  {"--schema=" + dir, "--schema=" + filepath.Join(dir, "third_party", "a.proto")},
+		"file named directly, before the directory": {"--schema=" + filepath.Join(dir, "third_party", "a.proto"), "--schema=" + dir},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			args := append(slices.Clone(order), "--include="+dir, "--exclude=third_party")
+			if err := checkSchemaCmd(&out, args); err != nil {
+				t.Fatalf("an explicitly named schema must still be checked: %v", err)
+			}
+			if want := "OK\t2 root(s)\t2 file(s) checked\n"; out.String() != want {
+				t.Errorf("output = %q, want %q", out.String(), want)
+			}
+		})
+	}
 
 	t.Run("the searched directory itself", func(t *testing.T) {
 		var out bytes.Buffer
@@ -997,13 +1080,37 @@ message A { string x = 1; }
 }
 
 // Decision 3 of #159: no defaults. A conventionally-named directory is
-// walked like any other until someone asks for it to be skipped.
+// walked like any other until someone asks for it to be skipped —
+// dot-directories included, which is what a walk that "helpfully"
+// skipped hidden entries would get wrong. That vendor/ and
+// third_party/ are not skipped implicitly is already what the first
+// half of TestCheckSchema_ExcludePrunesAVendoredDuplicate asserts, so
+// this pins the names that test does not use rather than paying for
+// the duplicate-symbol compile a second time.
 func TestCheckSchema_NothingIsExcludedByDefault(t *testing.T) {
-	dir := vendoredRepo(t)
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "own.proto"), `
+syntax = "proto3";
+package own.v1;
+message Own { string x = 1; }
+`)
+	write(t, filepath.Join(dir, "vendor", "v.proto"), `
+syntax = "proto3";
+package vend.v1;
+message V { string x = 1; }
+`)
+	write(t, filepath.Join(dir, ".hidden", "h.proto"), `
+syntax = "proto3";
+package hidden.v1;
+message H { string x = 1; }
+`)
+
 	var out bytes.Buffer
-	err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--include=" + dir})
-	if err == nil || !strings.Contains(err.Error(), "already defined") {
-		t.Fatalf("got %v — third_party/ must not be skipped implicitly", err)
+	if err := checkSchemaCmd(&out, []string{"--schema=" + dir}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "OK\t3 root(s)\t3 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q (vendor/ and .hidden/ are roots until excluded)", out.String(), want)
 	}
 }
 

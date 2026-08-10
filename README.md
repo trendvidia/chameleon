@@ -428,13 +428,15 @@ The directory form is what replaces a glob; a glob is not a shorter spelling of 
 
 ```sh
 chameleon check-schema --schema=./proto --include=./proto
-# compile 3 schema root(s): pxf/annotations.proto:4:44: symbol "pxf.required" already defined at third_party/pxf/annotations.proto:4:44
+# chameleon check-schema: compile 3 schema root(s): pxf/annotations.proto:5:8: symbol "pxf.required" already defined at third_party/pxf/annotations.proto:5:8
 
 chameleon check-schema --schema=./proto --include=./proto --exclude=third_party
 # OK    2 root(s)    3 file(s) checked
 ```
 
-A pattern matches **one path element** at a time — a directory's or a file's own name — using [`filepath.Match`](https://pkg.go.dev/path/filepath#Match) syntax. Matching per element is what lets `--exclude=third_party` prune that directory at whatever depth it appears without a `**`: the walk stops there, rather than the pattern spanning the rest of the path. Within an element the usual syntax works (`--exclude='*_test.proto'`), and for the same reason a pattern may not contain a path separator — that is rejected rather than silently matching nothing, as is a malformed pattern and an empty one.
+Which of the two copies that first line names as the offender, and which as the "already defined at", swaps between runs of the same command — so match on `already defined` if you grep for it, not on a file.
+
+A pattern matches **one path element** at a time — a directory's or a file's own name — using [`filepath.Match`](https://pkg.go.dev/path/filepath#Match) syntax. Matching per element is what lets `--exclude=third_party` prune that directory at whatever depth it appears without a `**`: the walk stops there, rather than the pattern spanning the rest of the path. Within an element the usual syntax works (`--exclude='*_test.proto'`), and for the same reason a pattern may not contain a path separator — that is rejected rather than silently matching nothing, as is an empty one. A malformed pattern fails the run too, naming the flag and the pattern; it is caught while searching rather than while parsing flags, because `filepath.Match` only reports bad syntax once its scan reaches it (`--exclude='vendor*[0-9'` looks well-formed against any name that does not start with `vendor`). A pattern that prunes *every* `.proto` under the directory is an error that says so, rather than the "no `.proto` files found" that would send you off to check the path.
 
 Three things it deliberately does not do:
 
