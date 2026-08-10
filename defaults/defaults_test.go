@@ -210,6 +210,42 @@ message M { repeated string tags = 1 [(pxf.default) = "ignored"]; }`
 	assert.Contains(t, err.Error(), "def_test.v1.M.tags")
 }
 
+// TestApply_SkipsListsAndMaps covers the skip that survives in
+// [defaults.Apply] for the callers the bind-time check does not reach:
+// Apply is exported and takes any descriptor, and a resolve whose
+// layers are all optional-and-absent never parses a layer, so nothing
+// ever binds its schema. Without the skip those callers would get
+// "default values not supported for repeated field" out of
+// pxf.ApplyDefault instead of the documented no-op.
+//
+// The two tests above pin the placement's rejection upstream; this one
+// pins what Apply itself still does, so deleting the guard is a test
+// failure rather than a silent behaviour change.
+func TestApply_SkipsListsAndMaps(t *testing.T) {
+	const src = `
+syntax = "proto3";
+package def_test.v1;
+import "pxf/annotations.proto";
+message M {
+  repeated string tags = 1 [(pxf.default) = "ignored"];
+  map<string, string> labels = 2 [(pxf.default) = "ignored"];
+}`
+
+	desc := compileMessage(t, src, "def_test.v1.M")
+	msg := dynamicpb.NewMessage(desc)
+	present := map[string]struct{}{}
+
+	require.NoError(t, defaults.Apply(msg, present),
+		"a (pxf.default) on a list or map must be skipped, not surfaced as an error")
+
+	r := msg.ProtoReflect()
+	assert.Equal(t, 0, r.Get(desc.Fields().ByName("tags")).List().Len(),
+		"repeated fields don't accept defaults")
+	assert.Equal(t, 0, r.Get(desc.Fields().ByName("labels")).Map().Len(),
+		"map fields don't accept defaults")
+	assert.Empty(t, present, "a skipped default must not join the presence union")
+}
+
 func TestApply_NilMessage(t *testing.T) {
 	require.Error(t, defaults.Apply(nil, nil))
 }
@@ -324,8 +360,8 @@ func inner(t *testing.T, m protoreflect.Message, name string) protoreflect.Value
 // instead of being dropped by the atomic check. The table covers
 // every type pxf can parse a default literal for: Timestamp,
 // Duration, BigInt, Decimal, BigFloat, and eight of the nine
-// google.protobuf wrappers. The ninth, BytesValue, is rejected
-// upstream — see TestApply_BytesValueWrapperDefaultRejected.
+// google.protobuf wrappers. The ninth, BytesValue, takes a base64
+// literal and is covered by TestApply_BytesDefaultsDecode.
 func TestApply_WKTDefaultsApplied(t *testing.T) {
 	desc := compileWKT(t)
 	msg, present := parseInput(t, desc, ``) // nothing set by any layer
@@ -534,14 +570,21 @@ message M { google.protobuf.Duration d = 1 [(pxf.default) = "not-a-duration"]; }
 // layer set, so a bogus default on a message field a layer did set
 // stays out of the way (and the pass still descends into it).
 //
-// Built without parseInput on purpose. Since protowire-go v1.4.0 a
-// (pxf.default) on a message type PXF has no literal for does not bind
-// (trendvidia/protowire-go#69), so this schema fails the parse and the
-// gating can no longer be reached through a layer — which is what
-// issue #134 asked for, answered upstream. The rule still governs
-// defaults.Apply for a caller who hands it a descriptor that did not
-// come through a PXF parse, and that is the path pinned here; the
-// error it gates is pinned by TestApply_UnsupportedMessageDefaultErrors.
+// Parsed with SkipValidate rather than hand-built. Since protowire-go
+// v1.4.0 a (pxf.default) on a message type PXF has no literal for does
+// not bind (trendvidia/protowire-go#69), so this schema fails an
+// ordinary parse and the gating can no longer be reached through a
+// layer — which is what issue #134 asked for, answered upstream. The
+// rule still governs defaults.Apply for a caller who hands it a
+// descriptor that did not come through a validated parse, and that is
+// the path pinned here; the error it gates is pinned by
+// TestApply_UnsupportedMessageDefaultErrors.
+//
+// SkipValidate keeps the presence map coming from a real decode. The
+// gate reads the *parent* path ("i"), not just "i.y", so hardcoding
+// the set would stop asking upstream what a nested block marks present
+// and would keep passing if that shape ever changed — the coupling is
+// the point of the test.
 func TestApply_UnsupportedMessageDefaultSkippedWhenLayerSet(t *testing.T) {
 	const src = `
 syntax = "proto3";
@@ -552,13 +595,15 @@ message M { Inner i = 1 [(pxf.default) = "nope"]; }`
 
 	desc := compileMessage(t, src, "def_test.v1.M")
 	msg := dynamicpb.NewMessage(desc)
-
-	// Stand in for what a layer setting `i { y = "set" }` would produce.
-	iField := desc.Fields().ByName("i")
-	inner := msg.NewField(iField).Message()
-	inner.Set(inner.Descriptor().Fields().ByName("y"), protoreflect.ValueOfString("set"))
-	msg.Set(iField, protoreflect.ValueOfMessage(inner))
-	present := map[string]struct{}{"i": {}, "i.y": {}}
+	res, err := pxf.UnmarshalOptions{SkipPostDecode: true, SkipValidate: true}.
+		UnmarshalFull([]byte("i {\n  y = \"set\"\n}\n"), msg)
+	require.NoError(t, err)
+	present := make(map[string]struct{})
+	for _, p := range res.PresentFields() {
+		present[p] = struct{}{}
+	}
+	require.Contains(t, present, "i",
+		"the gate reads the parent path; without it this test proves nothing")
 
 	require.NoError(t, defaults.Apply(msg, present),
 		"a bogus default on a path some layer set must not be consulted")
@@ -621,6 +666,56 @@ func TestApply_OneofDefaultAppliesWhenCaseUnset(t *testing.T) {
 	assert.True(t, marked)
 }
 
+// TestApply_NulledOneofMemberSuppressesSiblingDefault is the same
+// data-loss shape reached through an explicit clear. `file = null`
+// leaves "file" in the presence union but unset on the message, so a
+// guard that asked msg.WhichOneof would see a free oneof and fill
+// timeout — turning the operator's deliberate "no backend" into a
+// backend nobody asked for.
+//
+// The rule is upstream's: [pxf.ApplyDefault]'s godoc makes it the
+// SkipPostDecode caller's obligation, and postDecode reads the same
+// presence set, "with a member bound to null counting as present"
+// (trendvidia/protowire-go#72). TestApply_NulledOneofMatchesUpstream
+// pins the two against each other.
+func TestApply_NulledOneofMemberSuppressesSiblingDefault(t *testing.T) {
+	desc := compileMessage(t, oneofProtoSrc, "def_test.v1.OneofConfig")
+	msg, present := parseInput(t, desc, `file = null`)
+	require.Contains(t, present, "file",
+		"a nulled member must reach the presence union, or this test proves nothing")
+
+	require.NoError(t, defaults.Apply(msg, present))
+
+	r := msg.ProtoReflect()
+	fields := r.Descriptor().Fields()
+	assert.False(t, r.Has(fields.ByName("timeout")),
+		"an explicitly nulled member must suppress its sibling's default")
+	assert.False(t, r.Has(fields.ByName("file")), "and null must stay cleared")
+	_, marked := present["timeout"]
+	assert.False(t, marked, "a skipped default must not join the presence union")
+}
+
+// TestApply_NulledOneofMatchesUpstream is the contract half: chameleon
+// runs the defaults pass itself (SkipPostDecode), so the only thing
+// keeping it honest is agreeing with the pass it replaced. Same
+// document, both paths, same answer.
+func TestApply_NulledOneofMatchesUpstream(t *testing.T) {
+	desc := compileMessage(t, oneofProtoSrc, "def_test.v1.OneofConfig")
+
+	chameleonMsg, present := parseInput(t, desc, `file = null`)
+	require.NoError(t, defaults.Apply(chameleonMsg, present))
+
+	upstreamMsg := dynamicpb.NewMessage(desc)
+	_, err := pxf.UnmarshalFull([]byte(`file = null`), upstreamMsg) // post-decode ON
+	require.NoError(t, err)
+
+	timeoutFd := desc.Fields().ByName("timeout")
+	assert.Equal(t,
+		upstreamMsg.ProtoReflect().Has(timeoutFd),
+		chameleonMsg.ProtoReflect().Has(timeoutFd),
+		"chameleon's defaults pass must agree with protowire-go's on a nulled oneof member")
+}
+
 // TestApply_SyntheticOneofStillDefaults guards the guard: proto3
 // `optional` compiles to a synthetic one-field oneof. There is no
 // sibling to protect and no choice to override, so those fields must
@@ -647,9 +742,13 @@ func TestApply_SyntheticOneofStillDefaults(t *testing.T) {
 // disappeared, and the pair collapses to this.
 func TestApply_BytesDefaultsDecode(t *testing.T) {
 	cases := []struct {
-		name  string
-		src   string
-		field string
+		name string
+		src  string
+		// field is the annotated field; wrapper says whether the decoded
+		// bytes live one level down in the WKT's `value`. Reading it off
+		// the field *name* would silently mis-dispatch a case added later.
+		field   string
+		wrapper bool
 	}{
 		{
 			name: "bytes_value_wrapper",
@@ -659,7 +758,8 @@ package def_test.v1;
 import "pxf/annotations.proto";
 import "google/protobuf/wrappers.proto";
 message M { google.protobuf.BytesValue wrapped = 1 [(pxf.default) = "aGVsbG8="]; }`,
-			field: "wrapped",
+			field:   "wrapped",
+			wrapper: true,
 		},
 		{
 			name: "plain_bytes_scalar",
@@ -678,8 +778,9 @@ message M { bytes raw = 1 [(pxf.default) = "aGVsbG8="]; }`,
 			require.NoError(t, defaults.Apply(msg, map[string]struct{}{}))
 
 			got := get(t, msg, c.field)
-			if c.field == "wrapped" {
-				got = sub(t, msg, c.field).Get(sub(t, msg, c.field).Descriptor().Fields().ByName("value"))
+			if c.wrapper {
+				w := sub(t, msg, c.field)
+				got = inner(t, w, "value")
 			}
 			assert.Equal(t, []byte("hello"), got.Bytes(), "base64 literal must decode")
 		})
