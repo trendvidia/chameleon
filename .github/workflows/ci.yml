@@ -4,7 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # Deliberately no `branches:` filter, unlike `push:` above. A filter
+    # here matches the PR's BASE, so `branches: [main]` gave a PR stacked
+    # on anything else zero checks — not a failure, not a skip, an empty
+    # check list that reads as green (#147). Stacking is the normal shape
+    # here: a dependency bump lands on its own branch and the follow-up
+    # that needs the new API targets the bump, which is exactly the change
+    # that most wants a Linux leg. An allowlist of base prefixes was the
+    # alternative and would be wrong again, silently, for the next prefix
+    # nobody predicted. The cost is bounded — private repo, self-hosted
+    # runners, small PR volume.
+    #
     # `labeled`/`unlabeled` are on top of the default three
     # (opened/synchronize/reopened) solely so the changelog gate
     # re-evaluates when someone applies `skip-changelog`: no event fires
