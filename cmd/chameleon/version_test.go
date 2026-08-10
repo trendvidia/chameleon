@@ -39,10 +39,39 @@ func TestCompletionCmd_Bash(t *testing.T) {
 	assert.Contains(t, got, "_chameleon()", "should emit bash function")
 	assert.Contains(t, got, "complete -F _chameleon chameleon",
 		"should register the completion function")
-	assert.Contains(t, got, "explain verify check-schema migrate hash lint version completion",
-		"should list all subcommands")
-	assert.Contains(t, got, "check-schema)",
-		"a subcommand in the list must also have its flag case")
+	offered := bashSubcommands(t, got)
+	assert.Subset(t, offered,
+		[]string{"explain", "verify", "check-schema", "migrate", "hash", "lint", "version", "completion"},
+		"the top-level subcommand list dropped an entry")
+	// Every subcommand the list offers must also have a case in the
+	// flag switch, or completing after its name silently produces
+	// nothing — the gap that would otherwise let a half-wired
+	// subcommand ship. Asserted over the list rather than for one name,
+	// so the next subcommand added is covered without editing this.
+	// version and help take no flags of their own.
+	for _, sub := range offered {
+		switch sub {
+		case "version", "help":
+			continue
+		}
+		assert.Contains(t, got, "\n        "+sub+")\n",
+			"subcommand %q is offered by the completion list but has no flag case", sub)
+	}
+}
+
+// bashSubcommands returns the subcommands the generated bash script
+// offers at the top level, read out of its `local subcmds="…"` line so
+// the assertions above are about what the script says rather than a
+// copy of it kept in step by hand.
+func bashSubcommands(t *testing.T, script string) []string {
+	t.Helper()
+	const marker = `local subcmds="`
+	i := strings.Index(script, marker)
+	require.GreaterOrEqual(t, i, 0, "bash completion should declare a subcmds list")
+	rest := script[i+len(marker):]
+	j := strings.Index(rest, `"`)
+	require.GreaterOrEqual(t, j, 0, "subcmds list is unterminated")
+	return strings.Fields(rest[:j])
 }
 
 func TestCompletionCmd_Zsh(t *testing.T) {

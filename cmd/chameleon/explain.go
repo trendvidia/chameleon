@@ -188,7 +188,19 @@ func compileSchema(schemaPath, fullName string, includePaths []string) (protoref
 	if err != nil {
 		return nil, err
 	}
-	d, err := files.AsResolver().FindDescriptorByName(protoreflect.FullName(fullName))
+	return findMessage(files, fullName)
+}
+
+// findMessage looks fullName up in everything files[0] can see: the
+// schema file itself, its imports, and their public imports — which is
+// exactly the set a message reference inside the schema could name.
+//
+// Not [linker.Files.AsResolver]: that searches only the files named on
+// the command line, and compileSchemaFiles names one. A message
+// declared in an imported common.proto would come back "not found"
+// from a closure that plainly contains it.
+func findMessage(files linker.Files, fullName string) (protoreflect.MessageDescriptor, error) {
+	d, err := linker.ResolverFromFile(files[0]).FindDescriptorByName(protoreflect.FullName(fullName))
 	if err != nil {
 		return nil, fmt.Errorf("find message %q: %w", fullName, err)
 	}
@@ -212,8 +224,17 @@ func compileSchemaFiles(schemaPath string, includePaths []string) (linker.Files,
 	// Verify the file exists up-front so callers get a clean error
 	// instead of protocompile's "could not resolve path" message
 	// pointing at the same file from inside the import-search loop.
-	if _, err := os.Stat(schemaPath); err != nil {
+	// Regular-file, not merely exists: a directory otherwise reaches
+	// protocompile and comes back as "read <dir>: is a directory",
+	// which is the message this check exists to avoid, and a directory
+	// is the likely wrong argument now that check-schema takes a
+	// --schema a caller may reasonably think means "a proto tree".
+	st, err := os.Stat(schemaPath)
+	if err != nil {
 		return nil, fmt.Errorf("read schema %s: %w", schemaPath, err)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("read schema %s: not a regular file", schemaPath)
 	}
 	// Search the schema's own directory first (so the schema resolves
 	// by basename), then any --include paths the caller passed (so

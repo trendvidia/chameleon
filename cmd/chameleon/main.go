@@ -52,6 +52,14 @@
 //	    authenticates them). Pass --strict to fail on layers without
 //	    a hash.
 //
+//	chameleon check-schema --schema=config.proto [--message=app.v1.AppConfig]
+//	    Check a .proto against the PXF bind-time rules — reserved
+//	    names, (pxf.key) / (pxf.default) / (pxf.required) placement —
+//	    across its transitive import closure. The only --schema
+//	    subcommand that resolves nothing: no chain, no layers, no
+//	    environment. --include adds import roots (protoc -I);
+//	    --message additionally asserts that message exists.
+//
 //	chameleon migrate --chain=chain.pxf --transform=add-field ...
 //	    Walk a chain spec and apply a field-level transform
 //	    (add-field / delete-field / rename-field) to every layer.

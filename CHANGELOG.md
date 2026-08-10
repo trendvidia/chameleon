@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Non-zero exit and one line per violation otherwise. **The violation names the file that declares it, which need not be the one you passed**: since [protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71) the checks cover the transitive import closure, so a misplaced annotation in a shared `common.proto` fails every schema importing it, whether or not the importing message refers to the offending type. Run this in the repo that *owns* a shared schema — a consumer's resolve is the wrong place to find out, and a schema-only repo has nothing else to run.
 
-  `--message` is optional and does **not** narrow the check; it only additionally asserts the named message exists. The file count on the `OK` line is the closure size, so `1 file(s) checked` on a schema you believe imports something is the cheapest signal that `--include` is wrong.
+  `--message` is optional and does **not** narrow the check; it only additionally asserts the named message exists, in the schema or in anything it imports. The file count on the `OK` line is the closure size rather than the number of files named, so it says how much of the closure a green run actually spoke for.
 
 - **`docs/RELEASING.md`** — the tag order the three modules have to be released in, and what a stale `require` looks like when it goes wrong. Worth reading before cutting v0.23.0.
 

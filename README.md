@@ -320,6 +320,7 @@ Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/ch
 - `chameleon reveal --field=<path>` — print the plaintext of a single Secret-typed field to stdout (no trailing newline; suitable for `$(...)` substitution). Same input flags as `explain`.
 - `chameleon bundle build` — produce a per-module distribution bundle (chain spec + narrowed, re-encrypted layers as a zip). `--base64` for paste-into-secret-manager-field output, `--force` to truncate-overwrite an existing `--out` file. See "[Distribution bundles](#distribution-bundles)".
 - `chameleon verify` — check `@header.content_sha256` on every layer the chain resolves to. Encrypted layers are skipped (sops already authenticates them).
+- `chameleon check-schema --schema=<file.proto>` — check a `.proto` and its transitive import closure against the PXF bind-time rules. Resolves nothing: no chain, no layers, no environment. See "[`chameleon check-schema` CLI](#chameleon-check-schema-cli)".
 - `chameleon migrate` — bulk-edit layer files in a chain spec. Decrypts encrypted layers, applies an AST-level transform (add-field / delete-field / rename-field), re-encrypts preserving the original key set.
 - `chameleon hash` — print the canonical body SHA-256 of a single layer file. Use this value as the `@header.content_sha256` on the layer.
 - `chameleon version` — print the installed chameleon version, Go toolchain, and commit (from VCS-aware module info).
@@ -376,8 +377,8 @@ Encrypted layers are skipped — sops already authenticates the ciphertext.
 Checks a `.proto` against the PXF bind-time rules — PXF-reserved names, and `(pxf.key)` / `(pxf.default)` / `(pxf.required)` placement — across its **transitive import closure**. No chain, no layers, no environment: the rules depend on the descriptor alone, so one run answers for every environment at once.
 
 ```sh
-chameleon check-schema --schema=config.proto
-# OK    config.proto    4 file(s) checked
+chameleon check-schema --schema=app.proto
+# OK    app.proto    4 file(s) checked
 
 chameleon check-schema --schema=config.proto --include=./proto
 # common.proto: field "common.v1.Unreferenced.labels": invalid (pxf.default) = "nope": …
@@ -386,9 +387,9 @@ chameleon check-schema --schema=config.proto --include=./proto
 
 Note which file the violation names. `config.proto` above is conformant; the annotation is in a `common.proto` it imports, and since [protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71) that fails every schema in the closure whether or not the importing message refers to the offending type. **Run this in the repo that owns a shared schema, not only in the ones that consume it** — otherwise the first sign is a downstream build breaking.
 
-`--message` is optional and does not narrow the check: the rules are per file closure, not per message. It only additionally asserts the named message exists, which is worth having in CI when a schema and its consumer's message name are meant to move together.
+`--message` is optional and does not narrow the check: the rules are per file closure, not per message. It only additionally asserts the named message exists — in the schema or in anything it imports — which is worth having in CI when a schema and its consumer's message name are meant to move together.
 
-The file count on the `OK` line is the closure size. A `1 file(s) checked` result on a schema you believe imports something is the cheapest signal that `--include` is wrong.
+The file count on the `OK` line is the closure size, not the number of files you named — `4 file(s) checked` for a single `--schema` says three imported files were checked too, and that a violation from a later run may belong to any of them. It does not double as an `--include` check: an import root that is missing or wrong fails the compile outright rather than yielding a quietly smaller closure.
 
 This is the CLI half of [#134](https://github.com/trendvidia/chameleon/issues/134), and it is the answer for a repo that only *authors* schemas and hands them to someone else — a consumer never runs its CLI. The library half, which checks the same rules at `resolver.New` so a program that constructs a Resolver is covered without running anything, is [#143](https://github.com/trendvidia/chameleon/pull/143).
 
@@ -956,7 +957,7 @@ A goroutine-leak guard test runs Load+Destroy in a tight 500-iteration loop and 
 
 ```
 chain/                  ChainSpec expansion + LoadSpec/ParseSpec runtime helpers
-cmd/chameleon/          CLI: explain (per-field provenance) / verify (@header.content_sha256) / migrate (bulk layer edits) / hash / lint (go/analysis-style linter flagging *pxfv1.Secret.Value reads)
+cmd/chameleon/          CLI: explain (per-field provenance) / verify (@header.content_sha256) / check-schema (PXF bind-time rules over a .proto closure) / migrate (bulk layer edits) / hash / lint (go/analysis-style linter flagging *pxfv1.Secret.Value reads)
 cmd/protoc-gen-chameleon-go/   protoc plugin emitting typed Secret accessors
 defaults/               (pxf.default) post-merge pass
 examples/buf/           working buf.gen.yaml + sample schema

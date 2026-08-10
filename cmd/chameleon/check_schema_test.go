@@ -9,6 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 // annotationsSrc is the minimal pxf extension file the fixtures import.
@@ -136,6 +140,163 @@ message Config { string base_url = 1; }
 			t.Fatalf("got %v, want a find-message error", err)
 		}
 	})
+}
+
+// The closure is what is checked, so --message has to resolve over the
+// closure too: a message declared in an imported common.proto exists as
+// far as this command is concerned, and pinning it in CI is exactly the
+// shared-schema case the command is for.
+func TestCheckSchema_MessageFlagResolvesThroughImports(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "common.proto"), `
+syntax = "proto3";
+package common.v1;
+message Shared { string tenant = 1; }
+`)
+	schema := filepath.Join(dir, "config.proto")
+	write(t, schema, `
+syntax = "proto3";
+package myapp.v1;
+import "common.proto";
+message AppConfig { common.v1.Shared shared = 1; }
+`)
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + schema, "--message=common.v1.Shared"}); err != nil {
+		t.Fatalf("message declared in an imported file rejected: %v", err)
+	}
+	if !strings.HasPrefix(out.String(), "OK\t") {
+		t.Errorf("output %q does not start with OK", out.String())
+	}
+}
+
+// A bad --message must not swallow the violation report: the report is
+// the command's primary output, and a CI job that mistypes a message
+// name should still be told what else is wrong.
+func TestCheckSchema_MessageErrorDoesNotSuppressViolations(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "pxf", "annotations.proto"), annotationsSrc)
+	schema := filepath.Join(dir, "app.proto")
+	write(t, schema, `
+syntax = "proto3";
+package app.v1;
+import "pxf/annotations.proto";
+message Config {
+  repeated string tags = 1 [(pxf.default) = "ignored"];
+}
+`)
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema=" + schema, "--message=app.v1.Typo"})
+	if err == nil || !strings.Contains(err.Error(), `find message "app.v1.Typo"`) {
+		t.Fatalf("got %v, want a find-message error", err)
+	}
+	if !strings.Contains(out.String(), `field "app.v1.Config.tags"`) {
+		t.Errorf("violation must still be reported\ngot: %s", out.String())
+	}
+	// …and the success line must not be, since neither check passed.
+	if strings.Contains(out.String(), "OK\t") {
+		t.Errorf("unexpected OK line\ngot: %s", out.String())
+	}
+}
+
+// --include is the only way to check a schema whose imports live
+// elsewhere, which is the normal shape of a schema repo. Both roots are
+// needed here, so this also pins that the flag is repeatable.
+func TestCheckSchema_IncludeResolvesImportsOutsideTheSchemaDir(t *testing.T) {
+	dir := t.TempDir()
+	annDir := filepath.Join(dir, "ann")
+	libDir := filepath.Join(dir, "lib")
+	write(t, filepath.Join(annDir, "pxf", "annotations.proto"), annotationsSrc)
+	write(t, filepath.Join(libDir, "common.proto"), `
+syntax = "proto3";
+package common.v1;
+import "pxf/annotations.proto";
+message Shared { string tenant = 1 [(pxf.default) = "acme"]; }
+`)
+	schema := filepath.Join(dir, "schema", "config.proto")
+	write(t, schema, `
+syntax = "proto3";
+package myapp.v1;
+import "common.proto";
+message AppConfig { common.v1.Shared shared = 1; }
+`)
+
+	t.Run("without include the import does not resolve", func(t *testing.T) {
+		var out bytes.Buffer
+		err := checkSchemaCmd(&out, []string{"--schema=" + schema})
+		if err == nil || !strings.Contains(err.Error(), "compile") {
+			t.Fatalf("got %v, want a compile error for the unresolvable import", err)
+		}
+	})
+
+	t.Run("with both roots it compiles and checks the closure", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := checkSchemaCmd(&out, []string{
+			"--schema=" + schema,
+			"--include=" + libDir,
+			"--include=" + annDir,
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// config + common + pxf/annotations + descriptor.proto.
+		if !strings.Contains(out.String(), "4 file(s) checked") {
+			t.Errorf("want the 4-file closure\ngot: %s", out.String())
+		}
+	})
+}
+
+// Flag parsing stops at the first positional argument, so accepting one
+// would silently drop every flag after it. Rejecting is the only way a
+// caller learns that `--schema=a.proto b.proto` checked one file.
+func TestCheckSchema_RejectsPositionalArguments(t *testing.T) {
+	dir := t.TempDir()
+	schema := filepath.Join(dir, "app.proto")
+	write(t, schema, `
+syntax = "proto3";
+package app.v1;
+message Config { string base_url = 1; }
+`)
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema=" + schema, "other.proto", "--include=./lib"})
+	if err == nil || !strings.Contains(err.Error(), `unexpected argument "other.proto"`) {
+		t.Fatalf("got %v, want the extra argument rejected", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("nothing should be checked\ngot: %s", out.String())
+	}
+}
+
+// A directory is the likely wrong --schema, since per-directory
+// checking is the shape a schema repo wants. The up-front stat exists
+// so it does not surface as protocompile's "is a directory".
+func TestCheckSchema_DirectorySchemaIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema=" + dir})
+	if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("got %v, want a not-a-regular-file error", err)
+	}
+}
+
+// A placeholder stands in for an import that did not resolve. Upstream's
+// validation walk skips it, so counting it here would put a file in the
+// OK line that ValidateFile never inspected.
+func TestClosureSize_SkipsPlaceholders(t *testing.T) {
+	fdp := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("app.proto"),
+		Syntax:     proto.String("proto3"),
+		Package:    proto.String("app.v1"),
+		Dependency: []string{"missing.proto"},
+	}
+	fd, err := (protodesc.FileOptions{AllowUnresolvable: true}).New(fdp, nil)
+	if err != nil {
+		t.Fatalf("build descriptor: %v", err)
+	}
+	if imps := fd.Imports(); imps.Len() != 1 || !imps.Get(0).IsPlaceholder() {
+		t.Fatalf("fixture should carry one placeholder import")
+	}
+	if got := closureSize(fd); got != 1 {
+		t.Errorf("closureSize = %d, want 1 (the placeholder must not be counted)", got)
+	}
 }
 
 // --message must not change the verdict: the bind-time rules are a

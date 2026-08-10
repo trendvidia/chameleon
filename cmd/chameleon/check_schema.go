@@ -14,7 +14,7 @@ import (
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
-// ErrSchemaViolations is returned when the schema carries at least one
+// errSchemaViolations is returned when the schema carries at least one
 // PXF bind-time violation. The violations themselves are printed to
 // the command's output; this only carries the count, so main's
 // "chameleon check-schema: …" line stays a summary rather than
@@ -62,8 +62,9 @@ that OWNS the shared schema, not only in the ones that consume it.
 
 --message is optional. It does not change what is checked — the rules
 are per file closure, not per message — it only additionally asserts
-that the named message exists, which is worth having in CI when the
-schema and the consumer's message name are meant to move together.
+that the named message exists, in the schema or in anything it imports,
+which is worth having in CI when the schema and the consumer's message
+name are meant to move together.
 
 Usage:
     chameleon check-schema --schema=config.proto
@@ -85,6 +86,15 @@ Flags:`)
 		fs.Usage()
 		return errors.New("--schema is required")
 	}
+	// The schema is named by --schema, so a positional argument is
+	// always a mistake — and never a harmless one: flag parsing stops
+	// at the first non-flag argument, so `--schema=a.proto b.proto
+	// --include=./lib` silently drops the --include and then fails the
+	// compile on an import it could have resolved.
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return fmt.Errorf("unexpected argument %q (the schema is named by --schema)", fs.Arg(0))
+	}
 
 	files, err := compileSchemaFiles(*schema, includePaths)
 	if err != nil {
@@ -94,33 +104,30 @@ Flags:`)
 	// transitive imports.
 	fd := files[0]
 
-	// --message is checked before the violations are reported, so a
-	// typo'd message name is not buried under a conformant-schema
-	// success line.
-	if *message != "" {
-		d, err := files.AsResolver().FindDescriptorByName(protoreflect.FullName(*message))
-		if err != nil {
-			return fmt.Errorf("find message %q: %w", *message, err)
-		}
-		if _, ok := d.(protoreflect.MessageDescriptor); !ok {
-			return fmt.Errorf("%q is not a message", *message)
-		}
-	}
-
 	violations := pxf.ValidateFile(fd)
-	if len(violations) == 0 {
-		// The closure size is worth printing rather than a bare "OK":
-		// the whole reason this command exists is that the checked set
-		// is larger than the file named, and a "1 file" result on a
-		// schema the author believes imports something is the cheapest
-		// possible signal that --include is wrong.
-		fmt.Fprintf(out, "OK\t%s\t%d file(s) checked\n", *schema, closureSize(fd))
-		return nil
-	}
 	for _, v := range violations {
 		fmt.Fprintln(out, v.String())
 	}
-	return fmt.Errorf("%w: %d violation(s)", errSchemaViolations, len(violations))
+
+	// --message is an additional assertion, not a narrowing, so it is
+	// checked after the violation report — a typo'd message name must
+	// not swallow the command's primary output — and before the success
+	// line, so the typo is not buried under it either.
+	if *message != "" {
+		if _, err := findMessage(files, *message); err != nil {
+			return err
+		}
+	}
+
+	if len(violations) > 0 {
+		return fmt.Errorf("%w: %d violation(s)", errSchemaViolations, len(violations))
+	}
+	// The closure size is worth printing rather than a bare "OK": the
+	// whole reason this command exists is that the checked set is
+	// larger than the file named, so the count is what tells an author
+	// how much of it this run actually spoke for.
+	fmt.Fprintf(out, "OK\t%s\t%d file(s) checked\n", *schema, closureSize(fd))
+	return nil
 }
 
 // closureSize counts the distinct files in fd's transitive import
@@ -131,7 +138,11 @@ func closureSize(fd protoreflect.FileDescriptor) int {
 	seen := map[string]struct{}{}
 	var walk func(protoreflect.FileDescriptor)
 	walk = func(f protoreflect.FileDescriptor) {
-		if f == nil {
+		// Placeholders are skipped for the same reason upstream's walk
+		// skips them: one stands in for an import that did not resolve,
+		// declares nothing and imports nothing. Counting it would claim
+		// a file ValidateFile never inspected.
+		if f == nil || f.IsPlaceholder() {
 			return
 		}
 		if _, dup := seen[f.Path()]; dup {
