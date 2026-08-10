@@ -12,7 +12,7 @@
 // tagged: `go install pkg@version` rejects a module whose go.mod carries
 // a replace, so tagging with them in place breaks every pinned and
 // @latest install of the CLI, and a pushed tag cannot be recalled.
-// docs/RELEASING.md step 4 has the command and the pre-tag assertion.
+// docs/RELEASING.md step 5 has the command and the pre-tag assertion.
 module github.com/trendvidia/chameleon/cmd/chameleon
 
 go 1.26.1
@@ -158,3 +158,11 @@ require (
 	gopkg.in/ini.v1 v1.67.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// Local development and CI resolve the sibling modules from the
+// working tree; consumers ignore these. DROP BOTH BEFORE TAGGING THIS
+// MODULE — `go install pkg@version` refuses a go.mod carrying a
+// replace. See docs/RELEASING.md step 5.
+replace github.com/trendvidia/chameleon => ../../
+
+replace github.com/trendvidia/chameleon/sops => ../../sops
