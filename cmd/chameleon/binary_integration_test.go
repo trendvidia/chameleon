@@ -39,9 +39,9 @@ import (
 // binPath is populated once per test process by buildBinary() and
 // reused across subtests. Saves ~1 second per invocation.
 var (
-	binPath   string
-	binBuilt  sync.Once
-	binErr    error
+	binPath  string
+	binBuilt sync.Once
+	binErr   error
 )
 
 // buildBinary compiles the chameleon binary into a temp directory

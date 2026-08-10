@@ -13,8 +13,8 @@ import (
 	"strings"
 
 	"filippo.io/age"
-	"github.com/trendvidia/sops/v4/age/keypb"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
+	"github.com/trendvidia/sops/v4/age/keypb"
 )
 
 // keystoreCmd dispatches `chameleon keystore <subcommand>`. The

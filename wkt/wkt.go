@@ -11,6 +11,13 @@
 //     inner fields aren't subject to (pxf.default) or (pxf.required)
 //     handling that doesn't make sense at the WKT-internals level.
 //
+// [TemplatableText] is the one documented departure from that:
+// interpolate descends into a google.protobuf.StringValue to rewrite
+// its text, because a (pxf.default) may itself be a template. The
+// other three packages are unaffected, and the lookup half of
+// interpolate still refuses every atomic WKT. See that predicate for
+// the reasoning.
+//
 // The list mirrors what protowire-go's PXF codec recognizes for
 // scalar-shorthand decoding (encoding/pxf/wellknown.go), plus
 // google.protobuf.Any. If a new WKT lands upstream and chameleon
@@ -59,4 +66,31 @@ func Atomic(d protoreflect.MessageDescriptor) bool {
 	}
 	_, ok := atomicSet[d.FullName()]
 	return ok
+}
+
+// TemplatableText reports whether an [Atomic] WKT's payload is
+// user-authored configuration text — the kind that may contain a
+// `${field.path}` template. Only google.protobuf.StringValue qualifies:
+// every other atomic WKT either holds a machine-format scalar no
+// template belongs in (Timestamp, Duration, the numeric wrappers,
+// BigInt, Decimal, BigFloat, BoolValue, BytesValue, Any) or holds a
+// value that must stay opaque (pxf.Secret).
+//
+// This is the one place the four packages sharing [Atomic] do NOT draw
+// the same boundary, and the asymmetry is deliberate. merge, defaults
+// and validate treat a StringValue as one whole value and must keep
+// doing so. interpolate alone descends, because a (pxf.default) may
+// itself be a template — `api.${base}` — and the defaults pass fills
+// WKT fields as of chameleon#129. Without this, the annotation on a
+// StringValue field expanded to nothing and the raw template reached
+// the config with neither error nor warning (chameleon#135).
+//
+// Rewriting a StringValue's text is not the same permission as reading
+// it: interpolate's lookup path still refuses to descend into ANY
+// atomic WKT, so a StringValue cannot be referenced from another
+// field's template any more than a Secret can. Writing into a WKT
+// leaks nothing; reading out of one is the vector that boundary
+// exists for. nil-safe.
+func TemplatableText(d protoreflect.MessageDescriptor) bool {
+	return d != nil && d.FullName() == "google.protobuf.StringValue"
 }

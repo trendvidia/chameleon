@@ -153,9 +153,9 @@ base_url = "mybigproject.com"
 
 What it catches: a `prod.pxf` file accidentally moved to `env/dev.pxf` (env mismatch), a plaintext file dropped into an encrypted slot (encrypted mismatch), the wrong layer file at the wrong path (id mismatch). What it doesn't carry: any resolution semantics. Layer content is still just the schema-typed body; the header is sanity-check metadata only. Files without `@header` parse exactly as before.
 
-> **Your schema is validated across its whole import graph.** Parsing a layer binds your config message, and since protowire-go v1.4.0 the bind-time checks — PXF-reserved names, `(pxf.key)`, `(pxf.default)` and `(pxf.required)` placement — cover the descriptor's **transitive imports**, not just the file declaring the message ([protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71)). A `config.proto` that imports a shared `common.proto` now fails to bind if `common.proto` carries a misplaced annotation *anywhere*, whether or not your config type refers to the offending message. Budget a repo-wide pass rather than a per-file one when upgrading. The cost is negative, not positive: validation is memoized per descriptor, and upstream measured decode 6–7% faster than the single-file walk it replaced.
+> **Your schema is validated across its whole import graph, at `resolver.New`.** Constructing a Resolver checks your config message's descriptor — before any layer is opened, so a chain whose layers are all optional-and-absent is checked too ([#134](https://github.com/trendvidia/chameleon/issues/134)); a violation returns `resolver.ErrSchemaViolation`. Since protowire-go v1.4.0 the bind-time checks — PXF-reserved names, `(pxf.key)`, `(pxf.default)` and `(pxf.required)` placement — cover the descriptor's **transitive imports**, not just the file declaring the message ([protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71)). A `config.proto` that imports a shared `common.proto` now fails if `common.proto` carries a misplaced annotation *anywhere*, whether or not your config type refers to the offending message. Budget a repo-wide pass rather than a per-file one when upgrading. The cost is negative, not positive: validation is memoized per descriptor, and upstream measured decode 6–7% faster than the single-file walk it replaced.
 >
-> Note what triggers it: *parsing a layer*. `chameleon verify` only checks each layer's `@header.content_sha256` against the file body — it never binds your config message — and a resolve whose layers are all optional-and-absent parses nothing, so neither one reports a misplaced annotation. Resolve each environment against a layer that exists to be sure you have seen them all.
+> One thing does **not** report it: `chameleon verify` only checks each layer's `@header.content_sha256` against the file body, and never takes a schema at all — so it returns `OK` for a schema that fails the first `resolver.New`. Constructing a Resolver once per schema is what covers you, and it needs no layers, no environment and no resolve.
 
 ### Templates and interpolation
 
@@ -199,6 +199,8 @@ domain     = "dev.mybigproject.com"
 - **Cycles.** Detected and surfaced as `interpolate.ErrCycle`. `base_url = "dev.${base_url}"` is a self-reference that errors — interpolation runs against the *final merged state*, so `base_url`'s template resolves to itself. Use an intermediate root variable for compose-from-base patterns (see the `domain` example above).
 - **Unknown references** error with `interpolate.ErrUnknownReference`.
 - **WKT exclusion.** `pxf.Secret`, `google.protobuf.Timestamp`, `google.protobuf.Duration`, and other well-known type subtrees are deliberately not traversed. Their inner fields don't participate in interpolation, and they cannot be referenced from inside a `${...}` lookup. This keeps secret plaintext out of the template namespace and decouples interpolation from value-type internals.
+
+  **`google.protobuf.StringValue` is the one exception, and only for writing.** Its payload is ordinary config text, so a `${...}` in it is expanded like any other string — which is what makes a `(pxf.default)` on a wrapper field behave the same as one on a plain `string` ([#135](https://github.com/trendvidia/chameleon/issues/135)). It is still not *readable*: `${some_wrapper.value}` is an `invalid reference`, exactly as for a `pxf.Secret`. Writing into a WKT leaks nothing; reading out of one is what the exclusion exists to prevent.
 
 #### The two stages don't cross-reference
 
@@ -320,6 +322,7 @@ Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/ch
 - `chameleon reveal --field=<path>` — print the plaintext of a single Secret-typed field to stdout (no trailing newline; suitable for `$(...)` substitution). Same input flags as `explain`.
 - `chameleon bundle build` — produce a per-module distribution bundle (chain spec + narrowed, re-encrypted layers as a zip). `--base64` for paste-into-secret-manager-field output, `--force` to truncate-overwrite an existing `--out` file. See "[Distribution bundles](#distribution-bundles)".
 - `chameleon verify` — check `@header.content_sha256` on every layer the chain resolves to. Encrypted layers are skipped (sops already authenticates them).
+- `chameleon check-schema --schema=<file.proto>` — check a `.proto` and its transitive import closure against the PXF bind-time rules. Resolves nothing: no chain, no layers, no environment. See "[`chameleon check-schema` CLI](#chameleon-check-schema-cli)".
 - `chameleon migrate` — bulk-edit layer files in a chain spec. Decrypts encrypted layers, applies an AST-level transform (add-field / delete-field / rename-field), re-encrypts preserving the original key set.
 - `chameleon hash` — print the canonical body SHA-256 of a single layer file. Use this value as the `@header.content_sha256` on the layer.
 - `chameleon version` — print the installed chameleon version, Go toolchain, and commit (from VCS-aware module info).
@@ -370,6 +373,27 @@ chameleon hash base.pxf
 ```
 
 Encrypted layers are skipped — sops already authenticates the ciphertext.
+
+### `chameleon check-schema` CLI
+
+Checks a `.proto` against the PXF bind-time rules — PXF-reserved names, and `(pxf.key)` / `(pxf.default)` / `(pxf.required)` placement — across its **transitive import closure**. No chain, no layers, no environment: the rules depend on the descriptor alone, so one run answers for every environment at once.
+
+```sh
+chameleon check-schema --schema=app.proto
+# OK    app.proto    4 file(s) checked
+
+chameleon check-schema --schema=config.proto --include=./proto
+# common.proto: field "common.v1.Unreferenced.labels": invalid (pxf.default) = "nope": …
+# exit 1
+```
+
+Note which file the violation names. `config.proto` above is conformant; the annotation is in a `common.proto` it imports, and since [protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71) that fails every schema in the closure whether or not the importing message refers to the offending type. **Run this in the repo that owns a shared schema, not only in the ones that consume it** — otherwise the first sign is a downstream build breaking.
+
+`--message` is optional and does not narrow the check: the rules are per file closure, not per message. It only additionally asserts the named message exists — in the schema or in anything it imports — which is worth having in CI when a schema and its consumer's message name are meant to move together.
+
+The file count on the `OK` line is the closure size, not the number of files you named — `4 file(s) checked` for a single `--schema` says three imported files were checked too, and that a violation from a later run may belong to any of them. It does not double as an `--include` check: an import root that is missing or wrong fails the compile outright rather than yielding a quietly smaller closure.
+
+This is the CLI half of [#134](https://github.com/trendvidia/chameleon/issues/134), and it is the answer for a repo that only *authors* schemas and hands them to someone else — a consumer never runs its CLI. The library half, which checks the same rules at `resolver.New` so a program that constructs a Resolver is covered without running anything, is [#143](https://github.com/trendvidia/chameleon/pull/143).
 
 ## Working with secrets
 
@@ -856,13 +880,15 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 - **`(pxf.default)` type coverage.** The post-merge defaults pass honors an annotation on any scalar field and on the atomic well-known types that PXF has a literal form for: `Duration` (`"250ms"`), `Timestamp` (RFC3339), all nine `google.protobuf` wrappers, `pxf.BigInt`, `pxf.Decimal`, `pxf.BigFloat`. A default on a WKT field sets the **whole** value — atomicity governs merging, not defaulting.
 
-  **Every placement one literal cannot denote is now rejected when the schema binds**, not at resolve time and not in silence — a default on `google.protobuf.Any`, `pxf.Secret`, `google.protobuf.Struct`, a user-defined message, or on a `repeated` / `map` field fails the layer parse, naming the field. That is protowire-go v1.4.0 ([#68](https://github.com/trendvidia/protowire-go/issues/68), [#69](https://github.com/trendvidia/protowire-go/issues/69)); before it, the message cases were a resolve-time error only for environments whose layers left the path unset, and the list cases were ignored entirely.
+  **Every placement one literal cannot denote is now rejected at `resolver.New`**, not at resolve time and not in silence — a default on `google.protobuf.Any`, `pxf.Secret`, `google.protobuf.Struct`, a user-defined message, or on a `repeated` / `map` field fails construction, naming the field. That is protowire-go v1.4.0 ([#68](https://github.com/trendvidia/protowire-go/issues/68), [#69](https://github.com/trendvidia/protowire-go/issues/69)); before it, the message cases were a resolve-time error only for environments whose layers left the path unset, and the list cases were ignored entirely.
 
-  Binding is what runs the check, and a layer parse is what binds. A resolve that parses no layer at all — every entry `required = false` and absent — still takes the pre-v1.4.0 path: the message cases surface as `resolver: defaults: <path>: …`, and a `repeated` / `map` default is skipped in silence. Hoisting the check to `resolver.New` / `chameleon lint` / `chameleon verify` is tracked as the open half of [#134](https://github.com/trendvidia/chameleon/issues/134).
+  Binding is what runs the check, and a layer parse is what binds. A resolve that parses no layer at all — every entry `required = false` and absent — still takes the pre-v1.4.0 path: the message cases surface as `resolver: defaults: <path>: …`, and a `repeated` / `map` default is skipped in silence. `chameleon check-schema` (above) answers the same question off a `.proto` alone, with no chain, layers or environment, which is the reliable way to see all of them; hoisting the check into `resolver.New` as well is [#143](https://github.com/trendvidia/chameleon/pull/143).
+
+  Upstream runs the check when a schema binds, and a layer parse is what binds — but the report no longer waits for one. `resolver.New` asks the same question of the descriptor closure at construction, so the chain that parses no layer at all — every entry `required = false` and absent — is rejected too, where it used to fall back to `resolver: defaults: <path>: …` for the message cases and to silence for a `repeated` / `map` one ([#134](https://github.com/trendvidia/chameleon/issues/134)). What is still open is the CLI half: no subcommand checks a schema without resolving, tracked as [#144](https://github.com/trendvidia/chameleon/issues/144).
 
   Two edges are worth knowing before you annotate a WKT field:
 
-  - **A default on a WKT is never interpolated.** Defaults run before interpolation so that a default may itself be a template (`"api.${base_url}"`), but interpolation stops at the same atomic boundary the merge does — so a `${...}` inside a default on a `google.protobuf.StringValue` reaches your resolved config verbatim. Use a plain `string` field when the default needs interpolation.
+  - **A default on a `StringValue` is interpolated, like one on a plain `string`.** Defaults run before interpolation precisely so a default may itself be a template (`"api.${base_url}"`), and that now holds for the wrapper too ([#135](https://github.com/trendvidia/chameleon/issues/135)) — it previously reached your resolved config verbatim, with no error and no warning. Defaults on the other atomic WKTs are still not interpolated, which costs nothing: a template does not belong in a `Timestamp`, a `Duration` or a number, and a `pxf.Secret` must never be run through the template engine at all.
   - **Bool literals must be exactly `"true"`.** protowire-go compares the literal against `"true"`, so `"True"` / `"1"` / `"yes"` yield `false` with no error — and the path still counts as satisfying `(pxf.required)`. Every other literal kind reports a parse failure.
 
 - **`(pxf.default)` inside a `oneof` yields to the layer's choice.** Setting any oneof member clears its siblings, so a default is skipped whenever some layer already selected a different member of the same oneof — otherwise filling `timeout`'s default would silently discard an operator's explicit `file = "/tmp/x"`. An explicit clear counts as a choice: `file = null` also suppresses the sibling default, so "no backend" stays no backend rather than coming back as a `timeout`. Fields from proto3 `optional` (a synthetic single-field oneof) are unaffected and default normally.
@@ -935,7 +961,7 @@ A goroutine-leak guard test runs Load+Destroy in a tight 500-iteration loop and 
 
 ```
 chain/                  ChainSpec expansion + LoadSpec/ParseSpec runtime helpers
-cmd/chameleon/          CLI: explain (per-field provenance) / verify (@header.content_sha256) / migrate (bulk layer edits) / hash / lint (go/analysis-style linter flagging *pxfv1.Secret.Value reads)
+cmd/chameleon/          CLI: explain (per-field provenance) / verify (@header.content_sha256) / check-schema (PXF bind-time rules over a .proto closure) / migrate (bulk layer edits) / hash / lint (go/analysis-style linter flagging *pxfv1.Secret.Value reads)
 cmd/protoc-gen-chameleon-go/   protoc plugin emitting typed Secret accessors
 defaults/               (pxf.default) post-merge pass
 examples/buf/           working buf.gen.yaml + sample schema

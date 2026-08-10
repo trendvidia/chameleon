@@ -114,11 +114,11 @@ func TestFindNonSecretFieldsInMessage_EnumeratesNonSecretPaths(t *testing.T) {
 	sort.Strings(paths)
 
 	want := []string{
-		"primary",            // non-secret nested message
-		"primary.url",        // scalar inside it
-		"regions",            // repeated scalar
-		"service_name",       // scalar leaf
-		"tags",               // map<K, scalar>
+		"primary",      // non-secret nested message
+		"primary.url",  // scalar inside it
+		"regions",      // repeated scalar
+		"service_name", // scalar leaf
+		"tags",         // map<K, scalar>
 	}
 	sort.Strings(want)
 

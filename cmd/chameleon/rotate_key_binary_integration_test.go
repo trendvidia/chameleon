@@ -32,8 +32,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/trendvidia/sops/v4/age/keypb"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
+	"github.com/trendvidia/sops/v4/age/keypb"
 
 	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"

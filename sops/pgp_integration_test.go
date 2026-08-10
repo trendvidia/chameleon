@@ -43,11 +43,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/trendvidia/sops/v4"
 	"github.com/trendvidia/sops/v4/encrypt"
 	sopspgp "github.com/trendvidia/sops/v4/pgp"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
@@ -95,8 +95,13 @@ func isolatedGNUPGHOME(t *testing.T) string {
 
 // generateTestPGPKey runs `gpg --quick-gen-key` with a deterministic
 // UID and returns the fingerprint. Uses --pinentry-mode loopback +
-// --passphrase '' to skip interactive prompts (the secret key has
-// no passphrase, which is fine for a throwaway test key).
+// an empty --passphrase to skip interactive prompts (the secret key
+// has no passphrase, which is fine for a throwaway test key).
+//
+// Do not spell the empty passphrase as a pair of single quotes in
+// this comment: gofmt's doc-comment printer rewrites that pair into
+// a Unicode curly quote, leaving the comment documenting a command
+// that does not run. The argv below passes a real empty string.
 //
 // Algorithm "default default 0" = gpg's defaults (rsa3072 today),
 // no expiry. The 0 expiry matters: a non-zero default could make

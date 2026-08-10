@@ -55,6 +55,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,6 +97,24 @@ var ErrRequiredLayerMissing = errors.New("resolver: required layer missing")
 // Diagnostic is wrapped with the layer id, path, and the active
 // limit so consumers can act on the failure.
 var ErrLayerTooLarge = errors.New("resolver: layer exceeds size limit")
+
+// ErrSchemaViolation is returned by [New] when the sample message's
+// descriptor closure carries a PXF annotation the format does not
+// admit — a (pxf.default) on a repeated field, on a message type no
+// literal denotes, a (pxf.required) on a oneof member (draft -01
+// §annotation-extensions), plus the PXF-reserved names and (pxf.key)
+// placements of §3.13. Those are the sections the violation strings
+// cite; §schema-constraints ("Scope of Bind-Time Checks") is what
+// makes the scope the transitive import closure, so the file the
+// error names may be an imported one rather than the sample's own.
+//
+// protowire-go enforces these when a schema binds, which for chameleon
+// is the first layer parse. That is deterministic across environments
+// but not across chains: a chain whose every layer is optional and
+// absent parses nothing, so it binds nothing, so it used to resolve an
+// invalid schema clean. [New] closes that by asking the same question
+// of the descriptor directly. See trendvidia/chameleon#134.
+var ErrSchemaViolation = errors.New("resolver: schema violation")
 
 // defaultMaxLayerBytes caps each layer's raw bytes when
 // [WithMaxLayerBytes] isn't passed. Defense against pathological
@@ -283,15 +302,43 @@ func WithMaxLayerBytes(n int64) Option {
 // type witness and the descriptor source. `spec` is a parsed
 // chameleon.v1.ChainSpec proto message.
 //
-// New validates that at least one Source was registered, but does NOT
-// fully validate the spec until the first Resolve — Expand surfaces
-// per-call diagnostics that depend on the request (env / ctx).
+// New validates the sample's schema and the wiring it was handed — at
+// least one Source, "default" among them, one answer to the decrypter
+// question — but does NOT fully validate the spec until the first
+// Resolve: Expand surfaces per-call diagnostics that depend on the
+// request (env / ctx).
+//
+// The sample's schema is the exception to that deferral, and
+// deliberately so: the bind-time PXF rules are a property of the
+// descriptor alone, so they give the same answer at construction that
+// they would give at every Resolve. Checking here fails once, in one
+// place, instead of on whichever layer parse happens to bind first —
+// and catches the chain that never parses a layer at all. Violations
+// return [ErrSchemaViolation]; see that sentinel for why the deferral
+// rule above does not cover this case.
+//
+// The schema check runs ahead of the wiring checks, so a malformed
+// schema is what a caller who also mis-wired their Sources hears about
+// first. That ordering is deliberate: re-wiring would not change the
+// schema's answer, so reporting it first saves a round trip.
 func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolver[T], error) {
-	if !sample.ProtoReflect().IsValid() && sample.ProtoReflect().Descriptor() == nil {
+	m := sample.ProtoReflect()
+	if !m.IsValid() && m.Descriptor() == nil {
 		return nil, errors.New("resolver: nil sample message")
 	}
 	if spec == nil {
 		return nil, errors.New("resolver: nil spec")
+	}
+	// Memoized per file closure upstream, so repeated New calls on the
+	// same descriptor cost a map lookup rather than a walk — up to
+	// upstream's 4096-descriptor cache bound, past which a program that
+	// compiles descriptors dynamically pays the walk on every call.
+	if vs := pxf.ValidateDescriptor(m.Descriptor()); len(vs) > 0 {
+		parts := make([]string, len(vs))
+		for i, v := range vs {
+			parts[i] = v.String()
+		}
+		return nil, fmt.Errorf("%w:\n  %s", ErrSchemaViolation, strings.Join(parts, "\n  "))
 	}
 
 	cfg := config{}
