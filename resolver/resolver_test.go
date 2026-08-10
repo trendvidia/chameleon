@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
@@ -1052,7 +1053,7 @@ api_key = "k"
 	})
 }
 
-// TestResolve_UnhonorableDefaultFailsEveryEnvironment pins where an
+// TestNew_UnhonorableDefaultRejectedBeforeAnyLayerIsRead pins where an
 // unhonorable (pxf.default) is caught and, more importantly, that the
 // catch does not depend on the data.
 //
@@ -1064,15 +1065,17 @@ api_key = "k"
 //
 // protowire-go v1.4.0 rejects the placement at bind time
 // (trendvidia/protowire-go#69), and binding is a property of the
-// descriptor, so both cases below now fail identically. That is #134's
-// substance, answered upstream. What is still chameleon's to decide is
-// whether to hoist the check earlier than the first layer parse — to
-// resolver.New, chameleon lint and chameleon verify — which is the
-// half of #134 left open.
+// descriptor, so the answer stopped depending on the environment. This
+// test pins the rest of #134: the report arrives from New, so it does
+// not depend on a layer either.
 //
-// The anti-stutter assertion is carried over: the resolver must not
-// double its own prefix, or anyone grepping logs for the documented
-// text misses it.
+// The anti-stutter assertions the old TestResolve_ form carried are
+// not repeated here — this error never passes through the defaults or
+// parse-layer wraps at all. Their live coverage is
+// TestResolve_DefaultsErrorIsNotDoublePrefixed and
+// TestResolve_LayerParseErrorIsWrappedOnce below, which reach those
+// wraps for real. What replaces them is an exact-match assertion on
+// the whole string, which no stutter can pass.
 func TestNew_UnhonorableDefaultRejectedBeforeAnyLayerIsRead(t *testing.T) {
 	const badAppSrc = `
 syntax = "proto3";
@@ -1116,7 +1119,13 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 	// per-case loop left to write — the two halves of the old
 	// data-dependence (a layer that leaves the annotated path alone,
 	// one that sets it) cannot reach a resolver that was never built.
-	// [recordingSource] is what pins that: zero opens.
+	//
+	// [recordingSource] states the stronger half of that in executable
+	// form: New consults the Source for nothing, so the layer sitting
+	// in this FS — which sets the annotated path, the case that used to
+	// resolve clean — cannot be what produced the error. It is a guard
+	// against New growing layer I/O, not a restatement of the assertion
+	// above.
 	rec := &recordingSource{inner: source.FS(fstest.MapFS{
 		"base.pxf": &fstest.MapFile{Data: []byte("base_url = \"x\"\ninner {\n  x = \"set\"\n}")},
 	})}
@@ -1135,22 +1144,34 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 		`(pxf.default) is not valid on message type badapp.v1.Inner: `+
 		`no PXF literal denotes it (draft -01 §annotation-extensions)`, err.Error())
 
-	assert.Zero(t, rec.opens, "the schema is rejected before a layer is read")
+	assert.Zero(t, rec.opens.Load(), "the schema is rejected before a layer is read")
+	assert.Zero(t, rec.stats.Load(), "and before one is even looked up")
 }
 
-// recordingSource counts Open calls so a test can assert that a failure
-// happened before any layer I/O.
+// recordingSource counts the layer I/O a Source is asked for, so a test
+// can assert that a failure happened before any of it. Stat is counted
+// as well as Open because the optional-layer path short-circuits on
+// Stat alone — a "nothing was read" claim that ignored it would not
+// notice a probing sweep.
+//
+// The counters are atomic because source.Source requires
+// implementations to be safe for concurrent use; New is single-
+// goroutine, but a helper that only holds under that assumption is one
+// Resolve away from a race the detector would find in someone else's
+// test.
 type recordingSource struct {
 	inner source.Source
-	opens int
+	opens atomic.Int64
+	stats atomic.Int64
 }
 
 func (s *recordingSource) Open(ctx context.Context, ref string) (io.ReadCloser, error) {
-	s.opens++
+	s.opens.Add(1)
 	return s.inner.Open(ctx, ref)
 }
 
 func (s *recordingSource) Stat(ctx context.Context, ref string) (source.Info, error) {
+	s.stats.Add(1)
 	return s.inner.Stat(ctx, ref)
 }
 
@@ -1415,7 +1436,10 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = false }]
 
 	// The two cases that used to diverge. Both now produce the same
 	// error from New, which is the whole point: the FS decided the
-	// diagnostic before, and decides nothing now.
+	// diagnostic before, and decides nothing now. Each case wraps its FS
+	// in a [recordingSource] so that "decides nothing" is asserted
+	// rather than assumed — the two states are indistinguishable to New
+	// because it never looks at either.
 	for _, c := range []struct {
 		name string
 		fs   fstest.MapFS
@@ -1426,9 +1450,10 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = false }]
 		{"the optional layer is absent", fstest.MapFS{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
+			rec := &recordingSource{inner: source.FS(c.fs)}
 			sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
 			_, err := resolver.New[*dynamicpb.Message](sample, spec,
-				resolver.WithSource("default", source.FS(c.fs)))
+				resolver.WithSource("default", rec))
 			require.ErrorIs(t, err, resolver.ErrSchemaViolation)
 
 			// Both placements, in one report, sorted by element name —
@@ -1444,8 +1469,42 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = false }]
 
 			assert.NotContains(t, err.Error(), `parse layer "base"`,
 				"the report comes from New, not from a layer parse")
+			assert.Zero(t, rec.opens.Load(), "New opens no layer")
+			assert.Zero(t, rec.stats.Load(), "and stats none either")
 		})
 	}
+}
+
+// TestResolve_LayerParseErrorIsWrappedOnce keeps the `resolver: parse
+// layer %q:` wrapper covered. Hoisting the bind-time check to New took
+// away what used to assert it — a schema whose placement failed the
+// parse can no longer be handed to a Resolver, because New rejects it
+// first — so the wrapper needs a carrier that is about the layer's
+// bytes rather than the schema's shape. A malformed layer body is
+// that: the entry id is in the message, and the wrap appears once.
+func TestResolve_LayerParseErrorIsWrappedOnce(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`)
+	fs := fstest.MapFS{
+		// Not PXF: a value with no key.
+		"base.pxf": &fstest.MapFile{Data: []byte(`= "x"`)},
+	}
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)))
+	require.NoError(t, err, "the schema is clean; only the layer is not")
+
+	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `resolver: parse layer "base":`,
+		"the documented shape, naming the entry an operator has to go fix")
+	assert.NotContains(t, err.Error(), `parse layer "base": parse layer`,
+		"the wrapper must appear once, not twice")
 }
 
 func TestResolve_RequiredFieldMissingFails(t *testing.T) {
