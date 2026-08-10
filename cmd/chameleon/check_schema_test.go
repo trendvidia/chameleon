@@ -1125,3 +1125,57 @@ func TestCheckSchema_EmptyExcludeIsRejected(t *testing.T) {
 		t.Fatalf("got %v, want an empty-pattern rejection", err)
 	}
 }
+
+// TestCheckSchema_MalformedExcludeMatchingNothingIsAccepted pins the
+// one case the match-site syntax check cannot reach, as a documented
+// divergence rather than an assumption.
+//
+// filepath.Match stops scanning at the first chunk that fails the
+// name, so a malformed pattern is only diagnosed once something in the
+// tree matches everything before the bad syntax. "vendor*[0-9" is
+// caught in a tree containing a "vendor" element and accepted in one
+// that does not.
+//
+// That is sound for the run in front of you — a pattern whose leading
+// chunk matches nothing could not have pruned anything however it was
+// completed — but it is not sound across trees: the same CI invocation
+// starts failing the day someone adds a directory whose name matches
+// the leading chunk. Catching it up front needs a standalone validator
+// for Match's syntax, which means reimplementing its scanner; a fixed
+// probe name provably cannot do it.
+//
+// If this test starts failing because the pattern is now rejected up
+// front, that is an improvement — delete it.
+func TestCheckSchema_MalformedExcludeMatchingNothingIsAccepted(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "a.proto"), `
+syntax = "proto3";
+package a.v1;
+message A { string x = 1; }
+`)
+
+	// Caught: the tree has a "vendor" element, so Match gets past the
+	// first chunk and reaches the unterminated class.
+	write(t, filepath.Join(dir, "vendor", "b.proto"), `
+syntax = "proto3";
+package b.v1;
+message B { string x = 1; }
+`)
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=vendor*[0-9"})
+	if err == nil || !strings.Contains(err.Error(), "syntax error in pattern") {
+		t.Fatalf("got %v, want the malformed pattern reported", err)
+	}
+
+	// Not caught: nothing in this tree matches the leading chunk, so
+	// Match never scans as far as the bad syntax. The run proceeds and
+	// the pattern prunes nothing — which is what it would have done
+	// well-formed, hence no wrong answer, only a deferred complaint.
+	out.Reset()
+	if err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=zzznotpresent*[0-9"}); err != nil {
+		t.Fatalf("divergence changed: got %v, want the pattern accepted", err)
+	}
+	if !strings.Contains(out.String(), "2 root(s)") {
+		t.Errorf("nothing should have been pruned\ngot: %q", out.String())
+	}
+}
