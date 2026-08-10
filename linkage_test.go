@@ -47,12 +47,17 @@ const modulePath = "github.com/trendvidia/chameleon"
 // hand-kept list is guarded only by remembering to edit it: a public
 // package added next month that imports chameleon/sops for one type is
 // the exact mistake this file exists to catch, and it would sail past
-// a literal that never mentions it. Only three things are subtracted,
+// a literal that never mentions it. Only four things are subtracted,
 // each for a reason that will not change:
 //
 //   - internal/* — not consumer surface, and internal/bundler is the
 //     *write* side, which takes a backend from its caller on purpose
 //     (bundling re-encrypts).
+//   - hack/* — repo-local maintainer tooling (the changelog assembler),
+//     run at a terminal and reachable by nobody downstream. Without this
+//     filter, a release helper that imports chameleon/sops — an ordinary
+//     thing for one to do — reds this test with a message about what
+//     consumers link.
 //   - cmd/* — binaries. `chameleon bundle` decrypts by design.
 //   - chameleon/sops — the backend itself. It is what the negative
 //     control below points the same check at.
@@ -70,6 +75,7 @@ func plaintextPath(t *testing.T) []string {
 		switch {
 		case pkg == selfPrefix,
 			strings.HasPrefix(pkg, modulePath+"/internal/"),
+			strings.HasPrefix(pkg, modulePath+"/hack/"),
 			strings.HasPrefix(pkg, modulePath+"/cmd/"):
 			continue
 		}

@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # `labeled`/`unlabeled` are on top of the default three
+    # (opened/synchronize/reopened) solely so the changelog gate
+    # re-evaluates when someone applies `skip-changelog`: no event fires
+    # on a label otherwise, and "Re-run failed jobs" replays the original
+    # payload, in which the label is still absent. Every other job skips
+    # a label event — see the `if:` they carry — so this costs one cheap
+    # run on the Linux box, not a full matrix.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -22,6 +30,9 @@ permissions:
 jobs:
   test:
     name: test (${{ matrix.name }})
+    # Nothing a label changes can change a test result; only the
+    # changelog job cares about the label events in the trigger above.
+    if: github.event.action != 'labeled' && github.event.action != 'unlabeled'
     runs-on: ${{ matrix.runs-on }}
     # A wedged self-hosted runner otherwise blocks the queue for every repo on
     # the same box. Warm runs finish in well under a minute; this is a
@@ -80,8 +91,62 @@ jobs:
           # stale and every contributor gets a dirty tree on first build.
           git diff --exit-code -- '**/go.mod' '**/go.sum' go.mod go.sum go.work go.work.sum
 
+  changelog:
+    name: changelog fragment
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, Linux, X64]
+    # Same circuit breaker as `test`, and for the same reason: this box
+    # is shared, and a job with no timeout holds a runner for GitHub's
+    # default six hours.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the base branch to diff against; a shallow clone has no
+          # merge-base to compare the PR's file list to. This fetches
+          # every ref, so the step below must not re-fetch at a depth —
+          # that would graft origin/<base> back to a single commit and
+          # take the merge-base away again.
+          fetch-depth: 0
+      - name: Validate fragment names
+        run: make changelog-check
+      - name: Require a fragment (or the skip-changelog label)
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          # Resolve the merge-base explicitly. Folding this into the diff
+          # and absorbing failures with `|| true` reports "no fragment"
+          # for a broken ref just as loudly as for a real omission, and
+          # sends the contributor looking in the wrong place.
+          base=$(git merge-base "origin/$BASE" HEAD) || {
+            echo "::error::cannot resolve the merge-base of origin/$BASE and HEAD"
+            exit 1
+          }
+          changed=$(git diff --name-only --diff-filter=A "$base" HEAD -- changelog.d) || {
+            echo "::error::git diff against $base failed"
+            exit 1
+          }
+          # grep exits 1 when it filters everything out, which is a
+          # legitimate "no fragments"; only its failure is swallowed here.
+          added=$(printf '%s\n' "$changed" | grep -v 'changelog.d/README.md' || true)
+          if [ -z "$added" ]; then
+            echo "::error::This PR adds no changelog.d/ fragment."
+            echo ""
+            echo "Add one — see changelog.d/README.md:"
+            echo "    changelog.d/<issue-or-pr>.<added|changed|deprecated|removed|fixed|security|internal>.md"
+            echo ""
+            echo "If this change genuinely has nothing to tell a consumer"
+            echo "(pure refactor, CI-only, typo) — or it is the release PR,"
+            echo "which consumes fragments rather than adding one — label"
+            echo "the PR 'skip-changelog'."
+            exit 1
+          fi
+          echo "Fragment(s) added:"; echo "$added"
+
   lint:
     name: lint
+    if: github.event.action != 'labeled' && github.event.action != 'unlabeled'
     runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
@@ -123,7 +188,10 @@ jobs:
 
   bench:
     name: bench (vs main)
-    if: github.event_name == 'pull_request'
+    if: >-
+      github.event_name == 'pull_request'
+      && github.event.action != 'labeled'
+      && github.event.action != 'unlabeled'
     runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v4
