@@ -12,14 +12,12 @@
 package header
 
 import (
-	"context"
 	"fmt"
-	"sync"
 
-	"github.com/bufbuild/protocompile"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
@@ -29,22 +27,6 @@ const TypeName = "chameleon.v1.LayerHeader"
 // DirectiveName is the directive keyword (the bit after `@`). Always
 // "header" in chameleon's vocabulary.
 const DirectiveName = "header"
-
-// layerHeaderProto mirrors proto/chameleon/v1/layer.proto. Kept inline
-// so chameleon doesn't need a codegen step for its own protos; matches
-// the pattern in chain/load.go.
-const layerHeaderProto = `
-syntax = "proto3";
-package chameleon.v1;
-
-message LayerHeader {
-  string id = 1;
-  string environment = 2;
-  bool encrypted = 3;
-  string notes = 4;
-  string content_sha256 = 5;
-}
-`
 
 // Parsed is the result of decoding an @header inner block.
 type Parsed struct {
@@ -66,11 +48,7 @@ type Ref struct {
 // `@header <type> { ... }` block. Typically obtained from
 // `pxf.Result.Directives()[i].Body` after a layer-file unmarshal.
 func Parse(inner []byte) (*Parsed, error) {
-	desc, err := descriptor()
-	if err != nil {
-		return nil, err
-	}
-	msg := dynamicpb.NewMessage(desc)
+	msg := dynamicpb.NewMessage(descriptor())
 	res, err := pxf.UnmarshalFull(inner, msg)
 	if err != nil {
 		return nil, fmt.Errorf("header: parse: %w", err)
@@ -133,37 +111,34 @@ func HandleDirectives(dirs []pxf.Directive, ref Ref) error {
 	return nil
 }
 
-var (
-	descOnce sync.Once
-	descMsg  protoreflect.MessageDescriptor
-	descErr  error
-)
-
-func descriptor() (protoreflect.MessageDescriptor, error) {
-	descOnce.Do(func() {
-		comp := protocompile.Compiler{
-			Resolver: protocompile.WithStandardImports(
-				&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(
-					map[string]string{"layer.proto": layerHeaderProto},
-				)},
-			),
-		}
-		files, err := comp.Compile(context.Background(), "layer.proto")
-		if err != nil {
-			descErr = fmt.Errorf("header: compile descriptor: %w", err)
-			return
-		}
-		d, err := files.AsResolver().FindDescriptorByName(TypeName)
-		if err != nil {
-			descErr = fmt.Errorf("header: resolve %s descriptor: %w", TypeName, err)
-			return
-		}
-		md, ok := d.(protoreflect.MessageDescriptor)
-		if !ok {
-			descErr = fmt.Errorf("header: %s is not a message descriptor", TypeName)
-			return
-		}
-		descMsg = md
-	})
-	return descMsg, descErr
+// descriptor returns the canonical chameleon.v1.LayerHeader descriptor
+// from the generated bindings.
+//
+// This used to compile an inline copy of the message at runtime via
+// bufbuild/protocompile, mirroring what chain/load.go did at the time
+// (f14776d, 2026-05-11) — the stated reason was to avoid a codegen step
+// for chameleon's own protos. That reason expired one day later:
+// ea17e9a migrated chain to protoc-gen-go, so the repo has a codegen
+// step and proto/chameleon/v1 is generated regardless. internal/header
+// was simply not migrated along with it. Since the resolve path already
+// links proto/chameleon/v1 (it is in `go list -deps ./resolver` either
+// way), reading the descriptor from the generated type costs a consumer
+// nothing and drops protocompile — 13 packages, ~3 MB — from every
+// binary that resolves plaintext layers. See #137.
+//
+// Descriptor equivalence with the old inline mirror is pinned by
+// TestDescriptorMatchesGeneratedShape.
+func descriptor() protoreflect.MessageDescriptor {
+	return layerHeaderDesc
 }
+
+// layerHeaderDesc is resolved once, at init.
+//
+// Reading the generated descriptor is cheap but not free:
+// `(&chameleonv1.LayerHeader{}).ProtoReflect()` heap-allocates a
+// message on every call — escape analysis confirms it
+// (`go build -gcflags=-m ./internal/header`) — and it would allocate
+// one solely to reach a process-global descriptor. Parse is on the
+// resolve path, called once per @header per layer, so this keeps the
+// memoization the sync.Once above it used to provide, for free.
+var layerHeaderDesc = (&chameleonv1.LayerHeader{}).ProtoReflect().Descriptor()

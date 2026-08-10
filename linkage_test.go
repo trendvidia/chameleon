@@ -32,6 +32,15 @@ import (
 // `go list -deps` for the package graph the linker will see and to `go
 // mod edit -json` for the requirements consumers inherit, and fail if
 // key management reappears in either.
+//
+// Key management is the first of two weights pinned here. The second is
+// a protobuf compiler (#137, below), which got onto the plaintext path
+// by a different mechanism and is checked against the package graph
+// only — unlike key management it is a legitimate requirement of this
+// go.mod, because the tests in this repo compile schemas from source.
+// Each check is paired with a negative control that points it at a
+// module which must fail it, so a prefix that stops matching anything
+// real cannot leave the check passing vacuously.
 
 // modulePath is this module, and the prefix every package below is
 // filtered against.
@@ -270,4 +279,66 @@ func TestKeyManagementCheckCatchesTheSopsPackage(t *testing.T) {
 				"TestPlaintextPathLinksNoKeyManagement is not actually checking for it — "+
 				"the module path probably moved", km.prefix, km.what)
 	}
+}
+
+// protoCompiler is the second thing the plaintext path must not link,
+// for the same reason as keyManagement but by a different mechanism
+// (trendvidia/chameleon#137). Key management got in through an import
+// of an *implementation*; this got in through compiling proto source at
+// *runtime* — internal/header built the chameleon.v1.LayerHeader
+// descriptor from an inline copy of the message, which put a protobuf
+// compiler (13 packages, ~3 MB) in every binary that resolves a
+// plaintext layer, to parse a five-field message the generated bindings
+// already describe.
+//
+// A compiler belongs on the path that compiles user-supplied schemas —
+// `chameleon explain`, in the cmd/chameleon module, which the negative
+// control below points at. It does not belong on the resolve path.
+//
+// Unlike keyManagement there is no go.mod counterpart: protocompile is
+// a direct requirement of this module and stays one, because tests
+// throughout the repo (resolver, merge, wkt, chain, validate, and
+// internal/header's own descriptor_test.go) build schemas from source.
+// The package graph is what separates a test-only compiler from one a
+// consumer links, so the package graph is the only assertion available.
+const protoCompiler = "github.com/bufbuild/protocompile"
+
+func TestPlaintextPathLinksNoProtoCompiler(t *testing.T) {
+	if testing.Short() {
+		t.Skip("shells out to go list")
+	}
+
+	for _, pkg := range deps(t, plaintextPath(t)...) {
+		if strings.HasPrefix(pkg, protoCompiler) {
+			t.Errorf("plaintext path links %s.\n"+
+				"Descriptors for chameleon's own protos come from the generated bindings in\n"+
+				"proto/chameleon/v1, which the resolve path links either way. Compiling proto\n"+
+				"source at runtime to describe a message we already generate costs every\n"+
+				"consumer a compiler — trendvidia/chameleon#137.", pkg)
+		}
+	}
+}
+
+func TestProtoCompilerCheckCatchesTheCLI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("shells out to go list")
+	}
+
+	// Negative control, for the reason spelled out in
+	// TestKeyManagementCheckCatchesTheSopsPackage: the test above
+	// passes vacuously if the prefix stops matching anything real, so
+	// point the same check at the module that must fail it.
+	// `chameleon explain` compiles user-supplied schemas, which is what
+	// protocompile is for.
+	var found bool
+	for _, pkg := range depsIn(t, "cmd/chameleon", "./...") {
+		if strings.HasPrefix(pkg, protoCompiler) {
+			found = true
+			break
+		}
+	}
+	assert.Truef(t, found,
+		"cmd/chameleon links no package under %q, so that prefix matches nothing and "+
+			"TestPlaintextPathLinksNoProtoCompiler is not actually checking for it — "+
+			"the module path probably moved", protoCompiler)
 }
