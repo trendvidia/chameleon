@@ -1051,13 +1051,28 @@ api_key = "k"
 	})
 }
 
-// TestResolve_UnsupportedDefaultErrorIsNotDoubledPrefixed pins the
-// operator-facing shape of the new defaults rejection. defaults.Apply
-// already prefixes "defaults: ", so the resolver wraps with a bare
-// "resolver: " — otherwise the error reads "resolver: defaults:
-// defaults: …" and anyone grepping logs for the documented text
-// misses it.
-func TestResolve_UnsupportedDefaultErrorIsNotDoubledPrefixed(t *testing.T) {
+// TestResolve_UnhonorableDefaultFailsEveryEnvironment pins where an
+// unhonorable (pxf.default) is caught and, more importantly, that the
+// catch does not depend on the data.
+//
+// It used to be caught by defaults.Apply, which consults the
+// annotation only for a path no layer set — so the same schema
+// resolved cleanly for an environment whose layers happened to set the
+// field and failed for one that did not. CI green on dev, prod broken
+// at deploy; that data-dependence is what issue #134 was filed about.
+//
+// protowire-go v1.4.0 rejects the placement at bind time
+// (trendvidia/protowire-go#69), and binding is a property of the
+// descriptor, so both cases below now fail identically. That is #134's
+// substance, answered upstream. What is still chameleon's to decide is
+// whether to hoist the check earlier than the first layer parse — to
+// resolver.New, chameleon lint and chameleon verify — which is the
+// half of #134 left open.
+//
+// The anti-stutter assertion is carried over: the resolver must not
+// double its own prefix, or anyone grepping logs for the documented
+// text misses it.
+func TestResolve_UnhonorableDefaultFailsEveryEnvironment(t *testing.T) {
 	const badAppSrc = `
 syntax = "proto3";
 package badapp.v1;
@@ -1094,20 +1109,40 @@ version = "1.0.0"
 environments = [{ name = "prod" }]
 layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 `)
-	fs := fstest.MapFS{
-		"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x"`)},
-	}
-	sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
-	r, err := resolver.New[*dynamicpb.Message](sample, spec,
-		resolver.WithSource("default", source.FS(fs)))
-	require.NoError(t, err)
+	// The two halves of #134's data-dependence: a layer that leaves the
+	// annotated path alone, and one that sets it. Before the bind-time
+	// move the first failed and the second succeeded.
+	for _, c := range []struct {
+		name  string
+		layer string
+	}{
+		{"layer leaves the path unset", `base_url = "x"`},
+		{"layer sets the path", "base_url = \"x\"\ninner {\n  x = \"set\"\n}"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fs := fstest.MapFS{
+				"base.pxf": &fstest.MapFile{Data: []byte(c.layer)},
+			}
+			sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
+			r, err := resolver.New[*dynamicpb.Message](sample, spec,
+				resolver.WithSource("default", source.FS(fs)))
+			require.NoError(t, err)
 
-	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "resolver: defaults: inner:")
-	assert.Contains(t, err.Error(), "badapp.v1.Inner")
-	assert.NotContains(t, err.Error(), "defaults: defaults:",
-		"the pass name must appear once, not twice")
+			_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+			require.Error(t, err, "an unhonorable (pxf.default) must fail whatever the layers set")
+
+			// Names the field and the type no literal denotes, so an
+			// operator can find it in the schema.
+			assert.Contains(t, err.Error(), "badapp.v1.BadApp.inner")
+			assert.Contains(t, err.Error(), "badapp.v1.Inner")
+
+			// One prefix per pass, still.
+			assert.NotContains(t, err.Error(), "defaults: defaults:",
+				"the pass name must appear once, not twice")
+			assert.NotContains(t, err.Error(), "parse layer \"base\": parse layer",
+				"nor may the parse wrapper stutter")
+		})
+	}
 }
 
 func TestResolve_RequiredFieldMissingFails(t *testing.T) {

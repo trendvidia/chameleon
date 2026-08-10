@@ -43,7 +43,7 @@ message AppConfig {
   string no_default = 4;
   Endpoint primary = 5;
   Endpoint optional_endpoint = 6;
-  repeated string tags = 7 [(pxf.default) = "ignored"];
+  repeated string tags = 7;
 }
 
 message Endpoint {
@@ -157,14 +157,57 @@ func TestApply_NestedDefaultsSkippedWhenParentAbsent(t *testing.T) {
 
 // --- skip lists, maps, WKTs ---
 
-func TestApply_RepeatedFieldDefaultIgnored(t *testing.T) {
-	desc := compileApp(t)
-	msg, present := parseInput(t, desc, ``)
-	require.NoError(t, defaults.Apply(msg, present))
+// A (pxf.default) on a repeated or map field used to be dropped in
+// silence — the failure mode issue #131 was filed about, and the one
+// place #129 deliberately left alone. protowire-go v1.4.0 answered it
+// upstream (trendvidia/protowire-go#68, draft -01
+// §annotation-extensions): one literal cannot denote a list, so the
+// placement does not bind at all and no implementation may invent a
+// semantics for it.
+//
+// What this pins is therefore no longer chameleon's behaviour but the
+// contract chameleon relies on: the annotation is rejected before
+// defaults.Apply is ever reached. A protowire-go bump that quietly
+// re-admitted the placement would make defaults.Apply's silence
+// reachable again, which is what this catches.
+func TestRepeatedFieldDefaultDoesNotBind(t *testing.T) {
+	const src = `
+syntax = "proto3";
+package def_test.v1;
+import "pxf/annotations.proto";
+message M {
+  repeated string tags = 1 [(pxf.default) = "ignored"];
+  map<string, string> labels = 2 [(pxf.default) = "ignored"];
+}`
 
-	r := msg.ProtoReflect()
-	tags := r.Get(r.Descriptor().Fields().ByName("tags")).List()
-	assert.Equal(t, 0, tags.Len(), "repeated fields don't accept defaults")
+	violations := pxf.ValidateDescriptor(compileMessage(t, src, "def_test.v1.M"))
+	require.NotEmpty(t, violations, "a (pxf.default) on a list must not bind")
+
+	byElement := map[string]pxf.Violation{}
+	for _, v := range violations {
+		byElement[v.Element] = v
+	}
+	for _, field := range []string{"def_test.v1.M.tags", "def_test.v1.M.labels"} {
+		v, ok := byElement[field]
+		require.Truef(t, ok, "no violation reported for %s (got %v)", field, violations)
+		assert.Equal(t, pxf.ViolationDefaultOption, v.Kind)
+		assert.Equal(t, "ignored", v.Name, "the violation carries the offending literal")
+	}
+}
+
+// And the same placement fails the parse, which is the path every
+// chameleon layer actually takes.
+func TestRepeatedFieldDefaultFailsTheParse(t *testing.T) {
+	const src = `
+syntax = "proto3";
+package def_test.v1;
+import "pxf/annotations.proto";
+message M { repeated string tags = 1 [(pxf.default) = "ignored"]; }`
+
+	desc := compileMessage(t, src, "def_test.v1.M")
+	_, err := pxf.UnmarshalOptions{SkipPostDecode: true}.UnmarshalFull([]byte(``), dynamicpb.NewMessage(desc))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "def_test.v1.M.tags")
 }
 
 func TestApply_NilMessage(t *testing.T) {
@@ -490,6 +533,15 @@ message M { google.protobuf.Duration d = 1 [(pxf.default) = "not-a-duration"]; }
 // gating rule: the annotation is only ever consulted for a path no
 // layer set, so a bogus default on a message field a layer did set
 // stays out of the way (and the pass still descends into it).
+//
+// Built without parseInput on purpose. Since protowire-go v1.4.0 a
+// (pxf.default) on a message type PXF has no literal for does not bind
+// (trendvidia/protowire-go#69), so this schema fails the parse and the
+// gating can no longer be reached through a layer — which is what
+// issue #134 asked for, answered upstream. The rule still governs
+// defaults.Apply for a caller who hands it a descriptor that did not
+// come through a PXF parse, and that is the path pinned here; the
+// error it gates is pinned by TestApply_UnsupportedMessageDefaultErrors.
 func TestApply_UnsupportedMessageDefaultSkippedWhenLayerSet(t *testing.T) {
 	const src = `
 syntax = "proto3";
@@ -499,13 +551,19 @@ message Inner { string x = 1 [(pxf.default) = "filled"]; string y = 2; }
 message M { Inner i = 1 [(pxf.default) = "nope"]; }`
 
 	desc := compileMessage(t, src, "def_test.v1.M")
-	msg, present := parseInput(t, desc, `
-i {
-  y = "set"
-}
-`)
-	require.NoError(t, defaults.Apply(msg, present))
-	assert.Equal(t, "filled", get(t, msg, "i", "x").String())
+	msg := dynamicpb.NewMessage(desc)
+
+	// Stand in for what a layer setting `i { y = "set" }` would produce.
+	iField := desc.Fields().ByName("i")
+	inner := msg.NewField(iField).Message()
+	inner.Set(inner.Descriptor().Fields().ByName("y"), protoreflect.ValueOfString("set"))
+	msg.Set(iField, protoreflect.ValueOfMessage(inner))
+	present := map[string]struct{}{"i": {}, "i.y": {}}
+
+	require.NoError(t, defaults.Apply(msg, present),
+		"a bogus default on a path some layer set must not be consulted")
+	assert.Equal(t, "filled", get(t, msg, "i", "x").String(),
+		"and the pass still descends into the message that layer set")
 }
 
 // --- oneof members ---
@@ -579,43 +637,53 @@ func TestApply_SyntheticOneofStillDefaults(t *testing.T) {
 
 // --- pinned protowire-go divergences ---
 
-// TestApply_BytesValueWrapperDefaultRejected pins the one wrapper
-// type that does NOT accept a default. protowire-go's wrapper path
-// routes through parseScalarDefault, which has no BytesKind branch,
-// so a BytesValue default is an error even though the identical
-// literal on a plain `bytes` scalar decodes fine. Upstream pins the
-// same limitation (encoding/pxf/layered_config_test.go). If a future
-// protowire-go bump adds the branch, this test flips and the godoc
-// caveat in defaults.go comes out.
-func TestApply_BytesValueWrapperDefaultRejected(t *testing.T) {
-	const src = `
+// A base64 (pxf.default) decodes on both bytes shapes. This used to be
+// two tests: BytesValue was the ninth wrapper and the one exception —
+// protowire-go's wrapper path had no BytesKind branch, so the identical
+// literal that decoded on a plain `bytes` scalar was rejected on the
+// wrapper — and the plain-scalar case existed as the contrast that made
+// it a wrapper limitation rather than a bytes one. protowire-go v1.4.0
+// added the branch (trendvidia/protowire-go#67/#69), the contrast
+// disappeared, and the pair collapses to this.
+func TestApply_BytesDefaultsDecode(t *testing.T) {
+	cases := []struct {
+		name  string
+		src   string
+		field string
+	}{
+		{
+			name: "bytes_value_wrapper",
+			src: `
 syntax = "proto3";
 package def_test.v1;
 import "pxf/annotations.proto";
 import "google/protobuf/wrappers.proto";
-message M {
-  google.protobuf.BytesValue wrapped = 1 [(pxf.default) = "aGVsbG8="];
-}`
-	desc := compileMessage(t, src, "def_test.v1.M")
-	msg := dynamicpb.NewMessage(desc)
-	err := defaults.Apply(msg, map[string]struct{}{})
-	require.Error(t, err, "BytesValue defaults are not supported by pxf")
-	assert.Contains(t, err.Error(), "defaults: wrapped:", "error must name the field path")
-	assert.Contains(t, err.Error(), "unsupported default kind bytes")
-}
-
-// TestApply_PlainBytesScalarDefaultWorks is the contrast case that
-// makes the one above a wrapper limitation rather than a bytes one.
-func TestApply_PlainBytesScalarDefaultWorks(t *testing.T) {
-	const src = `
+message M { google.protobuf.BytesValue wrapped = 1 [(pxf.default) = "aGVsbG8="]; }`,
+			field: "wrapped",
+		},
+		{
+			name: "plain_bytes_scalar",
+			src: `
 syntax = "proto3";
 package def_test.v1;
 import "pxf/annotations.proto";
-message M { bytes raw = 1 [(pxf.default) = "aGVsbG8="]; }`
-	desc := compileMessage(t, src, "def_test.v1.M")
-	msg := dynamicpb.NewMessage(desc)
-	require.NoError(t, defaults.Apply(msg, map[string]struct{}{}))
-	assert.Equal(t, []byte("hello"), get(t, msg, "raw").Bytes())
+message M { bytes raw = 1 [(pxf.default) = "aGVsbG8="]; }`,
+			field: "raw",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			desc := compileMessage(t, c.src, "def_test.v1.M")
+			msg := dynamicpb.NewMessage(desc)
+			require.NoError(t, defaults.Apply(msg, map[string]struct{}{}))
+
+			got := get(t, msg, c.field)
+			if c.field == "wrapped" {
+				got = sub(t, msg, c.field).Get(sub(t, msg, c.field).Descriptor().Fields().ByName("value"))
+			}
+			assert.Equal(t, []byte("hello"), got.Bytes(), "base64 literal must decode")
+		})
+	}
 }
 
 // TestApply_NonCanonicalBoolDefaultCoercesToFalse pins a sharp edge

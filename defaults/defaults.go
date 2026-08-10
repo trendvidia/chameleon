@@ -26,23 +26,25 @@
 //     on a google.protobuf.Duration field yields 250ms. The literal
 //     is parsed by protowire-go's [pxf.ApplyDefault], which covers
 //     Timestamp, Duration, pxf.BigInt, pxf.Decimal, pxf.BigFloat and
-//     eight of the nine google.protobuf wrapper types. A (pxf.default)
-//     on any other message-typed field — google.protobuf.Any,
-//     pxf.Secret, a google.protobuf.Struct, a user-defined message —
-//     is an error rather than a silent no-op, because pxf has no
-//     literal form to parse it from.
-//   - google.protobuf.BytesValue is the ninth wrapper and the one
-//     exception: protowire-go's wrapper-default path routes through
-//     parseScalarDefault, which has no BytesKind branch, so a default
-//     on a BytesValue field is rejected ("unsupported default kind
-//     bytes") rather than base64-decoded. A default on a plain
-//     `bytes` scalar decodes fine — only the wrapper is affected.
-//     Pinned by TestApply_BytesValueWrapperDefaultRejected.
-//   - Repeated and map fields are skipped — defaulting a list to
-//     non-empty is surprise-prone; users who need it can declare a
-//     scalar default for each element separately. A (pxf.default) on
-//     a repeated or map field is ignored rather than rejected; see
-//     https://github.com/trendvidia/chameleon/issues/131.
+//     all nine google.protobuf wrapper types — BytesValue included,
+//     its literal being base64. (BytesValue was the one exception
+//     until protowire-go v1.4.0 added the missing branch;
+//     trendvidia/protowire-go#67.)
+//   - A (pxf.default) on any other message-typed field —
+//     google.protobuf.Any, pxf.Secret, a google.protobuf.Struct, a
+//     user-defined message — does not bind at all since protowire-go
+//     v1.4.0 (trendvidia/protowire-go#69): the schema is rejected when
+//     the layer is parsed, before this pass runs, and identically for
+//     every environment. Apply keeps its own error for the same
+//     placement because a caller can reach it with a descriptor that
+//     never went through a PXF parse.
+//   - Repeated and map fields are skipped here, and never reach this
+//     pass in the first place: since protowire-go v1.4.0 a
+//     (pxf.default) on a list or map does not bind at all, because one
+//     literal cannot denote a list (trendvidia/protowire-go#68, draft
+//     -01 §annotation-extensions). The skip below is what remains for
+//     a caller who reaches Apply with a descriptor that did not come
+//     through a PXF parse.
 //   - A field in a real (non-synthetic) oneof is not defaulted when
 //     some layer already selected a different member. Setting any
 //     member clears its siblings, so applying the default would
