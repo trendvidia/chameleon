@@ -160,6 +160,27 @@ tidy: ## go mod tidy in every module.
 verify: ## Verify dependency checksums against the module cache.
 	@for m in $(MODULES); do echo "==> verify $$m"; (cd $$m && $(GO) mod verify); done
 
+# --- Changelog ----------------------------------------------------------------
+#
+# Entries live one-per-file in changelog.d/ until release; see its README.
+# VERSION is required by the two assembling targets and is the release
+# being cut, without a leading "v" — the same string docs/RELEASING.md
+# step 2 tags.
+
+.PHONY: changelog
+changelog: ## Fold changelog.d/ fragments into CHANGELOG.md (VERSION=x.y.z).
+	@[ -n "$(VERSION)" ] || { echo "VERSION is required, e.g. make changelog VERSION=0.23.0"; exit 1; }
+	$(GO) run ./hack/changelog -version $(VERSION)
+
+.PHONY: changelog-preview
+changelog-preview: ## Print the section VERSION would produce; change nothing.
+	@[ -n "$(VERSION)" ] || { echo "VERSION is required, e.g. make changelog-preview VERSION=0.23.0"; exit 1; }
+	@$(GO) run ./hack/changelog -version $(VERSION) -preview
+
+.PHONY: changelog-check
+changelog-check: ## Fail if any changelog.d/ fragment is misnamed or empty.
+	@$(GO) run ./hack/changelog -check
+
 # --- Codegen ------------------------------------------------------------------
 
 .PHONY: generate
@@ -175,7 +196,7 @@ tools: ## Install dev tools: golangci-lint pinned to $(GOLANGCI_LINT_VERSION).
 # --- Meta ---------------------------------------------------------------------
 
 .PHONY: ci
-ci: modules-check vet test lint ## Reproduce the CI matrix locally (modules-check + vet + test -race + lint).
+ci: modules-check changelog-check vet test lint ## Reproduce the CI matrix locally (modules-check + changelog-check + vet + test -race + lint).
 
 .PHONY: check
 check: fmt-check vet test ## Fast pre-commit suite (fmt, vet, test).

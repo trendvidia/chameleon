@@ -81,6 +81,14 @@ linters:
         linters: [gosec]
         text: 'G304' # file path provided as taint input
 
+      # hack/ is repo-local developer tooling run by a maintainer at a
+      # terminal: it takes file paths as flags by design (G304), and the
+      # CHANGELOG.md it writes is a tracked file that has to stay
+      # world-readable (G306). Neither reaches untrusted input.
+      - path: 'hack/'
+        linters: [gosec]
+        text: 'G304|G306'
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

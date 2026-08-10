@@ -1,0 +1,1 @@
+- **`docs/RELEASING.md`** — the tag order the three modules have to be released in, and what a stale `require` looks like when it goes wrong. Worth reading before cutting v0.23.0.

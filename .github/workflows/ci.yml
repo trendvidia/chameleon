@@ -80,6 +80,37 @@ jobs:
           # stale and every contributor gets a dirty tree on first build.
           git diff --exit-code -- '**/go.mod' '**/go.sum' go.mod go.sum go.work go.work.sum
 
+  changelog:
+    name: changelog fragment
+    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, Linux, X64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the base branch to diff against; a shallow clone has no
+          # merge-base to compare the PR's file list to.
+          fetch-depth: 0
+      - name: Validate fragment names
+        run: make changelog-check
+      - name: Require a fragment (or the skip-changelog label)
+        if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
+        run: |
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          added=$(git diff --name-only --diff-filter=A \
+            "origin/${{ github.base_ref }}...HEAD" -- changelog.d \
+            | grep -v 'changelog.d/README.md' || true)
+          if [ -z "$added" ]; then
+            echo "::error::This PR adds no changelog.d/ fragment."
+            echo ""
+            echo "Add one — see changelog.d/README.md:"
+            echo "    changelog.d/<issue-or-pr>.<added|changed|deprecated|removed|fixed|security|internal>.md"
+            echo ""
+            echo "If this change genuinely has nothing to tell a consumer"
+            echo "(pure refactor, CI-only, typo), label the PR 'skip-changelog'."
+            exit 1
+          fi
+          echo "Fragment(s) added:"; echo "$added"
+
   lint:
     name: lint
     runs-on: [self-hosted, macOS, ARM64]

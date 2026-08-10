@@ -33,8 +33,28 @@ third of the repo.
 
 ## Cutting a release
 
-1. **Land everything**, CHANGELOG included. Confirm `make ci` is green and
-   `git status` is clean.
+1. **Land everything.** Confirm `make ci` is green and `git status` is clean.
+
+   Changelog entries arrive as fragments in [`changelog.d/`](../changelog.d),
+   one file per change — see its README. Nothing is written into
+   `CHANGELOG.md` during the cycle, so there is no changelog to reconcile
+   here; check that every change you expect to ship has a fragment, and
+   write `changelog.d/_preamble.md` if this release wants the lead
+   paragraph that v0.22.0 and v0.22.1 have.
+
+1. **Assemble the changelog**, on its own commit so the release diff is
+   readable:
+
+   ```
+   make changelog-preview VERSION=0.23.0   # read it first
+   make changelog VERSION=0.23.0
+   git commit -am "release: assemble v0.23.0 changelog"
+   ```
+
+   This folds the fragments into a new `## [0.23.0]` section, resets
+   `## [Unreleased]` to its empty marker, and deletes the fragments it
+   consumed. Do it **before** tagging — the tag must contain the changelog
+   the release ships with.
 
 2. **Tag the library.**
 
