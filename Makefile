@@ -1,7 +1,9 @@
 # chameleon developer Makefile.
 #
-# `make help` lists every target. CI mirrors `test`, `vet`, `lint` and
-# `fmt-check`; `make ci` reproduces the GitHub Actions workflow locally.
+# `make help` lists every target. `make ci` runs every gate
+# .github/workflows/ci.yml applies through make, bar one stated omission
+# (`test-integration`, which needs live KMS credentials); `ci-check` is
+# the guard that keeps that sentence true as the workflow changes.
 #
 # Three modules live in this repo (see docs/RELEASING.md): the library
 # at the root, the sops backend, and the CLI. Per-module targets loop
@@ -14,6 +16,15 @@
 SHELL          := /usr/bin/env bash
 .SHELLFLAGS    := -eu -o pipefail -c
 .DEFAULT_GOAL  := help
+
+# `tidy-check` rewrites go.mod/go.sum/go.work.sum, and it is a prerequisite
+# of `ci` alongside compile, vet, test and lint — which all read those same
+# files. Under `make -j` those run concurrently and the readers see a module
+# graph mid-rewrite: "missing go.sum entry" failures that look like real
+# regressions and do not reproduce. Nothing here parallelises usefully
+# anyway; every per-module target is already one recipe looping over
+# $(MODULES), so the whole cost of this line is that -j stops lying.
+.NOTPARALLEL:
 
 # --- Paths --------------------------------------------------------------------
 
@@ -28,6 +39,16 @@ GOFLAGS        ?=
 # Every module in the repo, as directories relative to the root. The
 # go.work at the root wires them together for local development.
 MODULES        := . sops cmd/chameleon
+
+# The files `tidy-check` watches: the pair every module owns, derived from
+# MODULES rather than spelled out again (modules-check is what keeps that
+# list honest), plus the two workspace files, which belong to the root and
+# to no module. Deriving matters here: a hand-written `'**/go.mod'` glob
+# both misses the root pair — git's pathspec does not match it at depth
+# zero — and sweeps in any go.mod under a testdata fixture that `make
+# tidy` never touches.
+MODULE_FILES   := go.work go.work.sum \
+                  $(patsubst ./%,%,$(foreach m,$(MODULES),$(m)/go.mod $(m)/go.sum))
 
 # --- Test knobs (override on the command line) --------------------------------
 
@@ -193,6 +214,69 @@ modules-check: ## Fail if MODULES and go.work disagree.
 tidy: ## go mod tidy in every module.
 	@for m in $(MODULES); do echo "==> tidy $$m"; (cd $$m && $(GO) mod tidy); done
 
+# How $(MODULE_FILES) stand relative to HEAD, as one string tidy-check can
+# compare before against after: the porcelain lines name files (including
+# untracked ones), the diff carries the content, so a rewrite that leaves
+# the same set of paths dirty still shows up as a different string.
+MODULE_STATE    = git status --porcelain -- $(MODULE_FILES) \
+                  && git --no-pager diff HEAD -- $(MODULE_FILES)
+
+# The gate CI applies, as a target rather than a block of workflow YAML —
+# the same argument ci.yml already makes for the module walk: one
+# definition, or the two drift while `make ci` claims to be what CI runs.
+# Note it REWRITES $(MODULE_FILES) in place, because `go mod tidy` is the
+# only way to know whether they were already correct; a failure therefore
+# leaves the fix sitting in your working tree, unstaged — `git add` it
+# yourself.
+#
+# go.work.sum is in the file set on purpose: it is tracked, and the
+# build/vet/test targets run in workspace mode, which rewrites it
+# whenever it needs a hash the committed file lacks. Left unchecked, a
+# PR lands with it stale and every contributor gets a dirty tree on
+# first build.
+#
+# Three outcomes, told apart on purpose. `git diff` alone cannot tell the
+# first two apart — it compares the worktree to HEAD, which says nothing
+# about what tidy did or did not do:
+#
+#   tidy rewrote a file          -> untidy; commit what tidy just fixed.
+#   tidy rewrote nothing, but    -> your own in-progress edit, or a
+#   a file still differs            go.work.sum an earlier target rewrote.
+#   git itself failed            -> nothing was judged; say so.
+#
+# Reporting the second as "not tidy — the diff above is what 'make tidy'
+# just fixed" gets the instruction right by accident and the diagnosis
+# wrong: the developer is told their module graph was broken when it was
+# not, and sent to read a diff of their own text for a fix that is not in
+# it. Same reasoning ci.yml's changelog gate gives for not swallowing a
+# broken ref into "no fragment" — one message for several states sends
+# some of its readers the wrong way.
+#
+# `git status --porcelain` and not the diff alone: a go.sum that tidy
+# CREATES is untracked, and `git diff` cannot see it.
+.PHONY: tidy-check
+tidy-check: ## Fail if `make tidy` rewrites any module file, or any differs from HEAD.
+	@before=$$($(MODULE_STATE)) || { \
+		echo "tidy-check: git could not read the state of $(MODULE_FILES) — check aborted, module graph unjudged."; \
+		exit 2; \
+	}; \
+	$(MAKE) --no-print-directory tidy || exit $$?; \
+	after=$$($(MODULE_STATE)) || { \
+		echo "tidy-check: git could not read the module files after 'make tidy' — check aborted."; \
+		exit 2; \
+	}; \
+	[ -n "$$after" ] || exit 0; \
+	printf '%s\n' "$$after"; \
+	if [ "$$before" = "$$after" ]; then \
+		echo "'make tidy' changed nothing — the module files above already differed from"; \
+		echo "HEAD: an edit of your own, or a go.work.sum an earlier target rewrote."; \
+		echo "CI gates the committed files, so commit (or drop) it before pushing."; \
+	else \
+		echo "Module files are not tidy — the state above is what 'make tidy' just fixed"; \
+		echo "in your working tree; 'git add' and commit it."; \
+	fi; \
+	exit 1
+
 .PHONY: verify
 verify: ## Verify dependency checksums against the module cache.
 	@for m in $(MODULES); do echo "==> verify $$m"; (cd $$m && $(GO) mod verify); done
@@ -233,8 +317,65 @@ tools: ## Install dev tools: golangci-lint pinned to $(GOLANGCI_LINT_VERSION).
 
 # --- Meta ---------------------------------------------------------------------
 
+# Every make target .github/workflows/ci.yml runs, bar the one in
+# CI_EXEMPT — `ci-check` fails if that stops being true. The order is
+# this file's own (cheap and hermetic first, so the slow legs are not
+# spent to reach a one-line gofumpt complaint), not the workflow's: make
+# aborts at the first failing prerequisite whatever the order, so
+# mirroring the step sequence would buy nothing and is not claimed.
+#
+# What `make ci` still cannot tell you, because none of it runs through
+# make: test-integration (CI_EXEMPT below), the workflow's "did this PR
+# add a changelog fragment?" step — `changelog-check` validates the
+# fragments that exist, it does not require one — the `bench` job's
+# benchmark run, and the go-plus toolchain assertion. Those four are the
+# whole gap between a green `make ci` and a green PR.
+#
+# fmt-check was in this list from #149 and was lost in #150's merge of
+# main (202ae0e) — both sides had edited the one line, and the
+# resolution kept one. That is what #165 is about, and it is why the
+# list is a variable with a guard on it rather than a line with a
+# comment asking to be kept in step: the comment is what failed.
+CI_WORKFLOW := .github/workflows/ci.yml
+CI_TARGETS  := modules-check ci-check changelog-check fmt-check compile vet test tidy-check lint
+
+# Targets $(CI_WORKFLOW) runs that `make ci` deliberately does not. Each
+# needs a reason here, because this is the list that lets ci-check pass.
+#
+#   test-integration — needs live KMS credentials. Rolling it in would
+#   make `make ci` fail on a clean checkout, which trains people to
+#   ignore it: worse than not running it.
+CI_EXEMPT   := test-integration
+
+# The guard on the list above, in the same spirit as modules-check, which
+# ci.yml calls "the guard on the definition itself". Checked one way only:
+# every make target the workflow runs must be a gate `make ci` runs. The
+# converse is not an error — `lint` reaches CI through
+# golangci-lint-action rather than through make.
+.PHONY: ci-check
+ci-check: ## Fail if ci.yml runs a make target that `make ci` does not.
+	@steps=$$(grep -oE '^[[:space:]]*(run:[[:space:]]+)?make[[:space:]]+[a-z][a-z0-9-]*[[:space:]]*$$' $(CI_WORKFLOW) | awk '{print $$NF}' | sort -u); \
+	if [ -z "$$steps" ]; then \
+		echo "ci-check: no 'make <target>' steps found in $(CI_WORKFLOW) — the pattern here is broken, not the workflow."; \
+		exit 1; \
+	fi; \
+	missing=""; \
+	for t in $$steps; do \
+		case " $(CI_TARGETS) $(CI_EXEMPT) " in \
+			*" $$t "*) ;; \
+			*) missing="$$missing $$t" ;; \
+		esac; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "$(CI_WORKFLOW) runs make targets that 'make ci' does not:$$missing"; \
+		echo "  make ci : $(CI_TARGETS)"; \
+		echo "  exempt  : $(CI_EXEMPT)"; \
+		echo "Add each to CI_TARGETS, or to CI_EXEMPT with the reason. This drift is #165."; \
+		exit 1; \
+	fi
+
 .PHONY: ci
-ci: modules-check changelog-check vet test lint ## Reproduce the CI matrix locally (modules-check + changelog-check + vet + test -race + lint).
+ci: $(CI_TARGETS) ## Everything CI runs through make except test-integration (needs live KMS credentials).
 
 .PHONY: check
 check: fmt-check vet test ## Fast pre-commit suite (fmt-check, vet, test).
