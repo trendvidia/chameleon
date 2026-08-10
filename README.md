@@ -418,7 +418,7 @@ common/v1/common.proto: field "common.v1.Shared.labels": invalid (pxf.default) =
 
 The offending file is already named at the head of the line, so it is never listed among the roots reaching it.
 
-The `OK` line carries both counts for a directory search — roots asked for, and distinct files covered — because the covered count alone no longer says how many roots produced it. **Its shape follows what `--schema` named, not how many roots survived** ([#166](https://github.com/trendvidia/chameleon/issues/166)): a directory search that `--exclude` narrowed to a single root still prints `1 root(s)`, so a CI job matching `N root(s)` does not stop matching at exactly the moment a pattern over-prunes. One `--schema` naming one file keeps the single-file form it always had.
+The `OK` line carries both counts for a directory search — roots asked for, and distinct files covered — because the covered count alone no longer says how many roots produced it. **Its shape follows what `--schema` named, not how many roots survived** ([#166](https://github.com/trendvidia/chameleon/issues/166)): a directory search prints `N root(s)` even when `N` is 1 — whether `--exclude` narrowed it or the directory simply holds one `.proto` — so a CI job matching `N root(s)` does not stop matching at exactly the moment a pattern over-prunes. One `--schema` naming one file keeps the single-file form it always had; two `--schema` flags are not that form, however few distinct roots they name.
 
 Files found under a directory are named the way their siblings import them, protoc's `-I` contract: with `--schema=./proto/svc --include=./proto` a file is `svc/a.proto`, not `a.proto`, so a sibling's `import "svc/base.proto"` resolves to the same file rather than compiling a second copy of it. Two different files that would compile under one name are rejected rather than silently checked once.
 
@@ -446,7 +446,7 @@ Three things it deliberately does not do:
 - **It does not apply to what you name explicitly** — neither a `.proto` passed straight to `--schema`, nor the `--schema` directory itself. Naming something is the more specific instruction.
 - **Nothing is excluded by default.** `third_party/`, `vendor/` and dot-directories are walked like anything else until you ask otherwise.
 
-What a pattern pruned is reported, because a well-formed pattern can take more than you meant and the run is green either way:
+What a pattern pruned is reported, because a well-formed pattern can take more than you meant and the run is green either way — here over a `./proto` holding `top.proto`, `v1/a.proto` and `vendor/b.proto`:
 
 ```sh
 chameleon check-schema --schema=./proto --exclude=vendor
@@ -456,7 +456,12 @@ chameleon check-schema --schema=./proto --exclude='v*'      # also takes v1/
 # OK    1 root(s)    1 file(s) checked    2 skipped
 ```
 
-The count is of files the run did **not** look at, not of files the patterns matched — one pruned from the walk and then named directly by another `--schema` is checked, and is not counted. The field is absent entirely when nothing was skipped, so a run without `--exclude` prints the line it always did. Pruning *every* file is still an error rather than a count.
+The count is of **roots the patterns took away**, not of files the patterns matched, and not of files left unread. Two consequences worth knowing before you read a number:
+
+- One pruned from the walk and then named directly by another `--schema` is a root by the more specific instruction, so nothing was taken away and it is not counted.
+- One that a surviving root *imports* is compiled and checked like any other file in the closure, and is still counted here — it appears in both numbers. That is the first bullet above at work (an excluded file stays importable), so it is ordinary rather than a corner: the file count says the file was checked, and the skipped count says it no longer has a line of its own in the report.
+
+The field is absent entirely when nothing was skipped, so no run without `--exclude` grows one. Pruning *every* file is still an error rather than a count. What a search could not read — an unreadable subtree a pattern already prunes — goes uncounted rather than failing the run.
 
 This is the CLI half of [#134](https://github.com/trendvidia/chameleon/issues/134), and it is the answer for a repo that only *authors* schemas and hands them to someone else — a consumer never runs its CLI. The library half checks the same rules at `resolver.New`, so a program that constructs a Resolver is covered without running anything.
 
