@@ -200,6 +200,7 @@ func TestMultiEnv_ProdKeyResolvesProdEnv(t *testing.T) {
 		"--message=multienv.v1.Cfg",
 		"--bundle="+s.bundle,
 		"--env=prod",
+		"--decrypter=sops",
 	)
 	require.Equal(t, 0, exit, "get --env=prod with prod-key exit; stderr: %s", stderr)
 
@@ -237,6 +238,7 @@ func TestMultiEnv_SandboxKeyResolvesSandboxEnv(t *testing.T) {
 		"--message=multienv.v1.Cfg",
 		"--bundle="+s.bundle,
 		"--env=sandbox",
+		"--decrypter=sops",
 	)
 	require.Equal(t, 0, exit, "get --env=sandbox with sandbox-key exit; stderr: %s", stderr)
 
@@ -256,6 +258,10 @@ func TestMultiEnv_WrongKeyFailsToDecryptEnvLayer(t *testing.T) {
 	buildMultiEnvBundle(t, s)
 
 	t.Setenv("SOPS_AGE_KEY", s.prod.identity)
+	// --decrypter=sops is load-bearing here, not decoration: without
+	// it the CLI wires resolver.WithoutDecrypter and this test passes
+	// on the non-zero exit from "decryption disabled" — proving
+	// nothing about recipient isolation, which is the whole point.
 	stdout, stderr, exit := runBinary(t,
 		"get",
 		"--schema="+s.schema,
@@ -263,9 +269,12 @@ func TestMultiEnv_WrongKeyFailsToDecryptEnvLayer(t *testing.T) {
 		"--message=multienv.v1.Cfg",
 		"--bundle="+s.bundle,
 		"--env=sandbox",
+		"--decrypter=sops",
 	)
 	assert.NotEqual(t, 0, exit,
 		"prod-key must not decrypt sandbox's per-env layer")
+	assert.NotContains(t, stderr, "decryption disabled",
+		"the failure must come from the key, not from a resolver with no decrypter")
 	assert.Empty(t, stdout,
 		"no resolution should be printed on decrypt failure")
 	// The sops error wording varies; assert that some decrypt-
@@ -303,6 +312,7 @@ func TestMultiEnv_SharedBaseLayerEncryptedToBothRecipients(t *testing.T) {
 				"--message=multienv.v1.Cfg",
 				"--bundle="+s.bundle,
 				"--env="+env.name,
+				"--decrypter=sops",
 			)
 			require.Equal(t, 0, exit, "%s exit; stderr: %s", env.name, stderr)
 			assert.Contains(t, stdout, `base_url = "http://shared"`,

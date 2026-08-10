@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"path"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -29,11 +28,11 @@ import (
 	"github.com/trendvidia/chameleon/internal/bundlelayout"
 	"github.com/trendvidia/chameleon/internal/secretcatalog"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
-	"github.com/trendvidia/chameleon/sops"
 )
 
 // crypt.Encrypter + crypt.Recipients carry the per-layer re-encrypt
-// contract. The bundler computes a crypt.Recipients per layer from
+// contract, and BuildOptions.RecipientsForKeyName resolves a chain
+// spec's named keys. The bundler computes a crypt.Recipients per layer from
 // the module's recipients_by_env entry (or recipients fallback) so
 // each layer file inside an env-agnostic bundle is encrypted only
 // to the env that consumes it.
@@ -79,6 +78,19 @@ type BuildOptions struct {
 	// Encrypter writes sops-encrypted layers in the output bundle.
 	// Required when any layer's resolved crypt.Recipients are non-empty.
 	Encrypter crypt.Encrypter
+
+	// RecipientsForKeyName resolves an Environment's `key_name` to
+	// the recipients it names. Required only when the chain spec
+	// actually declares a key_name on some environment; a spec that
+	// carries recipients solely in the manifest never calls it.
+	//
+	// This is a hook rather than a direct call into chameleon/sops
+	// because the key store is the backend's business, and the
+	// library module must not link a backend to build a bundle
+	// (trendvidia/chameleon#130). The CLI passes
+	// sops.RecipientsFromKeyName; a caller with its own key store
+	// passes its own.
+	RecipientsForKeyName func(keyName string) (crypt.Recipients, error)
 
 	// Output is the io.Writer the zip bundle is streamed to.
 	// Required. The caller is responsible for any wrapping
@@ -171,7 +183,7 @@ func Build(ctx context.Context, opts BuildOptions) error {
 
 	module, _ := lookupModule(manifest, opts.Module)
 
-	layers, err := planLayers(chainSpec, module)
+	layers, err := planLayers(chainSpec, module, opts.RecipientsForKeyName)
 	if err != nil {
 		return err
 	}
@@ -217,7 +229,7 @@ type layerPlan struct {
 // context, surfacing as a baffling "where did my layer go" at
 // runtime. The CLI surfaces this as a "remove ${ctx} references
 // or migrate to ${env}" message.
-func planLayers(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleManifest_Module) ([]*layerPlan, error) {
+func planLayers(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleManifest_Module, recipientsForKeyName func(string) (crypt.Recipients, error)) ([]*layerPlan, error) {
 	for _, le := range chainSpec.GetLayers() {
 		if strings.Contains(le.GetPath(), "${ctx.") {
 			return nil, fmt.Errorf("bundler: layer entry %q path %q references ${ctx.*}; bundles cannot resolve runtime context, migrate the value into the chain spec or split into per-env entries", le.GetId(), le.GetPath())
@@ -232,9 +244,13 @@ func planLayers(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleMani
 			return nil, fmt.Errorf("bundler: expand env %q: %w", envName, err)
 		}
 		for _, ref := range refs {
-			if !path.IsAbs(ref.Path) && !strings.HasPrefix(ref.Path, "../") && ref.Path != ".." {
-				// fine — relative, no escape
-			} else {
+			// fs.ValidPath is the exact bar the bundle reader holds
+			// entry names to, so anything it rejects could never be
+			// read back anyway: unrooted, slash-separated, and with
+			// no "." / ".." element anywhere — not just at the front,
+			// which is what a "layers/../../etc/cron.d/x" entry needs
+			// to walk a third-party extractor out of its root.
+			if !fs.ValidPath(ref.Path) || ref.Path == "." {
 				return nil, fmt.Errorf("bundler: layer %q (entry %q): zip-unsafe path", ref.Path, ref.EntryID)
 			}
 			plan, ok := byPath[ref.Path]
@@ -257,7 +273,7 @@ func planLayers(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleMani
 		sort.Strings(p.Envs)
 		p.Envs = dedupe(p.Envs)
 		if p.Encrypted {
-			recipients, err := unionRecipients(chainSpec, module, p.Envs)
+			recipients, err := unionRecipients(chainSpec, module, p.Envs, recipientsForKeyName)
 			if err != nil {
 				return nil, fmt.Errorf("bundler: layer %q: %w", p.Path, err)
 			}
@@ -419,15 +435,19 @@ func chameleonVersion() string {
 //     age / PGP keys, including any not expressible as a chain
 //     spec key_name (cloud KMS ARNs, third-party PGP recipients,
 //     etc.).
-//   - chain.EffectiveKeyName per env — the in-config named age
-//     key declared on Environment. Resolved through the sops
-//     library so chameleon doesn't see keystore internals.
+//   - chain.EffectiveKeyName per env — the in-config named key
+//     declared on Environment, handed to the caller's
+//     recipientsForKeyName hook so the bundler never sees keystore
+//     internals (nor links a backend to reach them). Whatever the
+//     hook returns is unioned in whole; chameleon/sops resolves a
+//     name to an age recipient, but a caller's own key store is free
+//     to map one to KMS or PGP.
 //
 // Either source may be absent. A chain spec without any key_name
 // degenerates to the historical module-only behavior; a manifest
 // without recipients_by_env / recipients still produces a usable
 // recipient set if the chain spec carries key_name.
-func unionRecipients(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleManifest_Module, envs []string) (crypt.Recipients, error) {
+func unionRecipients(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleManifest_Module, envs []string, recipientsForKeyName func(string) (crypt.Recipients, error)) (crypt.Recipients, error) {
 	var out crypt.Recipients
 
 	if module != nil {
@@ -457,11 +477,26 @@ func unionRecipients(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.Bundl
 			if keyName == "" {
 				continue
 			}
-			r, err := sops.RecipientsFromKeyName(keyName)
+			if recipientsForKeyName == nil {
+				// Silently dropping the key_name would encrypt the
+				// layer to a smaller recipient set than the chain
+				// asked for — the failure would surface as an
+				// undecryptable layer in production, not here.
+				return crypt.Recipients{}, fmt.Errorf("env %q declares key_name %q but BuildOptions.RecipientsForKeyName is nil", env, keyName)
+			}
+			r, err := recipientsForKeyName(keyName)
 			if err != nil {
 				return crypt.Recipients{}, fmt.Errorf("env %q: %w", env, err)
 			}
+			// Every field, not just Age: the hook returns a full
+			// crypt.Recipients and a caller's key store may well map a
+			// name to a KMS ARN or a PGP fingerprint. Keeping only Age
+			// would encrypt the layer to a smaller set than the chain
+			// asked for — the same silent narrowing the nil check
+			// above refuses to allow.
+			out.KMS = append(out.KMS, r.KMS...)
 			out.Age = append(out.Age, r.Age...)
+			out.PGP = append(out.PGP, r.PGP...)
 		}
 	}
 

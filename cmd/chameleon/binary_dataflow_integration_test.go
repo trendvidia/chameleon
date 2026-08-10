@@ -305,6 +305,7 @@ func runBinaryWithStdin(t *testing.T, stdin []byte, args ...string) (stdout, std
 	t.Helper()
 	bin := buildBinary(t)
 	cmd := exec.Command(bin, args...)
+	cmd.Env = hermeticEnv(t)
 	cmd.Stdin = bytes.NewReader(stdin)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf

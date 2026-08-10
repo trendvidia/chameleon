@@ -4,6 +4,7 @@
 package chameleon_test
 
 import (
+	"encoding/json"
 	"os/exec"
 	"strings"
 	"testing"
@@ -20,10 +21,17 @@ import (
 // on a program resolving two plaintext layers
 // (trendvidia/chameleon#130).
 //
-// So the graph itself is the assertion. These tests shell out to `go
-// list -deps`, which reports the real package graph the linker will
-// see, and fail if a key-management dependency reappears on the
-// plaintext path.
+// The same is true one level up. A *test* in this module that imports
+// the sops module would keep the whole KMS tree in this go.mod, and a
+// consumer's `go list -m all`, dependency review and SBOM inherit our
+// requirements whether or not their build reaches the code: 347 modules
+// for a plaintext consumer, against 35 now that chameleon/sops and
+// cmd/chameleon are modules of their own.
+//
+// So the graphs themselves are the assertion. These tests shell out to
+// `go list -deps` for the package graph the linker will see and to `go
+// mod edit -json` for the requirements consumers inherit, and fail if
+// key management reappears in either.
 
 // modulePath is this module, and the prefix every package below is
 // filtered against.
@@ -43,11 +51,17 @@ const modulePath = "github.com/trendvidia/chameleon"
 // each for a reason that will not change:
 //
 //   - internal/* — not consumer surface, and internal/bundler is the
-//     *write* side, which links a backend on purpose (bundling
-//     re-encrypts).
+//     *write* side, which takes a backend from its caller on purpose
+//     (bundling re-encrypts).
 //   - cmd/* — binaries. `chameleon bundle` decrypts by design.
 //   - chameleon/sops — the backend itself. It is what the negative
 //     control below points the same check at.
+//
+// Since v0.23.0 the last two are also module boundaries — chameleon/sops
+// and cmd/chameleon are separate modules, so `go list ./...` here does
+// not reach them at all. The filters stay: they cost nothing, they keep
+// this test working if a package ever moves back, and cmd/
+// protoc-gen-chameleon-go is still in this module and still a binary.
 func plaintextPath(t *testing.T) []string {
 	t.Helper()
 
@@ -89,16 +103,31 @@ var keyManagement = []struct{ prefix, what string }{
 	{"github.com/hashicorp/vault", "the Vault API"},
 }
 
-// deps returns the full package graph of pkgs, as `go list -deps` sees
-// it.
+// deps returns the full package graph of pkgs in this module, as `go
+// list -deps` sees it.
 func deps(t *testing.T, pkgs ...string) []string {
 	t.Helper()
-	return list(t, append([]string{"-deps"}, pkgs...)...)
+	return depsIn(t, ".", pkgs...)
 }
 
-// list runs `go list` with args and returns the package names it
-// printed.
+// depsIn is deps for a package graph rooted in another module of this
+// repo. Needed since v0.23.0: chameleon/sops is its own module, so
+// `go list -deps github.com/trendvidia/chameleon/sops` from here does
+// not resolve, with or without the workspace.
+func depsIn(t *testing.T, dir string, pkgs ...string) []string {
+	t.Helper()
+	return listIn(t, dir, append([]string{"-deps"}, pkgs...)...)
+}
+
+// list runs `go list` in this module with args and returns the package
+// names it printed.
 func list(t *testing.T, args ...string) []string {
+	t.Helper()
+	return listIn(t, ".", args...)
+}
+
+// listIn runs `go list` with args in dir.
+func listIn(t *testing.T, dir string, args ...string) []string {
 	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no go toolchain on PATH; cannot inspect the package graph")
@@ -109,10 +138,11 @@ func list(t *testing.T, args ...string) []string {
 	// a cold cache, and folding that in would feed the checks below
 	// package names that are not in the graph at all.
 	cmd := exec.CommandContext(t.Context(), "go", append([]string{"list"}, args...)...)
+	cmd.Dir = dir
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	require.NoError(t, err, "go list failed: %s", stderr.String())
+	require.NoError(t, err, "go list in %q failed: %s", dir, stderr.String())
 
 	lines := strings.Fields(string(out))
 	require.NotEmpty(t, lines, "go list returned nothing — the check below would pass vacuously")
@@ -137,6 +167,63 @@ func TestPlaintextPathLinksNoKeyManagement(t *testing.T) {
 	}
 }
 
+func TestLibraryModuleRequiresNoKeyManagement(t *testing.T) {
+	if testing.Short() {
+		t.Skip("shells out to go mod edit")
+	}
+
+	// Package-level cleanliness is not enough. `go mod tidy` records a
+	// requirement for every module providing a transitively imported
+	// package — tests included — so one test here importing
+	// chameleon/sops would put the whole KMS tree back in this go.mod,
+	// and from there into every consumer's `go list -m all`. That is
+	// what makes chameleon/sops and cmd/chameleon separate modules.
+	//
+	// Reads the requirements rather than the file text: go.mod's own
+	// comments name the sops fork, and a substring check would trip
+	// over prose.
+	var mod struct {
+		Require []struct {
+			Path     string
+			Indirect bool
+		}
+	}
+	require.NoError(t, json.Unmarshal([]byte(goModJSON(t)), &mod))
+	require.NotEmpty(t, mod.Require, "go mod edit -json listed no requirements — check would pass vacuously")
+
+	for _, r := range mod.Require {
+		for _, km := range keyManagement {
+			if strings.HasPrefix(r.Path, km.prefix) {
+				t.Errorf("library go.mod requires %s (%s).\n"+
+					"Every consumer's `go list -m all`, dependency review and SBOM inherits this\n"+
+					"module's requirements, reached or not. Anything needing a backend belongs in\n"+
+					"the sops or cmd/chameleon module — trendvidia/chameleon#130.", r.Path, km.what)
+			}
+		}
+	}
+}
+
+// goModJSON returns this module's go.mod as JSON. Separate from list()
+// because `go mod edit` takes no package arguments and its output is a
+// document, not a line per package.
+func goModJSON(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go toolchain on PATH; cannot inspect the module graph")
+	}
+	// stdout only, for the same reason list() reads stdout: the go
+	// command writes progress to stderr — a toolchain switch alone
+	// emits "go: downloading go1.x.y" — and folding it in turns a
+	// benign notice into `invalid character 'g'` from the parser
+	// below, which reads as a broken test rather than its real signal.
+	cmd := exec.CommandContext(t.Context(), "go", "mod", "edit", "-json")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	require.NoError(t, err, "go mod edit -json failed: %s", stderr.String())
+	return string(out)
+}
+
 func TestKeyManagementCheckCatchesTheSopsPackage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("shells out to go list")
@@ -152,7 +239,7 @@ func TestKeyManagementCheckCatchesTheSopsPackage(t *testing.T) {
 	// control could never fail — which is the exact failure mode it
 	// exists to rule out.
 	hits := map[string]int{}
-	for _, pkg := range deps(t, "github.com/trendvidia/chameleon/sops") {
+	for _, pkg := range depsIn(t, "sops", "./...") {
 		for _, km := range keyManagement {
 			if km.prefix == selfPrefix {
 				continue

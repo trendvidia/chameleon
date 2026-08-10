@@ -2,6 +2,14 @@
 #
 # `make help` lists every target. CI mirrors `test`, `vet`, and `lint`;
 # `make ci` reproduces the GitHub Actions workflow locally.
+#
+# Three modules live in this repo (see docs/RELEASING.md): the library
+# at the root, the sops backend, and the CLI. Per-module targets loop
+# over $(MODULES) because `./...` stops at a module boundary — a target
+# that forgets the loop silently tests a third of the repo. `cover`,
+# `bench` and `fuzz` deliberately do not loop: they are the library
+# module's tools (the other two have no benchmarks or fuzz targets),
+# and each prints what it did and did not cover.
 
 SHELL          := /usr/bin/env bash
 .SHELLFLAGS    := -eu -o pipefail -c
@@ -16,6 +24,10 @@ PROTOC_GEN_BIN := $(BIN_DIR)/protoc-gen-chameleon-go
 # All Go module commands inherit GOFLAGS; override on the command line.
 GO             ?= go
 GOFLAGS        ?=
+
+# Every module in the repo, as directories relative to the root. The
+# go.work at the root wires them together for local development.
+MODULES        := . sops cmd/chameleon
 
 # --- Test knobs (override on the command line) --------------------------------
 
@@ -40,12 +52,16 @@ help: ## Show this help.
 
 # --- Build / install ----------------------------------------------------------
 
+.PHONY: compile
+compile: ## Type-check + compile every package in every module (no binaries).
+	@for m in $(MODULES); do echo "==> compile $$m"; (cd $$m && $(GO) build ./...); done
+
 .PHONY: build
 build: $(CHAMELEON_BIN) $(PROTOC_GEN_BIN) ## Build chameleon + protoc-gen-chameleon-go into ./bin/.
 
 $(CHAMELEON_BIN): $(shell find cmd/chameleon -name '*.go' -not -name '*_test.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
-	$(GO) build $(GOFLAGS) -o $@ ./cmd/chameleon
+	cd cmd/chameleon && $(GO) build $(GOFLAGS) -o $(CURDIR)/$@ .
 
 $(PROTOC_GEN_BIN): $(shell find cmd/protoc-gen-chameleon-go -name '*.go' -not -name '*_test.go' 2>/dev/null)
 	@mkdir -p $(BIN_DIR)
@@ -53,22 +69,23 @@ $(PROTOC_GEN_BIN): $(shell find cmd/protoc-gen-chameleon-go -name '*.go' -not -n
 
 .PHONY: install
 install: ## go install both binaries into $$GOBIN / $$GOPATH/bin.
-	$(GO) install $(GOFLAGS) ./cmd/chameleon
+	cd cmd/chameleon && $(GO) install $(GOFLAGS) .
 	$(GO) install $(GOFLAGS) ./cmd/protoc-gen-chameleon-go
 
 # --- Test ---------------------------------------------------------------------
 
 .PHONY: test
-test: ## Run unit tests with the race detector (mirrors CI).
-	$(GO) test $(TEST_FLAGS) ./...
+test: ## Run unit tests with the race detector, every module (mirrors CI).
+	@for m in $(MODULES); do echo "==> test $$m"; (cd $$m && $(GO) test $(TEST_FLAGS) ./...); done
 
 .PHONY: test-short
 test-short: ## Quick smoke run: skip -race, fail fast.
-	$(GO) test -short ./...
+	@for m in $(MODULES); do echo "==> test-short $$m"; (cd $$m && $(GO) test -short ./...); done
 
 .PHONY: test-integration
 test-integration: ## Run sops integration tests (real KMS round-trips).
-	$(GO) test -tags=integration -timeout 5m ./sops/...
+	cd sops && $(GO) test -tags=integration -timeout 5m ./...
+	cd cmd/chameleon && $(GO) test -tags=integration -timeout 10m ./...
 
 .PHONY: fuzz
 fuzz: ## Run all fuzz targets for FUZZ_TIME (default 30s).
@@ -84,6 +101,8 @@ bench: ## Run benchmarks (BENCH_PKG, BENCH_COUNT, BENCHTIME overridable).
 cover: ## Write a coverage profile to $(COVER_PROFILE) and print summary.
 	$(GO) test $(TEST_FLAGS) -coverprofile=$(COVER_PROFILE) -covermode=atomic ./...
 	$(GO) tool cover -func=$(COVER_PROFILE) | tail -n 20
+	@echo "note: library module only. For another module, run the tools in it directly —"
+	@echo "      cd sops && go test $(TEST_FLAGS) -coverprofile=cover.out -covermode=atomic ./... && go tool cover -func=cover.out"
 
 .PHONY: cover-html
 cover-html: cover ## Open the coverage profile in a browser.
@@ -92,8 +111,8 @@ cover-html: cover ## Open the coverage profile in a browser.
 # --- Static analysis ----------------------------------------------------------
 
 .PHONY: vet
-vet: ## go vet ./...
-	$(GO) vet ./...
+vet: ## go vet ./... in every module.
+	@for m in $(MODULES); do echo "==> vet $$m"; (cd $$m && $(GO) vet ./...); done
 
 .PHONY: lint
 lint: ## golangci-lint run (pinned to $(GOLANGCI_LINT_VERSION)).
@@ -101,7 +120,7 @@ lint: ## golangci-lint run (pinned to $(GOLANGCI_LINT_VERSION)).
 		echo "golangci-lint not on PATH — run 'make tools' to install $(GOLANGCI_LINT_VERSION)."; \
 		exit 1; \
 	}
-	golangci-lint run
+	@for m in $(MODULES); do echo "==> lint $$m"; (cd $$m && golangci-lint run); done
 
 .PHONY: self-lint
 self-lint: $(CHAMELEON_BIN) ## Run `chameleon lint` against this repo (eats own dogfood).
@@ -122,13 +141,24 @@ fmt-check: ## Fail if anything is not gofmt-clean.
 
 # --- Module hygiene -----------------------------------------------------------
 
+.PHONY: modules-check
+modules-check: ## Fail if MODULES and go.work disagree.
+	@work=$$($(GO) work edit -json | grep -o '"DiskPath": *"[^"]*"' | sed 's/.*: *"//; s/"$$//; s|^\./||' | sort | tr '\n' ' '); \
+	mk=$$(printf '%s\n' $(MODULES) | sed 's|^\./||' | sort | tr '\n' ' '); \
+	if [ "$$work" != "$$mk" ]; then \
+		echo "MODULES and go.work disagree — every per-module target would silently skip one."; \
+		echo "  Makefile MODULES : $$mk"; \
+		echo "  go.work use      : $$work"; \
+		exit 1; \
+	fi
+
 .PHONY: tidy
-tidy: ## go mod tidy.
-	$(GO) mod tidy
+tidy: ## go mod tidy in every module.
+	@for m in $(MODULES); do echo "==> tidy $$m"; (cd $$m && $(GO) mod tidy); done
 
 .PHONY: verify
 verify: ## Verify dependency checksums against the module cache.
-	$(GO) mod verify
+	@for m in $(MODULES); do echo "==> verify $$m"; (cd $$m && $(GO) mod verify); done
 
 # --- Codegen ------------------------------------------------------------------
 
@@ -145,7 +175,7 @@ tools: ## Install dev tools: golangci-lint pinned to $(GOLANGCI_LINT_VERSION).
 # --- Meta ---------------------------------------------------------------------
 
 .PHONY: ci
-ci: vet test lint ## Reproduce the CI matrix locally (vet + test -race + lint).
+ci: modules-check vet test lint ## Reproduce the CI matrix locally (modules-check + vet + test -race + lint).
 
 .PHONY: check
 check: fmt-check vet test ## Fast pre-commit suite (fmt, vet, test).

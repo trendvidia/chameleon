@@ -13,7 +13,6 @@ import (
 	"testing/fstest"
 	"time"
 
-	"filippo.io/age"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -22,43 +21,43 @@ import (
 
 	"github.com/trendvidia/chameleon/crypt"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
-	"github.com/trendvidia/chameleon/sops"
 )
 
-// TestBuild_EndToEnd_Age is the bundler's full-pipeline smoke test:
-// a multi-env chain spec + encrypted-via-age layers → Build → assert
-// the produced zip contains the expected entries AND each bundled
-// layer decrypts cleanly to a narrowed version of the original.
+// TestBuild_EndToEnd is the bundler's full-pipeline smoke test: a
+// multi-env chain spec + encrypted layers → Build → assert the
+// produced zip contains the expected entries, that each bundled layer
+// decrypts cleanly to a narrowed version of the original, and that
+// each was encrypted to the recipients the manifest named.
 //
-// Uses age (offline, no KMS round-trip) so it runs in the default
-// test path without the integration tag.
-func TestBuild_EndToEnd_Age(t *testing.T) {
+// Runs against fakeCrypto rather than a real backend: since v0.23.0
+// the library module links no key management (trendvidia/chameleon#130),
+// and the pipeline only ever sees the crypt interfaces. The equivalent
+// against real sops + age lives in the sops module
+// (sops/bundle_test.go) — change one, look at the other.
+func TestBuild_EndToEnd(t *testing.T) {
 	ctx := context.Background()
 
-	// 1. Generate age keypair. SOPS_AGE_KEY is read by sops.Default()
-	// for the decrypt sides of both the pre-test fixture encryption
-	// AND the post-test verification decryption.
-	identity, err := age.GenerateX25519Identity()
-	if err != nil {
-		t.Fatalf("age key generation: %v", err)
-	}
-	publicKey := identity.Recipient().String()
-	t.Setenv("SOPS_AGE_KEY", identity.String())
+	// The recipient is opaque to the bundler — it reaches the
+	// Encrypter verbatim, which is what step 7 below asserts.
+	const publicKey = "age1testrecipient000000000000000000000000000000000000000000000"
 
 	schema := buildTestDescriptor(t)
-	enc := sops.DefaultEncrypter()
-	dec := sops.Default()
+	// Two instances: `fixtures` seeds the layer FS, `backend` is what
+	// Build itself uses, so backend's call log is exactly the
+	// pipeline's re-encrypts and nothing else.
+	fixtures := &fakeCrypto{}
+	backend := &fakeCrypto{}
 
 	// 2. Build encrypted-layer fixtures. Each layer has every secret
 	// populated so narrowing has something to remove.
-	baseCiphertext := encryptPopulated(t, ctx, enc, schema, publicKey)
-	prodCiphertext := encryptPopulated(t, ctx, enc, schema, publicKey)
-	sandboxCiphertext := encryptPopulated(t, ctx, enc, schema, publicKey)
+	baseCiphertext := encryptPopulated(t, ctx, fixtures, schema, publicKey)
+	prodCiphertext := encryptPopulated(t, ctx, fixtures, schema, publicKey)
+	sandboxCiphertext := encryptPopulated(t, ctx, fixtures, schema, publicKey)
 
 	layersFS := fstest.MapFS{
-		"base.pxf":         &fstest.MapFile{Data: baseCiphertext},
-		"env/prod.pxf":     &fstest.MapFile{Data: prodCiphertext},
-		"env/sandbox.pxf":  &fstest.MapFile{Data: sandboxCiphertext},
+		"base.pxf":        &fstest.MapFile{Data: baseCiphertext},
+		"env/prod.pxf":    &fstest.MapFile{Data: prodCiphertext},
+		"env/sandbox.pxf": &fstest.MapFile{Data: sandboxCiphertext},
 	}
 
 	// 3. Chain spec — two envs, one shared base layer (ONCE), one
@@ -97,8 +96,8 @@ func TestBuild_EndToEnd_Age(t *testing.T) {
 		Schema:       schema,
 		ChainSpec:    chainSpec,
 		LayersFS:     layersFS,
-		Decrypter:    dec,
-		Encrypter:    enc,
+		Decrypter:    backend,
+		Encrypter:    backend,
 		Output:       &out,
 		ManifestName: "test-manifest",
 		Now:          func() time.Time { return time.Unix(1700000000, 0).UTC() },
@@ -119,13 +118,28 @@ func TestBuild_EndToEnd_Age(t *testing.T) {
 		}
 	}
 
-	// 7. Every encrypted layer in the bundle must decrypt under our
-	// age private key (SOPS_AGE_KEY is set above) and unmarshal as
-	// the schema with denied secrets stripped.
+	// 6b. Both halves of the pipeline were handed the format derived
+	// from the layer's own path (every fixture here is `.pxf` →
+	// FormatProtowire). Sampled before step 7, which drives the fake
+	// directly and would otherwise show up in the same log. A
+	// hardcoded format survives every other assertion in this test:
+	// the fake ignores it and the round trip still closes.
+	encFormats, decFormats := backend.formatsSeen()
+	if len(decFormats) != 3 || len(encFormats) != 3 {
+		t.Errorf("format log = %d decrypts / %d encrypts, want 3 each", len(decFormats), len(encFormats))
+	}
+	for i, f := range append(append([]crypt.Format(nil), decFormats...), encFormats...) {
+		if f != crypt.FormatProtowire {
+			t.Errorf("call %d used format %v, want %v (derived from the .pxf layer path)", i, f, crypt.FormatProtowire)
+		}
+	}
+
+	// 7. Every encrypted layer in the bundle must decrypt and
+	// unmarshal as the schema with denied secrets stripped.
 	for _, name := range []string{"base.pxf", "env/prod.pxf", "env/sandbox.pxf"} {
 		t.Run("decrypt+narrow/"+name, func(t *testing.T) {
 			ct := readZipEntry(t, zr, name)
-			buf, err := dec.Decrypt(ctx, ct, crypt.FormatProtowire)
+			buf, err := backend.Decrypt(ctx, ct, crypt.FormatProtowire)
 			if err != nil {
 				t.Fatalf("decrypt %s: %v", name, err)
 			}
@@ -157,6 +171,20 @@ func TestBuild_EndToEnd_Age(t *testing.T) {
 				t.Errorf("%s: backup_keys should be denied", name)
 			}
 		})
+	}
+
+	// 7b. Each of the three encrypted layers was handed to the
+	// Encrypter with the manifest's recipient set. A regression that
+	// dropped unionRecipients on the floor would still produce a
+	// well-formed bundle — one nobody in production could decrypt.
+	seen := backend.recipientsSeen()
+	if len(seen) != 3 {
+		t.Errorf("Encrypt called %d times, want 3 (one per encrypted layer)", len(seen))
+	}
+	for i, r := range seen {
+		if len(r.Age) != 1 || r.Age[0] != publicKey {
+			t.Errorf("layer %d encrypted to Age=%v, want [%s]", i, r.Age, publicKey)
+		}
 	}
 
 	// 8. chain.pxf in the bundle round-trips to a ChainSpec with
@@ -212,6 +240,40 @@ func TestBuild_RejectsCtxTemplate(t *testing.T) {
 	}
 }
 
+func TestBuild_RejectsZipUnsafePaths(t *testing.T) {
+	// The zip entry name is the layer's resolved path verbatim. Go's
+	// own reader refuses to open an entry that is not an fs.ValidPath,
+	// so a bundle carrying one is unreadable by chameleon anyway — but
+	// `unzip` and most CI unpack steps happily walk out of the
+	// extraction root, so planLayers has to refuse to write it.
+	// A leading "../" is the obvious shape; an embedded one is the
+	// shape that used to slip past.
+	for _, p := range []string{"../escape.pxf", "/abs.pxf", "layers/../../etc/cron.d/x.pxf", "..", "."} {
+		t.Run(p, func(t *testing.T) {
+			err := Build(context.Background(), BuildOptions{
+				Manifest: &chameleonv1.BundleManifest{},
+				Module:   "anything",
+				Schema:   buildTestDescriptor(t),
+				ChainSpec: &chameleonv1.ChainSpec{
+					Version:      "1",
+					Environments: []*chameleonv1.Environment{{Name: "prod"}},
+					Layers: []*chameleonv1.LayerEntry{{
+						Id: "escape", Path: p, ForEach: chameleonv1.LayerEntry_ONCE,
+					}},
+				},
+				LayersFS: fstest.MapFS{},
+				Output:   &bytes.Buffer{},
+			})
+			if err == nil {
+				t.Fatalf("Build should reject the zip-unsafe layer path %q", p)
+			}
+			if !strings.Contains(err.Error(), "zip-unsafe") {
+				t.Errorf("error should say zip-unsafe, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestBuild_ValidateRejectsMissingRequired(t *testing.T) {
 	cases := []struct {
 		name string
@@ -239,7 +301,7 @@ func TestBuild_ValidateRejectsMissingRequired(t *testing.T) {
 }
 
 // encryptPopulated marshals a populated test message to PXF and
-// encrypts it under the given age public key. Used to seed the
+// runs it through enc for the given recipient. Used to seed the
 // layer FS for the end-to-end test.
 //
 // tenant_keys is cleared before marshal — protowire-go v1.0.0

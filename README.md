@@ -309,7 +309,7 @@ Currently only `pxf.Secret` has a metadata concept (`hint`, `fingerprint`). Othe
 
 ### `chameleon` CLI
 
-Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/chameleon@latest`. Subcommands:
+Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/chameleon@latest`. It lives in its own module because it links the sops backend (see [Modules in this repo](#modules-in-this-repo)); the install command is unchanged either way, including a version pin — `@vX.Y.Z` resolves to the CLI module's own tag. Subcommands:
 
 - `chameleon explain` — resolve a chain spec and print per-field provenance (which layer set the value, whether a default was applied, whether interpolation rewrote it, whether the field is sensitive). Accepts on-disk `--chain` + `--layers` or a `--bundle` input (file / stdin / env var, optionally `--base64`).
 - `chameleon get` — resolve a chain spec and print the result as a PXF document. Same input flags as `explain`; secret fields render as `<redacted>`. Pipe into `pxf query` to extract individual values.
@@ -486,7 +486,7 @@ Three escape hatches. `resolver.WithDecrypter(sops.Default())` passes an impleme
 
 > **When you need `WithoutDecrypter`.** Registration follows the *module graph*, not your configuration — the same trade `database/sql` makes. A dependency that imports `chameleon/sops` for its own reasons registers the backend in your build too, so "I passed no decrypter" stopped being a reliable way to mean "do not decrypt". `crypt.Registered()` reports what a build ended up with. This is why `chameleon get/explain/reveal --decrypter=none` is wired to `WithoutDecrypter` rather than to a nil `Decrypter` — and why `resolver.WithDecrypter(nil)` is an error rather than a silent fall-through to auto-selection. Note that [`chameleon.Load`](#quick-start) takes no options and so cannot opt out: a program that needs encrypted layers refused must use `resolver.New` directly.
 
-> **Why link-time.** Until v0.22.1 the resolver imported `chameleon/sops` directly, so every consumer linked the whole sops key-management tree — AWS, Azure, GCP, Vault, Huawei KMS and their transitive weight — whether or not a single layer was encrypted. A program resolving two plaintext layers measured **68 MB**; the same program on v0.23.0 measures **11.7 MB**, of which 7.0 MB is the protobuf runtime any protobuf program pays ([#130](https://github.com/trendvidia/chameleon/issues/130)).
+> **Why link-time.** Until v0.22.1 the resolver imported `chameleon/sops` directly, so every consumer linked the whole sops key-management tree — AWS, Azure, GCP, Vault, Huawei KMS and their transitive weight — whether or not a single layer was encrypted. A program resolving two plaintext layers measured **68 MB** and 347 modules; the same program on v0.23.0 measures **11.7 MB** and 35 modules, of which 7.0 MB is the protobuf runtime any protobuf program pays ([#130](https://github.com/trendvidia/chameleon/issues/130)). The backend is a [separate module](#modules-in-this-repo) as well as a separate import.
 
 `sops.Default()` — and the registered backend, which is the same wiring — reads keys from the ambient environment, exactly the same lookup the `sops` CLI does:
 
@@ -860,9 +860,9 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 - **`(pxf.default)` inside a `oneof` yields to the layer's choice.** Setting any oneof member clears its siblings, so a default is skipped whenever some layer already selected a different member of the same oneof — otherwise filling `timeout`'s default would silently discard an operator's explicit `file = "/tmp/x"`. Fields from proto3 `optional` (a synthetic single-field oneof) are unaffected and default normally.
 
-- **Sops `context.Context` threading — closed via the `trendvidia/sops/v4` fork.** Chameleon's `Decrypter.Decrypt` threads `ctx` through `decrypt.DataIntoWriterContext`; in-flight KMS round-trips abort on `ctx` deadline / cancellation natively for AWS / GCP / Azure / Vault. HuaweiCloud KMS is approximated via a goroutine shim (see fork [#10](https://github.com/trendvidia/sops/issues/10)). The `chameleon migrate` CLI uses the corresponding `encrypt.UsingSameKeysAsWithContext` so re-encrypts honor ctx the same way. Upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) tracks the merge candidate; chameleon consumes the fork directly under its `github.com/trendvidia/sops/v4` module path — no `replace` directive required.
+- **Sops `context.Context` threading — closed via the `trendvidia/sops/v4` fork.** Chameleon's `Decrypter.Decrypt` threads `ctx` through `decrypt.DataIntoWriterContext`; in-flight KMS round-trips abort on `ctx` deadline / cancellation natively for AWS / GCP / Azure / Vault. HuaweiCloud KMS is approximated via a goroutine shim (see fork [#10](https://github.com/trendvidia/sops/issues/10)). The `chameleon migrate` CLI uses the corresponding `encrypt.UsingSameKeysAsWithContext` so re-encrypts honor ctx the same way. Upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) tracks the merge candidate; the `chameleon/sops` module — the only one of the three that depends on the fork since v0.23.0 — consumes it directly under its `github.com/trendvidia/sops/v4` module path, so no `replace` directive is required.
 
-- **Forked dependencies require an explicit `replace` directive in consumer `go.mod`.** Chameleon depends on `trendvidia/protobuf-go` (a soft fork of `google.golang.org/protobuf`); Go's `replace` directive is non-transitive so the chameleon repo's `replace` does NOT propagate to consumers. The other fork chameleon depends on — `trendvidia/sops/v4` — is consumed directly under its own module path and does NOT need a `replace`. See **Compatibility → Replace directives** above for the exact line to copy into your own `go.mod`.
+- **Forked dependencies require an explicit `replace` directive in consumer `go.mod`.** Chameleon depends on `trendvidia/protobuf-go` (a soft fork of `google.golang.org/protobuf`); Go's `replace` directive is non-transitive so the chameleon repo's `replace` does NOT propagate to consumers. The other fork — `trendvidia/sops/v4`, reached only if you pull in the `chameleon/sops` module — is consumed directly under its own module path and does NOT need a `replace`. See **Compatibility → Replace directives** above for the exact line to copy into your own `go.mod`.
 
 ## Compatibility
 
@@ -870,10 +870,25 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 |---|---|
 | Go | 1.26+ |
 | `github.com/trendvidia/protowire-go` | `>= v0.77.0` (block-form `OnSecretField` routing; v0.76.0+ covers scalar shorthand) |
-| `github.com/trendvidia/sops/v4` | `>= v4.0.0` (soft-fork of `getsops/sops` consumed directly under its own module path — no `replace` directive needed) |
+| `github.com/trendvidia/sops/v4` | `>= v4.0.0` — **only reached through the `chameleon/sops` module**; the library module has not required it since v0.23.0 (soft-fork of `getsops/sops` consumed directly under its own module path — no `replace` directive needed) |
 | `github.com/awnumar/memguard` | `>= v0.22.5` |
 
-**Module graph vs. linked code.** Since v0.23.0 a plaintext consumer *links* no key-management code (see [Runtime decryption](#runtime-decryption)), but `go list -m all` still lists the KMS SDK modules: chameleon's own `go.mod` requires them for the `chameleon/sops` package and the CLI, and Go's module graph is per-module, not per-import. So dependency-review and SBOM tooling that reads `go.mod` still sees them; binary size, link time, and reachability-based scanners (`govulncheck`) do not. Removing them from the graph as well means splitting `chameleon/sops` into its own module — the open half of [#130](https://github.com/trendvidia/chameleon/issues/130).
+### Modules in this repo
+
+Since v0.23.0 the repo publishes three modules, so that a consumer of the library carries no key management in its **module graph** — not just none in its binary ([#130](https://github.com/trendvidia/chameleon/issues/130)). A plaintext consumer measures 35 modules in `go list -m all`, down from 347.
+
+| Module | Import path | You need it when |
+|---|---|---|
+| library | `github.com/trendvidia/chameleon` | always — resolver, chain, crypt, bundle consumption, codegen plugin |
+| sops backend | `github.com/trendvidia/chameleon/sops` | some layer is encrypted (`go get` adds it the first time you blank-import it) |
+| CLI | `github.com/trendvidia/chameleon/cmd/chameleon` | you install the `chameleon` binary |
+
+Each is tagged separately (`v0.23.0`, `sops/v0.23.0`, `cmd/chameleon/v0.23.0`); see [docs/RELEASING.md](docs/RELEASING.md). Two practical consequences:
+
+- **Encrypted-layer consumers gain one `require` line.** `go get github.com/trendvidia/chameleon/sops` — or just add the blank import and let `go mod tidy` do it. The KMS SDKs land in *that* module's graph, where they are actually used.
+- **`go install .../cmd/chameleon@latest` is unchanged, and so is the spelling of a version pin** — you still write `@v0.23.0`, which Go resolves to this module's `cmd/chameleon/v0.23.0` repo tag on its own (the same mapping that makes `go install golang.org/x/tools/gopls@v0.14.2` find the `gopls/v0.14.2` tag). What changes is which commit it lands on: from v0.23.0 a pin follows the CLI module's tags, while an older `@v0.22.1` still resolves through the root module. `protoc-gen-chameleon-go` stays in the library module and its pins are unaffected.
+
+Reachability-based scanners (`govulncheck`) never saw the KMS tree for a plaintext consumer even before the split; what the split fixes is everything that reads `go.mod` — dependency review, SBOMs, `go list -m all`.
 
 ### Replace directives — required in your `go.mod`
 
@@ -894,7 +909,7 @@ The fork keeps the upstream module path (`google.golang.org/protobuf`), so any c
 
 When upstream eventually merges the relevant parts, drop the `replace` from your `go.mod` and bump the chameleon minimum to the merged upstream tag.
 
-The other fork chameleon depends on — `github.com/trendvidia/sops/v4` — is consumed directly under its own module path (it doesn't override `getsops/sops`), so no consumer-side `replace` is needed.
+The other fork — `github.com/trendvidia/sops/v4` — is consumed directly under its own module path (it doesn't override `getsops/sops`), so no consumer-side `replace` is needed. Since v0.23.0 it enters your module graph only via the `chameleon/sops` module, i.e. only if some layer of yours is encrypted.
 
 ## Test status
 

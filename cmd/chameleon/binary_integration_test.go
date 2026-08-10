@@ -79,6 +79,24 @@ func buildBinary(t *testing.T) string {
 	return binPath
 }
 
+// hermeticEnv is the child environment for a CLI invocation: the
+// caller's, with the user-config lookup pointed at a path that does
+// not exist.
+//
+// Without it the binary reads the developer's real $HOME/.chameleon
+// and its per-app defaults silently answer flags the test never
+// passed. Not hypothetical: `--decrypter` resolves to "none" (which
+// wires resolver.WithoutDecrypter) unless something supplies a value,
+// so the multi-env tests passed on a laptop whose default app sets
+// `decrypter = "sops"` and failed on every machine without one —
+// unnoticed, because cmd/chameleon's integration tests only began
+// running in CI with the module split. userConfigPath documents this
+// env var as existing for exactly this purpose.
+func hermeticEnv(t *testing.T) []string {
+	t.Helper()
+	return append(os.Environ(), "CHAMELEON_USER_CONFIG="+filepath.Join(t.TempDir(), "no-user-config"))
+}
+
 // runBinary invokes the built chameleon binary with the given args.
 // Returns stdout, stderr, exit code. Never returns an error — the
 // exit code IS the signal.
@@ -86,6 +104,7 @@ func runBinary(t *testing.T, args ...string) (stdout, stderr string, exit int) {
 	t.Helper()
 	bin := buildBinary(t)
 	cmd := exec.Command(bin, args...)
+	cmd.Env = hermeticEnv(t)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf

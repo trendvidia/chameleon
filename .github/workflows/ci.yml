@@ -51,14 +51,34 @@ jobs:
           # version string depending on how it was built — match the prefix, not
           # the bare token, so a toolchain bump doesn't red every job in the repo.
           go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
+      # Every step below goes through make so the module walk has exactly
+      # one definition, the Makefile's MODULES. Inlined here, CI and the
+      # Makefile drift while the Makefile header calls `make ci` "what CI
+      # runs" — and a per-module target that silently skips a module is
+      # green for the wrong reason. modules-check is the guard on the
+      # definition itself.
+      - name: modules-check (MODULES vs go.work)
+        run: make modules-check
       - name: build
-        run: go build ./...
+        run: make compile
       - name: vet
-        run: go vet ./...
+        run: make vet
       - name: test (with race detector)
-        run: go test -race -timeout 5m ./...
+        run: make test
       - name: integration tests (real sops round-trip)
-        run: go test -tags=integration -timeout 5m ./sops/...
+        run: make test-integration
+      - name: modules are tidy
+        run: |
+          # A stray import that drags the KMS tree back into the library
+          # module's go.mod is the regression #130 was about;
+          # TestLibraryModuleRequiresNoKeyManagement catches it, but only
+          # if go.mod reflects the imports.
+          make tidy
+          # go.work.sum is tracked and the build/vet/test steps above run
+          # in workspace mode, which rewrites it whenever it needs a hash
+          # the committed file lacks. Left unchecked, a PR lands with it
+          # stale and every contributor gets a dirty tree on first build.
+          git diff --exit-code -- '**/go.mod' '**/go.sum' go.mod go.sum go.work go.work.sum
 
   lint:
     name: lint
@@ -72,10 +92,20 @@ jobs:
           # version string depending on how it was built — match the prefix, not
           # the bare token, so a toolchain bump doesn't red every job in the repo.
           go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
-      - name: golangci-lint
+      - name: golangci-lint (library)
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
+      - name: golangci-lint (sops)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          working-directory: sops
+      - name: golangci-lint (cli)
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+          working-directory: cmd/chameleon
 
   bench:
     name: bench (vs main)
@@ -94,6 +124,8 @@ jobs:
           go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
       - name: install benchstat
         run: go install golang.org/x/perf/cmd/benchstat@latest
+      # Benchmarks live in the library module; the sops and CLI modules
+      # have none. Add them here if that changes.
       - name: benchmark PR head
         run: go test -bench=. -benchmem -count=5 -run='^$' -benchtime=500ms ./... | tee /tmp/bench-new.txt
       - name: benchmark main baseline

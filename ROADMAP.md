@@ -50,7 +50,9 @@ When v1.0 cuts, the [public API surface freeze](#public-api-surface-at-v10) sect
 
 ## Public API surface (at v1.0)
 
-These packages and types are stable at v1.0; consumers may rely on their signatures across the 1.x line:
+These packages and types are stable at v1.0; consumers may rely on their signatures across the 1.x line.
+
+The repo publishes three modules since v0.23.0 — `github.com/trendvidia/chameleon` (library), `.../chameleon/sops` (backend), `.../chameleon/cmd/chameleon` (CLI). Import paths are unchanged; the split keeps key management out of a library consumer's module graph ([#130](https://github.com/trendvidia/chameleon/issues/130)). Tagging order is in [docs/RELEASING.md](docs/RELEASING.md).
 
 Enumeration is exhaustive — `go doc <pkg>` at the v1.0 tag should produce the same set. `internal/*` packages are excluded by Go's compiler-enforced rule and aren't listed.
 
