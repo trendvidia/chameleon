@@ -420,7 +420,29 @@ The offending file is already named at the head of the line, so it is never list
 
 The `OK` line carries both counts with several roots — roots asked for, and distinct files covered — because the covered count alone no longer says how many roots produced it. Files found under a directory are named the way their siblings import them, protoc's `-I` contract: with `--schema=./proto/svc --include=./proto` a file is `svc/a.proto`, not `a.proto`, so a sibling's `import "svc/base.proto"` resolves to the same file rather than compiling a second copy of it. Two different files that would compile under one name are rejected rather than silently checked once. The single-file form is untouched — same output, same `OK` line.
 
-The directory form is what replaces a glob; a glob is not a shorter spelling of it. No shell expands `--schema=proto/*.proto`, because the pattern has to match the whole word, flag name included — bash passes it through literally, zsh and fish abort. Pass the directory, or have your script build the repeated flags. Two things the search does not do: it does not follow symlinks, and it has no exclusion filter, so point it at the subtrees you own rather than at a tree that also vendors a second copy of a file its siblings import.
+The directory form is what replaces a glob; a glob is not a shorter spelling of it. No shell expands `--schema=proto/*.proto`, because the pattern has to match the whole word, flag name included — bash passes it through literally, zsh and fish abort. Pass the directory, or have your script build the repeated flags. The search does not follow symlinks, so a subtree symlinked into place is not searched.
+
+##### Skipping part of the tree
+
+`--exclude` prunes the search by **name** ([#159](https://github.com/trendvidia/chameleon/issues/159)). The case it exists for is a repo that vendors a second copy of a file its own files import — two copies of `pxf/annotations.proto` are two declarations of `pxf.required`, so compiling both as roots fails on duplicate symbols and the directory form is unusable:
+
+```sh
+chameleon check-schema --schema=./proto --include=./proto
+# chameleon check-schema: compile 3 schema root(s): pxf/annotations.proto:5:8: symbol "pxf.required" already defined at third_party/pxf/annotations.proto:5:8
+
+chameleon check-schema --schema=./proto --include=./proto --exclude=third_party
+# OK    2 root(s)    3 file(s) checked
+```
+
+Which of the two copies that first line names as the offender, and which as the "already defined at", swaps between runs of the same command — so match on `already defined` if you grep for it, not on a file.
+
+A pattern matches **one path element** at a time — a directory's or a file's own name — using [`filepath.Match`](https://pkg.go.dev/path/filepath#Match) syntax. Matching per element is what lets `--exclude=third_party` prune that directory at whatever depth it appears without a `**`: the walk stops there, rather than the pattern spanning the rest of the path. Within an element the usual syntax works (`--exclude='*_test.proto'`), and for the same reason a pattern may not contain a path separator — that is rejected rather than silently matching nothing, as is an empty one. A malformed pattern fails the run too, naming the flag and the pattern; it is caught while searching rather than while parsing flags, because `filepath.Match` only reports bad syntax once its scan reaches it (`--exclude='vendor*[0-9'` looks well-formed against any name that does not start with `vendor`). A pattern that prunes *every* `.proto` under the directory is an error that says so, rather than the "no `.proto` files found" that would send you off to check the path.
+
+Three things it deliberately does not do:
+
+- **It does not touch `--include`.** An excluded file stays importable, which is the whole point for a vendored tree: the second copy stops being a *root* while the files that legitimately import it still resolve.
+- **It does not apply to what you name explicitly** — neither a `.proto` passed straight to `--schema`, nor the `--schema` directory itself. Naming something is the more specific instruction.
+- **Nothing is excluded by default.** `third_party/`, `vendor/` and dot-directories are walked like anything else until you ask otherwise.
 
 This is the CLI half of [#134](https://github.com/trendvidia/chameleon/issues/134), and it is the answer for a repo that only *authors* schemas and hands them to someone else — a consumer never runs its CLI. The library half checks the same rules at `resolver.New`, so a program that constructs a Resolver is covered without running anything.
 

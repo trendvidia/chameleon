@@ -67,6 +67,33 @@ func checkSchemaCmd(out io.Writer, args []string) error {
 		schemas = append(schemas, s)
 		return nil
 	})
+	var excludes []string
+	fs.Func("exclude", "skip files and directories whose NAME matches this pattern while searching a --schema directory (repeatable)", func(s string) error {
+		if s == "" {
+			return errors.New("empty pattern")
+		}
+		// A pattern is tested against one element name at a time, and an
+		// element name never holds a separator, so a pattern that does
+		// can only ever match nothing — refused here rather than left to
+		// prune nothing quietly. os.IsPathSeparator rather than a
+		// comparison against filepath.Separator, because the platforms
+		// diverge in both directions: Windows takes `/` as a separator
+		// too, and everywhere else `\` is [filepath.Match]'s escape
+		// character, so `a\*b` — a literal star — has to stay legal.
+		for i := range len(s) {
+			if os.IsPathSeparator(s[i]) {
+				return fmt.Errorf("matches one path element, so it cannot contain %q", s[i:i+1])
+			}
+		}
+		// Syntax is deliberately NOT checked here. filepath.Match only
+		// reports ErrBadPattern once its scan reaches the bad syntax,
+		// and it stops scanning at the first chunk that fails the name,
+		// so no probe name settles the question: Match("vendor*[0-9",
+		// "x") is (false, nil) because "vendor" already failed. The
+		// verdict comes from the match site instead — see [matchesAny].
+		excludes = append(excludes, s)
+		return nil
+	})
 	var includePaths []string
 	fs.Func("include", "directory to search for proto imports (repeatable, like protoc -I)", func(s string) error {
 		// Same reason: an empty --include is the working directory,
@@ -98,13 +125,25 @@ a violation in a shared import is reported once rather than once per
 importing file.
 
 A directory is searched recursively for *.proto. Symlinks are not
-followed and there is no exclusion filter, so point it at the subtrees
-you own rather than at a tree that also vendors a second copy of a
-file its siblings import. Note that a glob is NOT a shorter spelling
-of this: no shell expands `+"`"+`--schema=proto/*.proto`+"`"+`, because the
-pattern has to match the whole word, flag name included — bash passes
-it through literally, zsh and fish abort. Pass the directory, or have
-your script build the repeated flags.
+followed, so a subtree symlinked into place is not searched. Note that
+a glob is NOT a shorter spelling of this: no shell expands
+`+"`"+`--schema=proto/*.proto`+"`"+`, because the pattern has to match the whole
+word, flag name included — bash passes it through literally, zsh and
+fish abort. Pass the directory, or have your script build the repeated
+flags.
+
+--exclude skips files and directories by NAME while searching. It
+matches one path element at a time, so --exclude=third_party prunes
+any directory of that name at whatever depth, and needs no `+"`"+`**`+"`"+`; the
+usual pattern syntax works within an element (--exclude='*_test.proto').
+For the same reason a pattern cannot contain a path separator. Nothing
+is excluded unless you ask.
+
+Two things --exclude does NOT do. It does not touch --include, so an
+excluded file stays importable — which is the point for a vendored
+tree that the files you own legitimately import. And it does not apply
+to a .proto named directly by --schema, nor to the --schema directory
+itself: what you name explicitly is checked.
 
 --message is optional. It does not change what is checked — the rules
 are per file closure, not per message — it only additionally asserts
@@ -116,6 +155,7 @@ Usage:
     chameleon check-schema --schema=config.proto
     chameleon check-schema --schema=config.proto --message=myapp.v1.AppConfig --include=./proto
     chameleon check-schema --schema=./proto --include=./proto
+    chameleon check-schema --schema=./proto --include=./proto --exclude=third_party
     chameleon check-schema --schema=a.proto --schema=b.proto
 
 Exit status is 0 when clean, 1 when a schema has violations or cannot
@@ -146,7 +186,7 @@ Flags:`)
 		return fmt.Errorf("unexpected argument %q (schemas are named by --schema, one flag each)", fs.Arg(0))
 	}
 
-	roots, importPaths, err := resolveSchemaRoots(schemas, includePaths)
+	roots, importPaths, err := resolveSchemaRoots(schemas, includePaths, excludes)
 	if err != nil {
 		return err
 	}
@@ -213,10 +253,17 @@ type schemaRoot struct {
 //
 // A value that names a directory is searched recursively for *.proto;
 // a value that names a regular file is taken as-is. Symlinks are not
-// followed and there is no exclusion filter, so a tree that vendors a
-// second copy of a file its siblings also import is not one this form
-// can check whole — it would compile both copies and fail on the
-// duplicate symbols.
+// followed, so a subtree symlinked into place is not searched.
+//
+// excludes prune that search by element name — see [protoFilesUnder].
+// They apply to the walk only: a file named directly by --schema is
+// checked whatever the patterns say, because naming it is the more
+// specific instruction, and the import paths are untouched, so an
+// excluded file remains resolvable as somebody else's import. That
+// combination is what makes a vendored duplicate tractable
+// (chameleon#159): the second copy of a shared file stops being a root
+// — which is what made protocompile fail on duplicate symbols — while
+// staying importable by the files that legitimately import it.
 //
 // Glob expansion is deliberately NOT implemented here: `**` means
 // different things in bash and fish and nothing in sh, so a glob this
@@ -248,7 +295,7 @@ type schemaRoot struct {
 //     form has always done, and it is also what a lone --schema=a.proto
 //     keeps regardless of the rules above: with one root nothing else
 //     is compiled to collide with it.
-func resolveSchemaRoots(schemas, includePaths []string) ([]schemaRoot, []string, error) {
+func resolveSchemaRoots(schemas, includePaths, excludes []string) ([]schemaRoot, []string, error) {
 	// candidate is a file some --schema value named, before duplicates
 	// are folded together and before it is given its compile name.
 	type candidate struct {
@@ -290,12 +337,12 @@ func resolveSchemaRoots(schemas, includePaths []string) ([]schemaRoot, []string,
 			return nil, nil, fmt.Errorf("read schema %s: %w", arg, err)
 		}
 		if st.IsDir() {
-			found, err := protoFilesUnder(abs)
+			found, err := protoFilesUnder(abs, excludes)
 			if err != nil {
 				return nil, nil, fmt.Errorf("search --schema %q: %w", arg, err)
 			}
 			if len(found) == 0 {
-				return nil, nil, fmt.Errorf("--schema %q: no .proto files found under this directory", arg)
+				return nil, nil, emptySearchError(arg, abs, excludes)
 			}
 			dirImports = appendUnique(dirImports, abs)
 			for _, f := range found {
@@ -383,6 +430,25 @@ func resolveSchemaRoots(schemas, includePaths []string) ([]schemaRoot, []string,
 	return roots, importPaths, nil
 }
 
+// emptySearchError explains a directory --schema that produced no
+// roots. Blaming the directory is right when it holds no .proto files
+// at all, and wrong once --exclude has pruned every one of them: the
+// operator reads "no .proto files found under this directory", looks
+// at a directory plainly full of them, and debugs the path instead of
+// the pattern. That is the same misdiagnosis [protoFilesUnder] refuses
+// to create for the walk root, and an over-broad pattern reaches it by
+// the other door. The unfiltered walk is redone rather than counted
+// during the first one, because this runs at most once, on the way out
+// of a run that has already failed.
+func emptySearchError(arg, abs string, excludes []string) error {
+	if len(excludes) > 0 {
+		if all, err := protoFilesUnder(abs, nil); err == nil && len(all) > 0 {
+			return fmt.Errorf("--schema %q: --exclude pruned all %d .proto file(s) under this directory", arg, len(all))
+		}
+	}
+	return fmt.Errorf("--schema %q: no .proto files found under this directory", arg)
+}
+
 // appendUnique appends p to dst unless it is already there. The lists
 // it guards are import roots — a handful, typically one — so a linear
 // scan beats carrying a parallel set, and it keeps the order the
@@ -411,11 +477,41 @@ func firstContaining(dirs []string, path string) string {
 // does not depend on directory iteration order. WalkDir does not
 // follow symlinks, so a subtree symlinked into place is not searched —
 // see [resolveSchemaRoots] on what the directory form does not cover.
-func protoFilesUnder(dir string) ([]string, error) {
+//
+// excludes are [filepath.Match] patterns tested against one path
+// element at a time — a directory's or a file's own name, never a path
+// with separators in it. Matching per element is what makes a subtree
+// exclusion writable without a `**`: "third_party" prunes any
+// directory of that name at any depth, because the walk stops there
+// rather than because the pattern spans the rest of the path. Within
+// an element the usual Match syntax applies, so "*_test.proto" skips
+// those files wherever they are, and a malformed one stops the walk
+// instead of quietly matching nothing — see [matchesAny] for why that
+// verdict can only be reached here.
+//
+// dir itself is never tested. Excluding the directory the operator
+// just named is a contradiction, and reading it as one would turn
+// `--schema=./third_party --exclude=third_party` into "no .proto files
+// found" rather than into the obvious intent.
+func protoFilesUnder(dir string, excludes []string) ([]string, error) {
 	var found []string
 	err := filepath.WalkDir(dir, func(path string, d iofs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		if path != dir {
+			skip, err := matchesAny(excludes, d.Name())
+			if err != nil {
+				return err
+			}
+			if skip {
+				// Pruning the whole subtree is the point for a directory;
+				// a file is simply not collected.
+				if d.IsDir() {
+					return iofs.SkipDir
+				}
+				return nil
+			}
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".proto") {
 			return nil
@@ -427,6 +523,38 @@ func protoFilesUnder(dir string) ([]string, error) {
 		return nil, err
 	}
 	return found, nil
+}
+
+// matchesAny reports whether name matches any of the patterns, and is
+// also where a malformed pattern is caught, because it is the only
+// place that can be: [filepath.Match] reports ErrBadPattern once its
+// scan reaches the bad syntax, and it stops scanning at the first
+// chunk that fails the name, so the same pattern is well-formed or not
+// depending on what it is tested against — Match("vendor*[0-9", "x")
+// is (false, nil) while Match("vendor*[0-9", "vendor") is
+// ErrBadPattern. No probe at flag-parse time settles that.
+//
+// The error is returned rather than read as "no match": swallowing it
+// is how an operator's typo becomes a tree checked unpruned under a
+// green OK line, the silent no-op --exclude already refuses for a
+// pattern with a separator in it. It surfaces wherever it could have
+// mattered, because Match reaches bad syntax only once the chunks
+// before it have matched — a pattern whose leading chunk matches no
+// name in the tree would have pruned nothing however it was completed,
+// and one that does match reaches the bad chunk and fails the run.
+//
+// Every pattern is tried even after one has matched, so an earlier
+// pattern claiming a name cannot hide a later one's syntax error.
+func matchesAny(patterns []string, name string) (bool, error) {
+	matched := false
+	for _, p := range patterns {
+		ok, err := filepath.Match(p, name)
+		if err != nil {
+			return false, fmt.Errorf("--exclude %q: %w", p, err)
+		}
+		matched = matched || ok
+	}
+	return matched, nil
 }
 
 // under reports whether path is strictly inside dir. Both must be
