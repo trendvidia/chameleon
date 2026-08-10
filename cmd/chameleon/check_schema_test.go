@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -777,6 +778,7 @@ func TestCheckSchema_IncludeNamingAFileIsNotAPrefix(t *testing.T) {
 	roots, _, err := resolveSchemaRoots(
 		[]string{a, filepath.Join(dir, "svc", "b.proto")},
 		[]string{a},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("resolveSchemaRoots: %v", err)
@@ -793,7 +795,7 @@ func TestCheckSchema_IncludeNamingAFileIsNotAPrefix(t *testing.T) {
 // handed to protocompile twice.
 func TestCheckSchema_ImportPathsAreDeduplicatedAcrossFlags(t *testing.T) {
 	dir := schemaRepo(t, false)
-	_, importPaths, err := resolveSchemaRoots([]string{dir}, []string{dir, dir})
+	_, importPaths, err := resolveSchemaRoots([]string{dir}, []string{dir, dir}, nil)
 	if err != nil {
 		t.Fatalf("resolveSchemaRoots: %v", err)
 	}
@@ -814,5 +816,205 @@ func TestCheckSchema_WholeRepoFormMatchesTheDocumentedOutput(t *testing.T) {
 	// three svc files. 6 files: those plus descriptor.proto.
 	if want := "OK\t5 root(s)\t6 file(s) checked\n"; out.String() != want {
 		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// --- --exclude (#159) ---
+
+// vendoredRepo is the tree #159 was filed for: the schema repo's own
+// pxf/annotations.proto, plus a byte-identical vendored copy under
+// third_party/. Both declare the same extensions, so compiling both as
+// roots is a duplicate-symbol failure however identical they are.
+func vendoredRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "pxf", "annotations.proto"), annotationsSrc)
+	write(t, filepath.Join(dir, "third_party", "pxf", "annotations.proto"), annotationsSrc)
+	write(t, filepath.Join(dir, "svc", "a.proto"), `
+syntax = "proto3";
+package svc.a.v1;
+import "pxf/annotations.proto";
+message Cfg { string base_url = 1 [(pxf.default) = "x"]; }
+`)
+	return dir
+}
+
+// The motivating case. Without --exclude the directory form cannot be
+// used at all on this tree; with it, the vendored copy stops being a
+// root and the run answers the question that was asked.
+func TestCheckSchema_ExcludePrunesAVendoredDuplicate(t *testing.T) {
+	dir := vendoredRepo(t)
+	args := []string{"--schema=" + dir, "--include=" + dir}
+
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, args)
+	if err == nil || !strings.Contains(err.Error(), "already defined") {
+		t.Fatalf("got %v, want the duplicate-symbol failure #159 describes", err)
+	}
+
+	out.Reset()
+	if err := checkSchemaCmd(&out, append(slices.Clone(args), "--exclude=third_party")); err != nil {
+		t.Fatalf("--exclude=third_party should make this tree checkable: %v", err)
+	}
+	// pxf/annotations.proto and svc/a.proto are roots; the closure adds
+	// descriptor.proto. The vendored copy is neither a root nor
+	// imported by one.
+	if want := "OK\t2 root(s)\t3 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// Excluding a name prunes it at whatever depth it appears, which is
+// what makes a subtree exclusion writable without a `**`: the walk
+// stops at the directory rather than the pattern spanning the path.
+func TestCheckSchema_ExcludeMatchesOneElementAtAnyDepth(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "pxf", "annotations.proto"), annotationsSrc)
+	write(t, filepath.Join(dir, "a.proto"), `
+syntax = "proto3";
+package a.v1;
+message A { string x = 1; }
+`)
+	// Nested three deep, under a name that appears nowhere near the root.
+	write(t, filepath.Join(dir, "svc", "deep", "vendor", "dup.proto"), `
+syntax = "proto3";
+package a.v1;
+message A { string x = 1; }
+`)
+
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=vendor"}); err != nil {
+		t.Fatalf("nested vendor/ should have been pruned: %v", err)
+	}
+	if !strings.Contains(out.String(), "2 root(s)") {
+		t.Errorf("want the two surviving roots\ngot: %q", out.String())
+	}
+
+	// A pattern with a separator in it cannot match an element, so it
+	// is rejected rather than silently matching nothing.
+	out.Reset()
+	err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=svc/deep/vendor"})
+	if err == nil || !strings.Contains(err.Error(), "cannot contain") {
+		t.Fatalf("got %v, want a path-separator rejection", err)
+	}
+}
+
+// Within one element the usual filepath.Match syntax applies.
+func TestCheckSchema_ExcludeMatchesWildcardsWithinAnElement(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "a.proto"), `
+syntax = "proto3";
+package a.v1;
+message A { string x = 1; }
+`)
+	write(t, filepath.Join(dir, "sub", "a_test.proto"), `
+syntax = "proto3";
+package atest.v1;
+message ATest { string x = 1; }
+`)
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=*_test.proto"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "OK\t" + dir + "\t1 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q (one root left, so the single-root line)", out.String(), want)
+	}
+
+	// A malformed pattern is refused at parse time, where the operator
+	// can still see which flag they typed.
+	out.Reset()
+	err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude=[bad"})
+	if err == nil || !strings.Contains(err.Error(), "-exclude") {
+		t.Fatalf("got %v, want the bad pattern rejected by name", err)
+	}
+}
+
+// Decision 2 of #159: --exclude prunes roots, not import paths. The
+// vendored tree stays importable — which is the point, since the files
+// you own may legitimately import it.
+func TestCheckSchema_ExcludeDoesNotAffectInclude(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "third_party", "common.proto"), `
+syntax = "proto3";
+package common.v1;
+message Shared { string tenant = 1; }
+`)
+	write(t, filepath.Join(dir, "app.proto"), `
+syntax = "proto3";
+package app.v1;
+import "third_party/common.proto";
+message Cfg { common.v1.Shared shared = 1; }
+`)
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{
+		"--schema=" + dir, "--include=" + dir, "--exclude=third_party",
+	}); err != nil {
+		t.Fatalf("an excluded file must stay importable: %v", err)
+	}
+	// One root (app.proto); the closure still counts the import it
+	// resolved out of the excluded directory.
+	if want := "OK\t" + dir + "\t2 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// Decision 4 of #159: naming a file explicitly is the more specific
+// instruction, so --exclude does not apply to it — nor to the --schema
+// directory itself, which would otherwise read as "check nothing".
+func TestCheckSchema_ExcludeDoesNotApplyToWhatSchemaNames(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "third_party", "a.proto"), `
+syntax = "proto3";
+package a.v1;
+message A { string x = 1; }
+`)
+
+	t.Run("file named directly", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := checkSchemaCmd(&out, []string{
+			"--schema=" + filepath.Join(dir, "third_party", "a.proto"),
+			"--exclude=a.proto",
+		}); err != nil {
+			t.Fatalf("an explicitly named schema must still be checked: %v", err)
+		}
+		if !strings.HasPrefix(out.String(), "OK\t") {
+			t.Errorf("want the file checked\ngot: %q", out.String())
+		}
+	})
+
+	t.Run("the searched directory itself", func(t *testing.T) {
+		var out bytes.Buffer
+		if err := checkSchemaCmd(&out, []string{
+			"--schema=" + filepath.Join(dir, "third_party"),
+			"--exclude=third_party",
+		}); err != nil {
+			t.Fatalf("excluding the directory just named must not empty the search: %v", err)
+		}
+		if !strings.HasPrefix(out.String(), "OK\t") {
+			t.Errorf("want the directory searched\ngot: %q", out.String())
+		}
+	})
+}
+
+// Decision 3 of #159: no defaults. A conventionally-named directory is
+// walked like any other until someone asks for it to be skipped.
+func TestCheckSchema_NothingIsExcludedByDefault(t *testing.T) {
+	dir := vendoredRepo(t)
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--include=" + dir})
+	if err == nil || !strings.Contains(err.Error(), "already defined") {
+		t.Fatalf("got %v — third_party/ must not be skipped implicitly", err)
+	}
+}
+
+// An empty --exclude is the same class of mistake as an empty --schema:
+// `--exclude=$SKIP` with SKIP unset would otherwise be a pattern that
+// matches an empty name and quietly does nothing.
+func TestCheckSchema_EmptyExcludeIsRejected(t *testing.T) {
+	dir := schemaRepo(t, false)
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--exclude="})
+	if err == nil || !strings.Contains(err.Error(), "empty pattern") {
+		t.Fatalf("got %v, want an empty-pattern rejection", err)
 	}
 }

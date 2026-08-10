@@ -70,7 +70,7 @@ _chameleon() {
             COMPREPLY=( $(compgen -W "--chain --layers --env --ctx --strict --help" -- "$cur") )
             ;;
         check-schema)
-            COMPREPLY=( $(compgen -W "--schema --message --include --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--schema --message --include --exclude --help" -- "$cur") )
             ;;
         migrate)
             COMPREPLY=( $(compgen -W "--chain --layers --env --ctx --transform --path --from --to --value --int --bool --only --dry-run --help" -- "$cur") )
@@ -138,6 +138,7 @@ _chameleon() {
                 '*--schema=[.proto file, or directory to search (repeatable)]:proto file or dir:_files -g "*.proto"' \
                 '--message=[optional: assert this message exists]:name:' \
                 '*--include=[import search directory]:dir:_files -/' \
+                '*--exclude=[skip files/dirs by name while searching a --schema directory]:pattern:' \
                 '--help'
             ;;
         migrate)
@@ -207,6 +208,7 @@ complete -c chameleon -n '__fish_seen_subcommand_from verify' -l strict  -d 'Fai
 complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l schema  -d '.proto file or directory to check (repeatable)' -r
 complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l message -d 'Optional: assert this message exists'
 complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l include -d 'Import search directory (repeatable)' -r
+complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l exclude -d 'Skip files/dirs by name while searching (repeatable)' -r
 
 # migrate
 complete -c chameleon -n '__fish_seen_subcommand_from migrate' -l chain     -d 'Path to chain.pxf' -r
