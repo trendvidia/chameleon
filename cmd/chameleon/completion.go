@@ -55,7 +55,7 @@ _chameleon() {
     local cur prev words cword
     _init_completion || return
 
-    local subcmds="explain verify migrate hash lint version completion help"
+    local subcmds="explain verify check-schema migrate hash lint version completion help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$subcmds" -- "$cur") )
@@ -68,6 +68,9 @@ _chameleon() {
             ;;
         verify)
             COMPREPLY=( $(compgen -W "--chain --layers --env --ctx --strict --help" -- "$cur") )
+            ;;
+        check-schema)
+            COMPREPLY=( $(compgen -W "--schema --message --include --help" -- "$cur") )
             ;;
         migrate)
             COMPREPLY=( $(compgen -W "--chain --layers --env --ctx --transform --path --from --to --value --int --bool --only --dry-run --help" -- "$cur") )
@@ -95,6 +98,7 @@ _chameleon() {
     subcmds=(
         'explain:Resolve a config and print per-field provenance'
         'verify:Check @header.content_sha256 of every layer in a chain'
+        'check-schema:Check a .proto and its imports against the PXF bind-time rules'
         'migrate:Bulk-edit layer files in a chain spec'
         'hash:Print the canonical body SHA-256 of a single layer file'
         'lint:Flag pxfv1.Secret.Value reads / writes in consumer code'
@@ -127,6 +131,13 @@ _chameleon() {
                 '--env=[environment]:env:' \
                 '--ctx=[key=value pairs]:ctx:' \
                 '--strict[fail on missing content_sha256]' \
+                '--help'
+            ;;
+        check-schema)
+            _arguments \
+                '--schema=[.proto file to check]:proto file:_files -g "*.proto"' \
+                '--message=[optional: assert this message exists]:name:' \
+                '*--include=[import search directory]:dir:_files -/' \
                 '--help'
             ;;
         migrate)
@@ -168,6 +179,7 @@ complete -c chameleon -f
 # Top-level subcommands
 complete -c chameleon -n '__fish_use_subcommand' -a explain    -d 'Resolve a config and print per-field provenance'
 complete -c chameleon -n '__fish_use_subcommand' -a verify     -d 'Check @header.content_sha256 of every layer'
+complete -c chameleon -n '__fish_use_subcommand' -a check-schema -d 'Check a .proto against the PXF bind-time rules'
 complete -c chameleon -n '__fish_use_subcommand' -a migrate    -d 'Bulk-edit layer files'
 complete -c chameleon -n '__fish_use_subcommand' -a hash       -d 'Print canonical body SHA-256'
 complete -c chameleon -n '__fish_use_subcommand' -a lint       -d 'Flag pxfv1.Secret.Value reads / writes in consumer code'
@@ -190,6 +202,11 @@ complete -c chameleon -n '__fish_seen_subcommand_from verify' -l layers  -d 'Dir
 complete -c chameleon -n '__fish_seen_subcommand_from verify' -l env     -d 'Environment'
 complete -c chameleon -n '__fish_seen_subcommand_from verify' -l ctx     -d 'key=value pairs'
 complete -c chameleon -n '__fish_seen_subcommand_from verify' -l strict  -d 'Fail on missing content_sha256'
+
+# check-schema
+complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l schema  -d '.proto file to check' -r
+complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l message -d 'Optional: assert this message exists'
+complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l include -d 'Import search directory (repeatable)' -r
 
 # migrate
 complete -c chameleon -n '__fish_seen_subcommand_from migrate' -l chain     -d 'Path to chain.pxf' -r

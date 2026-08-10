@@ -123,6 +123,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, "chameleon verify:", err)
 			os.Exit(1)
 		}
+	case "check-schema":
+		if err := checkSchemaCmd(os.Stdout, os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "chameleon check-schema:", err)
+			os.Exit(1)
+		}
 	case "migrate":
 		if err := migrateCmd(os.Stdout, os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "chameleon migrate:", err)
@@ -180,6 +185,7 @@ Subcommands:
     get         Resolve a config and print it as a PXF document.
     reveal      Print the plaintext of a single Secret-typed field.
     verify      Check @header.content_sha256 of every layer in a chain.
+    check-schema  Check a .proto (and its imports) against the PXF bind-time rules.
     migrate     Bulk-edit layer files in a chain spec (add/rename/delete fields).
     rotate-key  Re-encrypt every encrypted layer to the chain spec's current key_name.
     keystore    Manage the PXF-formatted SOPS age key file (add / list / ...).

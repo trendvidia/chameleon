@@ -371,6 +371,27 @@ chameleon hash base.pxf
 
 Encrypted layers are skipped — sops already authenticates the ciphertext.
 
+### `chameleon check-schema` CLI
+
+Checks a `.proto` against the PXF bind-time rules — PXF-reserved names, and `(pxf.key)` / `(pxf.default)` / `(pxf.required)` placement — across its **transitive import closure**. No chain, no layers, no environment: the rules depend on the descriptor alone, so one run answers for every environment at once.
+
+```sh
+chameleon check-schema --schema=config.proto
+# OK    config.proto    4 file(s) checked
+
+chameleon check-schema --schema=config.proto --include=./proto
+# common.proto: field "common.v1.Unreferenced.labels": invalid (pxf.default) = "nope": …
+# exit 1
+```
+
+Note which file the violation names. `config.proto` above is conformant; the annotation is in a `common.proto` it imports, and since [protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71) that fails every schema in the closure whether or not the importing message refers to the offending type. **Run this in the repo that owns a shared schema, not only in the ones that consume it** — otherwise the first sign is a downstream build breaking.
+
+`--message` is optional and does not narrow the check: the rules are per file closure, not per message. It only additionally asserts the named message exists, which is worth having in CI when a schema and its consumer's message name are meant to move together.
+
+The file count on the `OK` line is the closure size. A `1 file(s) checked` result on a schema you believe imports something is the cheapest signal that `--include` is wrong.
+
+This is the CLI half of [#134](https://github.com/trendvidia/chameleon/issues/134), and it is the answer for a repo that only *authors* schemas and hands them to someone else — a consumer never runs its CLI. The library half, which checks the same rules at `resolver.New` so a program that constructs a Resolver is covered without running anything, is [#143](https://github.com/trendvidia/chameleon/pull/143).
+
 ## Working with secrets
 
 The reference material covers what a `pxf.Secret` field looks like ([### Secrets](#secrets)) and the memguard accessor API. This section is the end-to-end **operator flow** — from "I need to add a new secret" through to "it's in production, accessed safely, and rotates cleanly."
@@ -858,7 +879,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
   **Every placement one literal cannot denote is now rejected when the schema binds**, not at resolve time and not in silence — a default on `google.protobuf.Any`, `pxf.Secret`, `google.protobuf.Struct`, a user-defined message, or on a `repeated` / `map` field fails the layer parse, naming the field. That is protowire-go v1.4.0 ([#68](https://github.com/trendvidia/protowire-go/issues/68), [#69](https://github.com/trendvidia/protowire-go/issues/69)); before it, the message cases were a resolve-time error only for environments whose layers left the path unset, and the list cases were ignored entirely.
 
-  Binding is what runs the check, and a layer parse is what binds. A resolve that parses no layer at all — every entry `required = false` and absent — still takes the pre-v1.4.0 path: the message cases surface as `resolver: defaults: <path>: …`, and a `repeated` / `map` default is skipped in silence. Hoisting the check to `resolver.New` / `chameleon lint` / `chameleon verify` is tracked as the open half of [#134](https://github.com/trendvidia/chameleon/issues/134).
+  Binding is what runs the check, and a layer parse is what binds. A resolve that parses no layer at all — every entry `required = false` and absent — still takes the pre-v1.4.0 path: the message cases surface as `resolver: defaults: <path>: …`, and a `repeated` / `map` default is skipped in silence. `chameleon check-schema` (above) answers the same question off a `.proto` alone, with no chain, layers or environment, which is the reliable way to see all of them; hoisting the check into `resolver.New` as well is [#143](https://github.com/trendvidia/chameleon/pull/143).
 
   Two edges are worth knowing before you annotate a WKT field:
 

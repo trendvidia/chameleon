@@ -39,8 +39,10 @@ func TestCompletionCmd_Bash(t *testing.T) {
 	assert.Contains(t, got, "_chameleon()", "should emit bash function")
 	assert.Contains(t, got, "complete -F _chameleon chameleon",
 		"should register the completion function")
-	assert.Contains(t, got, "explain verify migrate hash lint version completion",
+	assert.Contains(t, got, "explain verify check-schema migrate hash lint version completion",
 		"should list all subcommands")
+	assert.Contains(t, got, "check-schema)",
+		"a subcommand in the list must also have its flag case")
 }
 
 func TestCompletionCmd_Zsh(t *testing.T) {
