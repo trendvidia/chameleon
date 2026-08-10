@@ -129,5 +129,16 @@ func HandleDirectives(dirs []pxf.Directive, ref Ref) error {
 // Descriptor equivalence with the old inline mirror is pinned by
 // TestDescriptorMatchesGeneratedShape.
 func descriptor() protoreflect.MessageDescriptor {
-	return (&chameleonv1.LayerHeader{}).ProtoReflect().Descriptor()
+	return layerHeaderDesc
 }
+
+// layerHeaderDesc is resolved once, at init.
+//
+// Reading the generated descriptor is cheap but not free:
+// `(&chameleonv1.LayerHeader{}).ProtoReflect()` heap-allocates a
+// message on every call — escape analysis confirms it
+// (`go build -gcflags=-m ./internal/header`) — and it would allocate
+// one solely to reach a process-global descriptor. Parse is on the
+// resolve path, called once per @header per layer, so this keeps the
+// memoization the sync.Once above it used to provide, for free.
+var layerHeaderDesc = (&chameleonv1.LayerHeader{}).ProtoReflect().Descriptor()
