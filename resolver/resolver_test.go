@@ -6,7 +6,9 @@ package resolver_test
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 
@@ -1051,7 +1053,7 @@ api_key = "k"
 	})
 }
 
-// TestResolve_UnhonorableDefaultFailsEveryEnvironment pins where an
+// TestNew_UnhonorableDefaultRejectedBeforeAnyLayerIsRead pins where an
 // unhonorable (pxf.default) is caught and, more importantly, that the
 // catch does not depend on the data.
 //
@@ -1063,16 +1065,18 @@ api_key = "k"
 //
 // protowire-go v1.4.0 rejects the placement at bind time
 // (trendvidia/protowire-go#69), and binding is a property of the
-// descriptor, so both cases below now fail identically. That is #134's
-// substance, answered upstream. What is still chameleon's to decide is
-// whether to hoist the check earlier than the first layer parse — to
-// resolver.New, chameleon lint and chameleon verify — which is the
-// half of #134 left open.
+// descriptor, so the answer stopped depending on the environment. This
+// test pins the rest of #134: the report arrives from New, so it does
+// not depend on a layer either.
 //
-// The anti-stutter assertion is carried over: the resolver must not
-// double its own prefix, or anyone grepping logs for the documented
-// text misses it.
-func TestResolve_UnhonorableDefaultFailsEveryEnvironment(t *testing.T) {
+// The anti-stutter assertions the old TestResolve_ form carried are
+// not repeated here — this error never passes through the defaults or
+// parse-layer wraps at all. Their live coverage is
+// TestResolve_DefaultsErrorIsNotDoublePrefixed and
+// TestResolve_LayerParseErrorIsWrappedOnce below, which reach those
+// wraps for real. What replaces them is an exact-match assertion on
+// the whole string, which no stutter can pass.
+func TestNew_UnhonorableDefaultRejectedBeforeAnyLayerIsRead(t *testing.T) {
 	const badAppSrc = `
 syntax = "proto3";
 package badapp.v1;
@@ -1109,44 +1113,207 @@ version = "1.0.0"
 environments = [{ name = "prod" }]
 layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 `)
-	// The two halves of #134's data-dependence: a layer that leaves the
-	// annotated path alone, and one that sets it. Before the bind-time
-	// move the first failed and the second succeeded.
-	for _, c := range []struct {
-		name  string
-		layer string
-	}{
-		{"layer leaves the path unset", `base_url = "x"`},
-		{"layer sets the path", "base_url = \"x\"\ninner {\n  x = \"set\"\n}"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			fs := fstest.MapFS{
-				"base.pxf": &fstest.MapFile{Data: []byte(c.layer)},
-			}
-			sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
-			r, err := resolver.New[*dynamicpb.Message](sample, spec,
-				resolver.WithSource("default", source.FS(fs)))
-			require.NoError(t, err)
+	// #134 asked for the check to run once against the schema rather
+	// than per-environment against layer data. It now runs before any
+	// environment exists: New never reaches Expand, so there is no
+	// per-case loop left to write — the two halves of the old
+	// data-dependence (a layer that leaves the annotated path alone,
+	// one that sets it) cannot reach a resolver that was never built.
+	//
+	// [recordingSource] states the stronger half of that in executable
+	// form: New consults the Source for nothing, so the layer sitting
+	// in this FS — which sets the annotated path, the case that used to
+	// resolve clean — cannot be what produced the error. It is a guard
+	// against New growing layer I/O, not a restatement of the assertion
+	// above.
+	rec := &recordingSource{inner: source.FS(fstest.MapFS{
+		"base.pxf": &fstest.MapFile{Data: []byte("base_url = \"x\"\ninner {\n  x = \"set\"\n}")},
+	})}
+	sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
+	_, err = resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", rec))
+	require.Error(t, err, "an unhonorable (pxf.default) must fail at construction")
+	require.ErrorIs(t, err, resolver.ErrSchemaViolation)
 
-			_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
-			require.Error(t, err, "an unhonorable (pxf.default) must fail whatever the layers set")
+	// Exact, not Contains: the operator-visible string is the whole
+	// contract here — the sentinel prefix, the file, the field, and the
+	// type no literal denotes. A Contains match would pass just as
+	// happily on a stuttered prefix.
+	require.Equal(t, `resolver: schema violation:
+  app.proto: field "badapp.v1.BadApp.inner": invalid (pxf.default) = "nope": `+
+		`(pxf.default) is not valid on message type badapp.v1.Inner: `+
+		`no PXF literal denotes it (draft -01 §annotation-extensions)`, err.Error())
 
-			// Names the field and the type no literal denotes, so an
-			// operator can find it in the schema.
-			assert.Contains(t, err.Error(), "badapp.v1.BadApp.inner")
-			assert.Contains(t, err.Error(), "badapp.v1.Inner")
+	assert.Zero(t, rec.opens.Load(), "the schema is rejected before a layer is read")
+	assert.Zero(t, rec.stats.Load(), "and before one is even looked up")
+}
 
-			// One prefix per pass, still. Note this schema now fails at
-			// bind time, so the error never contains "defaults:" at all
-			// — the live anti-stutter coverage is in
-			// TestResolve_DefaultsErrorIsNotDoublePrefixed below, which
-			// reaches defaults.Apply for real.
-			assert.NotContains(t, err.Error(), "defaults: defaults:",
-				"the pass name must appear once, not twice")
-			assert.NotContains(t, err.Error(), "parse layer \"base\": parse layer",
-				"nor may the parse wrapper stutter")
-		})
+// recordingSource counts the layer I/O a Source is asked for, so a test
+// can assert that a failure happened before any of it. Stat is counted
+// as well as Open because the optional-layer path short-circuits on
+// Stat alone — a "nothing was read" claim that ignored it would not
+// notice a probing sweep.
+//
+// The counters are atomic because source.Source requires
+// implementations to be safe for concurrent use; New is single-
+// goroutine, but a helper that only holds under that assumption is one
+// Resolve away from a race the detector would find in someone else's
+// test.
+type recordingSource struct {
+	inner source.Source
+	opens atomic.Int64
+	stats atomic.Int64
+}
+
+func (s *recordingSource) Open(ctx context.Context, ref string) (io.ReadCloser, error) {
+	s.opens.Add(1)
+	return s.inner.Open(ctx, ref)
+}
+
+func (s *recordingSource) Stat(ctx context.Context, ref string) (source.Info, error) {
+	s.stats.Add(1)
+	return s.inner.Stat(ctx, ref)
+}
+
+// TestNew_OptionalAbsentChainStillValidates covers the gap that made
+// #134 worth acting on rather than closing as fixed-upstream. The
+// bind-time rules run when a schema binds, and a chain whose every
+// layer is optional and absent binds nothing: before New validated,
+// this resolved clean and the violation was never reported at all.
+//
+// A repeated (pxf.default) is the sharpest case, because chameleon's
+// own defaults pass cannot catch it either — defaults.apply skips
+// list and map fields outright, so upstream's bind-time check was the
+// only thing standing between this schema and a silent resolve.
+func TestNew_OptionalAbsentChainStillValidates(t *testing.T) {
+	const listDefaultSrc = `
+syntax = "proto3";
+package holeapp.v1;
+
+import "pxf/annotations.proto";
+
+message HoleApp {
+  string base_url = 1;
+  repeated string tags = 2 [(pxf.default) = "ignored"];
+}
+`
+	sources := map[string]string{
+		"chain.proto":           chainSpecProtoSrc,
+		"app.proto":             listDefaultSrc,
+		"pxf/annotations.proto": annotationsProtoSrcResolver,
 	}
+	comp := protocompile.Compiler{
+		Resolver: protocompile.WithStandardImports(
+			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(sources)},
+		),
+	}
+	files, err := comp.Compile(context.Background(), "chain.proto", "app.proto")
+	require.NoError(t, err)
+	rl := files.AsResolver()
+	cd, err := rl.FindDescriptorByName("chameleon.v1.ChainSpec")
+	require.NoError(t, err)
+	ad, err := rl.FindDescriptorByName("holeapp.v1.HoleApp")
+	require.NoError(t, err)
+
+	// One layer, optional (no `required`), and the FS is empty — so the
+	// source reports ErrNotFound and loadAndParse skips it without ever
+	// calling UnmarshalFull.
+	spec := parseSpec(t, cd.(protoreflect.MessageDescriptor), `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE }]
+`)
+	sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
+	_, err = resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fstest.MapFS{})))
+	require.ErrorIs(t, err, resolver.ErrSchemaViolation)
+	require.Equal(t, `resolver: schema violation:
+  app.proto: field "holeapp.v1.HoleApp.tags": invalid (pxf.default) = "ignored": `+
+		`(pxf.default) is not valid on repeated fields: `+
+		`one literal cannot denote a list (draft -01 §annotation-extensions)`, err.Error())
+}
+
+// TestNew_ImportClosureViolationIsCaught pins the widened scope that
+// arrived with protowire-go#71: a misplaced annotation in an imported
+// file fails the importing schema, whether or not any field of the
+// sample's own message refers to the offending type. Chameleon's other
+// fixtures are single-file, so this is the only place that surface is
+// covered — and New is now where an operator meets it.
+func TestNew_ImportClosureViolationIsCaught(t *testing.T) {
+	const commonSrc = `
+syntax = "proto3";
+package common.v1;
+
+import "pxf/annotations.proto";
+
+message Unreferenced {
+  repeated string labels = 1 [(pxf.default) = "nope"];
+}
+`
+	const appSrc = `
+syntax = "proto3";
+package impapp.v1;
+
+import "common.proto";
+
+message ImpApp {
+  string base_url = 1;
+}
+`
+	sources := map[string]string{
+		"chain.proto":           chainSpecProtoSrc,
+		"common.proto":          commonSrc,
+		"app.proto":             appSrc,
+		"pxf/annotations.proto": annotationsProtoSrcResolver,
+	}
+	comp := protocompile.Compiler{
+		Resolver: protocompile.WithStandardImports(
+			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(sources)},
+		),
+	}
+	files, err := comp.Compile(context.Background(), "chain.proto", "app.proto")
+	require.NoError(t, err)
+	rl := files.AsResolver()
+	cd, err := rl.FindDescriptorByName("chameleon.v1.ChainSpec")
+	require.NoError(t, err)
+	ad, err := rl.FindDescriptorByName("impapp.v1.ImpApp")
+	require.NoError(t, err)
+
+	spec := parseSpec(t, cd.(protoreflect.MessageDescriptor), `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`)
+	sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
+	_, err = resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fstest.MapFS{
+			"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x"`)},
+		})))
+	require.ErrorIs(t, err, resolver.ErrSchemaViolation)
+
+	// The violation names common.proto — the file that declares the
+	// offending element — not app.proto, which is the one the consumer
+	// handed us. That is the diagnostic an operator needs to find it.
+	require.Equal(t, `resolver: schema violation:
+  common.proto: field "common.v1.Unreferenced.labels": invalid (pxf.default) = "nope": `+
+		`(pxf.default) is not valid on repeated fields: `+
+		`one literal cannot denote a list (draft -01 §annotation-extensions)`, err.Error())
+}
+
+// TestNew_CleanSchemaUnaffected is the negative half: New's new check
+// must not reject anything the suite already builds. The rest of this
+// file is that assertion at scale; this names it once explicitly.
+func TestNew_CleanSchemaUnaffected(t *testing.T) {
+	chainDesc, appDesc := compileAnnotated(t)
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`)
+	sample := dynamicpb.NewMessage(appDesc)
+	_, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fstest.MapFS{})))
+	require.NoError(t, err)
 }
 
 // TestResolve_DefaultsErrorIsNotDoublePrefixed keeps the anti-stutter
@@ -1215,23 +1382,20 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 		"the pass name must appear once, not twice")
 }
 
-// TestResolve_NoLayerParsedSkipsBindTimeCheck pins the boundary of the
-// v1.4.0 bind-time move, which is narrower than "the schema is checked
-// when you resolve": nothing binds the config descriptor except
-// parsing a layer, so a resolve whose layers are all
-// optional-and-absent never runs the check at all.
+// TestNew_UnboundSchemaIsRejectedRegardlessOfLayers is the inverted
+// form of TestResolve_NoLayerParsedSkipsBindTimeCheck, which pinned
+// the boundary this change removes. That test recorded the v1.4.0
+// bind-time move as narrower than "the schema is checked when you
+// resolve" — nothing bound the config descriptor except parsing a
+// layer, so a resolve whose layers were all optional-and-absent ran no
+// check at all, falling back to defaults.Apply's resolve-time error
+// for the message placement and to silence for the list one.
 //
-// Both halves are the pre-v1.4.0 behaviour, still reachable:
-// a bad message-typed placement falls through to defaults.Apply's own
-// resolve-time error, and a bad list placement is skipped in silence —
-// the #131 shape the CHANGELOG describes as gone.
-//
-// Pinned rather than fixed. Closing it means binding the sample
-// descriptor in resolver.New (and in chameleon lint / verify), which
-// is exactly the half of #134 this PR records as still open and still
-// chameleon's to decide. The docs were corrected to describe the
-// boundary this test draws; when the hoist lands, this test inverts.
-func TestResolve_NoLayerParsedSkipsBindTimeCheck(t *testing.T) {
+// It said "when the hoist lands, this test inverts". This is that.
+// New binds the descriptor itself, so both placements are rejected
+// before Expand runs, and the answer no longer depends on what the
+// filesystem happens to hold. See #134.
+func TestNew_UnboundSchemaIsRejectedRegardlessOfLayers(t *testing.T) {
 	const appSrc = `
 syntax = "proto3";
 package unbound.v1;
@@ -1270,35 +1434,77 @@ environments = [{ name = "prod" }]
 layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = false }]
 `)
 
-	newResolver := func(t *testing.T, fs fstest.MapFS) *resolver.Resolver[*dynamicpb.Message] {
-		t.Helper()
-		sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
-		r, err := resolver.New[*dynamicpb.Message](sample, spec,
-			resolver.WithSource("default", source.FS(fs)))
-		require.NoError(t, err)
-		return r
-	}
-
-	t.Run("a parsed layer binds and rejects both placements", func(t *testing.T) {
-		r := newResolver(t, fstest.MapFS{
+	// The two cases that used to diverge. Both now produce the same
+	// error from New, which is the whole point: the FS decided the
+	// diagnostic before, and decides nothing now. Each case wraps its FS
+	// in a [recordingSource] so that "decides nothing" is asserted
+	// rather than assumed — the two states are indistinguishable to New
+	// because it never looks at either.
+	for _, c := range []struct {
+		name string
+		fs   fstest.MapFS
+	}{
+		{"a layer is present", fstest.MapFS{
 			"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x"`)},
-		})
-		_, err := r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), `parse layer "base"`)
-		assert.Contains(t, err.Error(), "unbound.v1.App.inner")
-		assert.Contains(t, err.Error(), "unbound.v1.App.tags")
-	})
+		}},
+		{"the optional layer is absent", fstest.MapFS{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rec := &recordingSource{inner: source.FS(c.fs)}
+			sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
+			_, err := resolver.New[*dynamicpb.Message](sample, spec,
+				resolver.WithSource("default", rec))
+			require.ErrorIs(t, err, resolver.ErrSchemaViolation)
 
-	t.Run("no layer parsed falls back to the resolve-time path", func(t *testing.T) {
-		r := newResolver(t, fstest.MapFS{}) // optional layer absent
-		_, err := r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "resolver: defaults: inner:",
-			"the pre-v1.4.0 resolve-time rejection, not the bind-time one")
-		assert.NotContains(t, err.Error(), `parse layer "base"`,
-			"nothing was parsed, so nothing bound")
-	})
+			// Both placements, in one report, sorted by element name —
+			// the message-typed one that used to reach defaults.Apply,
+			// and the list one that used to be dropped in silence.
+			require.Equal(t, `resolver: schema violation:
+  app.proto: field "unbound.v1.App.inner": invalid (pxf.default) = "nope": `+
+				`(pxf.default) is not valid on message type unbound.v1.Inner: `+
+				`no PXF literal denotes it (draft -01 §annotation-extensions)
+  app.proto: field "unbound.v1.App.tags": invalid (pxf.default) = "ignored": `+
+				`(pxf.default) is not valid on repeated fields: `+
+				`one literal cannot denote a list (draft -01 §annotation-extensions)`, err.Error())
+
+			assert.NotContains(t, err.Error(), `parse layer "base"`,
+				"the report comes from New, not from a layer parse")
+			assert.Zero(t, rec.opens.Load(), "New opens no layer")
+			assert.Zero(t, rec.stats.Load(), "and stats none either")
+		})
+	}
+}
+
+// TestResolve_LayerParseErrorIsWrappedOnce keeps the `resolver: parse
+// layer %q:` wrapper covered. Hoisting the bind-time check to New took
+// away what used to assert it — a schema whose placement failed the
+// parse can no longer be handed to a Resolver, because New rejects it
+// first — so the wrapper needs a carrier that is about the layer's
+// bytes rather than the schema's shape. A malformed layer body is
+// that: the entry id is in the message, and the wrap appears once.
+func TestResolve_LayerParseErrorIsWrappedOnce(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`)
+	fs := fstest.MapFS{
+		// Not PXF: a value with no key.
+		"base.pxf": &fstest.MapFile{Data: []byte(`= "x"`)},
+	}
+	sample := dynamicpb.NewMessage(appDesc)
+	r, err := resolver.New[*dynamicpb.Message](sample, spec,
+		resolver.WithSource("default", source.FS(fs)))
+	require.NoError(t, err, "the schema is clean; only the layer is not")
+
+	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `resolver: parse layer "base":`,
+		"the documented shape, naming the entry an operator has to go fix")
+	assert.NotContains(t, err.Error(), `parse layer "base": parse layer`,
+		"the wrapper must appear once, not twice")
 }
 
 func TestResolve_RequiredFieldMissingFails(t *testing.T) {
