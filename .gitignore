@@ -6,6 +6,11 @@
 /cmd/protoc-gen-chameleon-go/protoc-gen-chameleon-go
 /chameleon
 /cmd/chameleon/chameleon
+# `go build ./hack/changelog` lands here too. Run it with `go run` (what
+# the Makefile targets do) and nothing appears; build it once and this
+# keeps 2.7 MB of local object code out of the module zip.
+/changelog
+/hack/changelog/changelog
 /bin/
 *.exe
 *.dll

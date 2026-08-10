@@ -164,8 +164,9 @@ verify: ## Verify dependency checksums against the module cache.
 #
 # Entries live one-per-file in changelog.d/ until release; see its README.
 # VERSION is required by the two assembling targets and is the release
-# being cut, without a leading "v" — the same string docs/RELEASING.md
-# step 2 tags.
+# being cut, without a leading "v" — the same string the tagging steps of
+# docs/RELEASING.md put a "v" in front of. The tool rejects a leading "v"
+# rather than writing one into a heading that is about to be tagged.
 
 .PHONY: changelog
 changelog: ## Fold changelog.d/ fragments into CHANGELOG.md (VERSION=x.y.z).

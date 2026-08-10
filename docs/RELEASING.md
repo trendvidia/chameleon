@@ -25,7 +25,8 @@ same for anyone working in a single module without the workspace, and while the
 tags a `require` names do not exist yet they are what keeps `go mod tidy`
 working at all. Consumers ignore both — what they get is the `require` line,
 which is why the tag order below matters. `cmd/chameleon`'s pair must come off
-before that module is tagged (step 4); leaving them on breaks `go install`.
+before that module is tagged (step 5, the CLI tag); leaving them on breaks
+`go install`.
 
 `make test`, `make vet`, `make lint` and `make tidy` all iterate over the three
 modules; `./...` alone stops at a module boundary and would quietly cover a
@@ -42,7 +43,7 @@ third of the repo.
    write `changelog.d/_preamble.md` if this release wants the lead
    paragraph that v0.22.0 and v0.22.1 have.
 
-1. **Assemble the changelog**, on its own commit so the release diff is
+2. **Assemble the changelog**, on its own commit so the release diff is
    readable:
 
    ```
@@ -51,18 +52,26 @@ third of the repo.
    git commit -am "release: assemble v0.23.0 changelog"
    ```
 
-   This folds the fragments into a new `## [0.23.0]` section, resets
-   `## [Unreleased]` to its empty marker, and deletes the fragments it
-   consumed. Do it **before** tagging — the tag must contain the changelog
-   the release ships with.
+   `VERSION` is bare — no leading `v`, which is the tag's alone. This folds
+   the fragments into a new `## [0.23.0]` section, resets `## [Unreleased]`
+   to its empty marker, and deletes the fragments it consumed. Do it
+   **before** tagging — the tag must contain the changelog the release
+   ships with. Assembling is refused if the version already has a section
+   or if anything was written into `## [Unreleased]` by hand, so a second
+   run cannot duplicate or discard; to fold in a late fragment, restore
+   both sides (`git checkout -- CHANGELOG.md changelog.d`) and run once.
 
-2. **Tag the library.**
+   `main` is protected, so this lands as a PR — and it is the one PR that
+   deletes fragments instead of adding one. **Label it `skip-changelog`**
+   or the changelog gate blocks it.
+
+3. **Tag the library.**
 
    ```
    git tag v0.23.0 && git push origin v0.23.0
    ```
 
-3. **Point sops at it, then tag sops.** Edit `sops/go.mod` so
+4. **Point sops at it, then tag sops.** Edit `sops/go.mod` so
    `require github.com/trendvidia/chameleon` names the tag you just pushed,
    commit, then:
 
@@ -70,9 +79,9 @@ third of the repo.
    git tag sops/v0.23.0 && git push origin sops/v0.23.0
    ```
 
-4. **Point the CLI at both, drop its `replace`s, then tag the CLI.** Edit
-   `cmd/chameleon/go.mod` so its two `require` lines name the tags from steps 2
-   and 3, **and delete its two `replace` directives**:
+5. **Point the CLI at both, drop its `replace`s, then tag the CLI.** Edit
+   `cmd/chameleon/go.mod` so its two `require` lines name the library and sops
+   tags from steps 3 and 4, **and delete its two `replace` directives**:
 
    ```
    go mod edit -dropreplace=github.com/trendvidia/chameleon \
@@ -101,11 +110,11 @@ third of the repo.
    git tag cmd/chameleon/v0.23.0 && git push origin cmd/chameleon/v0.23.0
    ```
 
-   The `replace`s go back on the next development commit — until the tags in
-   steps 2 and 3 exist, nothing outside the workspace can resolve
-   `chameleon/sops` at all.
+   The `replace`s go back on the next development commit — until the library
+   and sops tags (steps 3 and 4) exist, nothing outside the workspace can
+   resolve `chameleon/sops` at all.
 
-5. **Verify from outside the workspace** — the requires are the one thing the
+6. **Verify from outside the workspace** — the requires are the one thing the
    workspace hides, so check them against the proxy rather than the worktree:
 
    ```
@@ -134,5 +143,6 @@ third of the repo.
   and does not work on the command line. What *does* change is which commit a pin
   resolves to: `@v0.23.0` now names the CLI module's own tag, while an existing
   `@v0.22.1` still resolves through the root module (that revision predates the
-  split). Step 5 above is where you confirm it against the proxy.
+  split). The verify-from-outside step above is where you confirm it against the
+  proxy.
 - **`protoc-gen-chameleon-go`**: unchanged, root-module tags, pins keep working.

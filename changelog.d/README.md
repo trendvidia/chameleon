@@ -19,6 +19,17 @@ Create `changelog.d/<id>.<category>.md`:
 - **`<category>`** — one of `added`, `changed`, `deprecated`, `removed`,
   `fixed`, `security`, `internal`.
 
+The name must end in `.md` and the file must sit directly in this
+directory — `make changelog-check` fails on anything else rather than
+skipping it, because CI's "did this PR add a fragment?" gate counts any
+added file here, and a `.txt` or a subdirectory would pass the gate and
+then never be assembled into anything.
+
+Nothing goes into `CHANGELOG.md` itself any more, not even under
+`## [Unreleased]`: assembly replaces that section wholesale, so an entry
+left there is destroyed at release time. `make changelog-check` fails on a
+non-empty Unreleased section for that reason.
+
 **The file's entire content is the entry, verbatim.** There is no wrapper
 format, no YAML, no escaping. Write exactly the markdown you would have
 written into `CHANGELOG.md` — a top-level `-` bullet, with any tables,
@@ -91,3 +102,7 @@ tell a consumer — a refactor with no behaviour change, a CI-only edit, a
 typo fix — label the PR **`skip-changelog`** and the check passes. The
 label exists so that omitting an entry is a decision someone made, rather
 than something everyone forgets.
+
+The release PR wears the label too: it consumes fragments rather than
+adding one, so the gate would otherwise block every release. See
+[docs/RELEASING.md](../docs/RELEASING.md) step 2.
