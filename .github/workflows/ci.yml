@@ -80,6 +80,13 @@ jobs:
       # definition itself.
       - name: modules-check (MODULES vs go.work)
         run: make modules-check
+      # The same guard, one level up: modules-check keeps the module list
+      # honest, ci-check keeps *this step list* and `make ci` from drifting
+      # apart. A step added below and not to CI_TARGETS reds here, which is
+      # the failure #165 asked for — a comment saying "keep them in step"
+      # is what did not stop it the first time.
+      - name: ci-check (this workflow vs `make ci`)
+        run: make ci-check
       - name: build
         run: make compile
       - name: vet
@@ -98,7 +105,8 @@ jobs:
         # The check itself lives in the Makefile so `make ci` can run the
         # same one. Inlined here it drifted: `make ci` did not have it,
         # said it reproduced this matrix, and a green local run pushed a
-        # red PR (#165).
+        # PR that went red on this very step (#164). #165 is the issue
+        # that came out of it.
         run: make tidy-check
 
   changelog:
