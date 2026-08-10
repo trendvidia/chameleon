@@ -78,6 +78,20 @@ jobs:
       # runs" — and a per-module target that silently skips a module is
       # green for the wrong reason. modules-check is the guard on the
       # definition itself.
+      # Printed as well as asserted: nothing in a CI log said which make a
+      # runner had, so #171 — .SHELLFLAGS being inert under 3.81, and every
+      # per-module loop reporting only its last module — could not be ruled
+      # out here from the outside. The Makefile refuses to run under 3.81
+      # anyway; this names the problem at a step called after it rather than
+      # in the middle of the first target that happens to invoke make.
+      - name: Assert GNU Make >= 3.82
+        run: |
+          make --version | head -1
+          v=$(make --version | head -1 | sed -E 's/^GNU Make //')
+          [ "$(printf '%s\n3.82\n' "$v" | sort -V | head -1)" = "3.82" ] || {
+            echo "::error::runner has GNU Make $v; the Makefile needs >= 3.82 (chameleon#171)"
+            exit 1
+          }
       - name: modules-check (MODULES vs go.work)
         run: make modules-check
       # The same guard, one level up: modules-check keeps the module list
