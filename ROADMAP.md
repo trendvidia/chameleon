@@ -64,7 +64,7 @@ Enumeration is exhaustive — `go doc <pkg>` at the v1.0 tag should produce the 
 
 - **Functions**: `New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolver[T], error)`, `WithDecrypter`, `WithDecrypterNamed`, `WithoutDecrypter`, `WithMaxLayerBytes`, `WithMeterProvider`, `WithSource`, `WithStrictMetadata`, `WithTrace`.
 - **Types**: `Resolver[T proto.Message]`, `Resolution[T proto.Message]`, `Request`, `Trace`, `TraceEntry`, `ClobberRecord`, `Option`.
-- **Errors**: `ErrNoSource`, `ErrNoDecrypter`, `ErrRequiredLayerMissing`, `ErrLayerTooLarge`.
+- **Errors**: `ErrNoSource`, `ErrNoDecrypter`, `NoDecrypterError` (the concrete form behind `ErrNoDecrypter`; fields `LayerID string`, `Disabled bool`, `Err error`), `ErrRequiredLayerMissing`, `ErrLayerTooLarge`, `ErrSchemaViolation`.
 - **Methods**: `(*Resolver[T]).Resolve(ctx, Request) (*Resolution[T], error)`, `(*Resolution[T]).Destroy()`.
 
 ### `github.com/trendvidia/chameleon/chain`

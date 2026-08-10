@@ -787,6 +787,24 @@ func TestDecrypterNone_ErrorSpeaksCLIVocabulary(t *testing.T) {
 				assert.NotContains(t, err.Error(), "pass --decrypter=sops",
 					"an operator who typed the flag is not told how to undo what they meant")
 			})
+
+			// --decrypter= is what --decrypter=$DECRYPTER expands to
+			// with the variable unset, and it wires WithoutDecrypter
+			// exactly as "none" does. The message echoes the value as
+			// typed rather than reporting "none", which nobody passed
+			// — and the echo is also the answer to "why did the
+			// decrypter in my ~/.chameleon not apply": a typed flag
+			// wins over the config, empty value included.
+			t.Run("empty value", func(t *testing.T) {
+				var out bytes.Buffer
+				err := tc.run(&out, append(slices.Clone(tc.args), "--decrypter="))
+				require.Error(t, err)
+
+				assert.ErrorIs(t, err, resolver.ErrNoDecrypter)
+				assert.Equal(t,
+					`layer "secret" is encrypted: --decrypter= was passed on the command line`,
+					err.Error())
+			})
 		})
 	}
 }

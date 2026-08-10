@@ -163,7 +163,7 @@ Flags:`)
 		AllowUnknownContext: true,
 	})
 	if err != nil {
-		return noDecrypterError(err, flagSet(fs, "decrypter"))
+		return noDecrypterError(err, fs, *decrypter)
 	}
 	defer res.Destroy()
 
@@ -402,26 +402,33 @@ func decrypterOption(dec crypt.Decrypter) resolver.Option {
 // WithoutDecrypter, is not told they did anything, and the identifier
 // appears in no --help output.
 //
-// asked reports whether --decrypter was typed on the command line
-// (flagSet), which is the only distinction that changes what the
-// operator needs to hear. Defaulting to "none" is a surprise and gets
-// the instruction; asking for "none" and being refused is the flag
-// working, and gets a statement.
+// Whether --decrypter was typed on the command line (flagSet) is the
+// only distinction that changes what the operator needs to hear.
+// Defaulting to it is a surprise and gets the instruction; asking for
+// it and being refused is the flag working, and gets a statement.
+//
+// decrypter is the flag's value, echoed as typed rather than named
+// "none": --decrypter= is what --decrypter=$DECRYPTER expands to with
+// the variable unset, and it wires WithoutDecrypter exactly as "none"
+// does, so assuming the value would report one the operator never
+// passed. The echo is also the answer to "why did the decrypter in my
+// ~/.chameleon not apply" — applyAppDefaults leaves a typed flag
+// alone, empty value included.
 //
 // Anything else passes through untouched. In particular the
 // no-backend-registered case cannot arise from this binary — the CLI
 // always passes either WithDecrypter or WithoutDecrypter, so the
 // registry is never consulted — and if it somehow did, the resolver's
 // Go-facing wording is the better of the two.
-func noDecrypterError(err error, asked bool) error {
+func noDecrypterError(err error, fs *flag.FlagSet, decrypter string) error {
 	var nde *resolver.NoDecrypterError
 	if !errors.As(err, &nde) || !nde.Disabled {
 		return err
 	}
-	if asked {
+	if flagSet(fs, "decrypter") {
 		return &cliError{
-			msg: fmt.Sprintf("layer %q is encrypted: --decrypter=none was passed on the command line",
-				nde.LayerID),
+			msg: fmt.Sprintf("layer %q is encrypted: --decrypter=%s was passed on the command line",
+				nde.LayerID, decrypter),
 			err: err,
 		}
 	}
