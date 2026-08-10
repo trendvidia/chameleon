@@ -158,11 +158,3 @@ require (
 	gopkg.in/ini.v1 v1.67.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-// Local development and CI resolve the sibling modules from the
-// working tree; consumers ignore these. DROP BOTH BEFORE TAGGING THIS
-// MODULE — `go install pkg@version` refuses a go.mod carrying a
-// replace. See docs/RELEASING.md step 4.
-replace github.com/trendvidia/chameleon => ../../
-
-replace github.com/trendvidia/chameleon/sops => ../../sops
