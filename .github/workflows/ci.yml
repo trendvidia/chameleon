@@ -89,17 +89,17 @@ jobs:
       - name: integration tests (real sops round-trip)
         run: make test-integration
       - name: modules are tidy
-        run: |
-          # A stray import that drags the KMS tree back into the library
-          # module's go.mod is the regression #130 was about;
-          # TestLibraryModuleRequiresNoKeyManagement catches it, but only
-          # if go.mod reflects the imports.
-          make tidy
-          # go.work.sum is tracked and the build/vet/test steps above run
-          # in workspace mode, which rewrites it whenever it needs a hash
-          # the committed file lacks. Left unchecked, a PR lands with it
-          # stale and every contributor gets a dirty tree on first build.
-          git diff --exit-code -- '**/go.mod' '**/go.sum' go.mod go.sum go.work go.work.sum
+        # A stray import that drags the KMS tree back into the library
+        # module's go.mod is the regression #130 was about;
+        # TestLibraryModuleRequiresNoKeyManagement catches it, but only
+        # if go.mod reflects the imports. go.work.sum is in the checked
+        # set too — see the target.
+        #
+        # The check itself lives in the Makefile so `make ci` can run the
+        # same one. Inlined here it drifted: `make ci` did not have it,
+        # said it reproduced this matrix, and a green local run pushed a
+        # red PR (#165).
+        run: make tidy-check
 
   changelog:
     name: changelog fragment

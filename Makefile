@@ -193,6 +193,23 @@ modules-check: ## Fail if MODULES and go.work disagree.
 tidy: ## go mod tidy in every module.
 	@for m in $(MODULES); do echo "==> tidy $$m"; (cd $$m && $(GO) mod tidy); done
 
+# The gate CI applies, as a target rather than eight lines of workflow
+# YAML — the same argument ci.yml already makes for the module walk:
+# one definition, or the two drift while `make ci` claims to be what CI
+# runs. Note it REWRITES go.mod/go.sum in place, because `go mod tidy`
+# is the only way to know whether they were already correct; a failure
+# therefore leaves the fix applied and staged for you to commit.
+#
+# go.work.sum is in the file set on purpose: it is tracked, and the
+# build/vet/test targets run in workspace mode, which rewrites it
+# whenever it needs a hash the committed file lacks. Left unchecked, a
+# PR lands with it stale and every contributor gets a dirty tree on
+# first build.
+.PHONY: tidy-check
+tidy-check: tidy ## Fail if `make tidy` changes any go.mod / go.sum / go.work file.
+	@git diff --exit-code -- '**/go.mod' '**/go.sum' go.mod go.sum go.work go.work.sum \
+		|| { echo "go.mod/go.sum are not tidy — the diff above is what 'make tidy' just fixed; commit it."; exit 1; }
+
 .PHONY: verify
 verify: ## Verify dependency checksums against the module cache.
 	@for m in $(MODULES); do echo "==> verify $$m"; (cd $$m && $(GO) mod verify); done
@@ -233,8 +250,19 @@ tools: ## Install dev tools: golangci-lint pinned to $(GOLANGCI_LINT_VERSION).
 
 # --- Meta ---------------------------------------------------------------------
 
+# Mirrors .github/workflows/ci.yml's `test` and `lint` jobs, in their
+# order, with ONE deliberate omission: `make test-integration`, which
+# needs live KMS credentials. Rolling that in would make this target
+# fail on a clean checkout, which trains people to ignore it — worse
+# than not running it. Every other gate CI applies is here, so a green
+# `make ci` and a red PR should not both be possible.
+#
+# fmt-check was added here by #149 and lost in #150's merge of main
+# (202ae0e) — both sides had edited this line, and the resolution kept
+# one. That is what #165 is about; keep the list and the workflow in
+# step when either changes.
 .PHONY: ci
-ci: modules-check changelog-check vet test lint ## Reproduce the CI matrix locally (modules-check + changelog-check + vet + test -race + lint).
+ci: modules-check changelog-check fmt-check compile vet test tidy-check lint ## Everything CI runs except test-integration (needs live KMS credentials).
 
 .PHONY: check
 check: fmt-check vet test ## Fast pre-commit suite (fmt-check, vet, test).
