@@ -53,11 +53,14 @@
 //	    a hash.
 //
 //	chameleon check-schema --schema=config.proto [--message=app.v1.AppConfig]
-//	    Check a .proto against the PXF bind-time rules — reserved
+//	chameleon check-schema --schema=./proto --include=./proto
+//	    Check .proto files against the PXF bind-time rules — reserved
 //	    names, (pxf.key) / (pxf.default) / (pxf.required) placement —
-//	    across its transitive import closure. The only --schema
+//	    across their transitive import closure. The only --schema
 //	    subcommand that resolves nothing: no chain, no layers, no
-//	    environment. --include adds import roots (protoc -I);
+//	    environment. --schema is repeatable and also takes a directory,
+//	    searched recursively, so a schema repo can check everything it
+//	    owns in one compile. --include adds import roots (protoc -I);
 //	    --message additionally asserts that message exists.
 //
 //	chameleon migrate --chain=chain.pxf --transform=add-field ...
@@ -193,7 +196,7 @@ Subcommands:
     get         Resolve a config and print it as a PXF document.
     reveal      Print the plaintext of a single Secret-typed field.
     verify      Check @header.content_sha256 of every layer in a chain.
-    check-schema  Check a .proto (and its imports) against the PXF bind-time rules.
+    check-schema  Check .proto files (and their imports) against the PXF bind-time rules.
     migrate     Bulk-edit layer files in a chain spec (add/rename/delete fields).
     rotate-key  Re-encrypt every encrypted layer to the chain spec's current key_name.
     keystore    Manage the PXF-formatted SOPS age key file (add / list / ...).
