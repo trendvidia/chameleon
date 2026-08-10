@@ -322,7 +322,7 @@ Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/ch
 - `chameleon reveal --field=<path>` — print the plaintext of a single Secret-typed field to stdout (no trailing newline; suitable for `$(...)` substitution). Same input flags as `explain`.
 - `chameleon bundle build` — produce a per-module distribution bundle (chain spec + narrowed, re-encrypted layers as a zip). `--base64` for paste-into-secret-manager-field output, `--force` to truncate-overwrite an existing `--out` file. See "[Distribution bundles](#distribution-bundles)".
 - `chameleon verify` — check `@header.content_sha256` on every layer the chain resolves to. Encrypted layers are skipped (sops already authenticates them).
-- `chameleon check-schema --schema=<file.proto>` — check a `.proto` and its transitive import closure against the PXF bind-time rules. Resolves nothing: no chain, no layers, no environment. See "[`chameleon check-schema` CLI](#chameleon-check-schema-cli)".
+- `chameleon check-schema --schema=<file.proto|dir>` — check `.proto` files and their transitive import closure against the PXF bind-time rules. Repeatable, and takes a directory for a whole schema repo. Resolves nothing: no chain, no layers, no environment. See "[`chameleon check-schema` CLI](#chameleon-check-schema-cli)".
 - `chameleon migrate` — bulk-edit layer files in a chain spec. Decrypts encrypted layers, applies an AST-level transform (add-field / delete-field / rename-field), re-encrypts preserving the original key set.
 - `chameleon hash` — print the canonical body SHA-256 of a single layer file. Use this value as the `@header.content_sha256` on the layer.
 - `chameleon version` — print the installed chameleon version, Go toolchain, and commit (from VCS-aware module info).
@@ -392,6 +392,33 @@ Note which file the violation names. `config.proto` above is conformant; the ann
 `--message` is optional and does not narrow the check: the rules are per file closure, not per message. It only additionally asserts the named message exists — in the schema or in anything it imports — which is worth having in CI when a schema and its consumer's message name are meant to move together.
 
 The file count on the `OK` line is the closure size, not the number of files you named — `4 file(s) checked` for a single `--schema` says three imported files were checked too, and that a violation from a later run may belong to any of them. It does not double as an `--include` check: an import root that is missing or wrong fails the compile outright rather than yielding a quietly smaller closure.
+
+#### Checking a whole schema repo
+
+A repo that owns a shared schema owns many `.proto` files, and its question is "is every file I own conformant?". `--schema` is repeatable and also takes a **directory**, searched recursively for `*.proto` ([#153](https://github.com/trendvidia/chameleon/issues/153)):
+
+```sh
+chameleon check-schema --schema=./proto --include=./proto
+# OK    5 root(s)    6 file(s) checked
+```
+
+All roots compile **once, together**, which is what the shell loop it replaces cannot do:
+
+```sh
+# what this replaces — recompiles the shared closure per file, and
+# reports a violation in a shared import once per importing root
+for f in proto/**/*.proto; do chameleon check-schema --schema="$f" || exit 1; done
+```
+
+A violation is printed **once**, with the roots whose closure reaches it, so the deduplication does not cost you the blast radius:
+
+```
+common/v1/common.proto: field "common.v1.Shared.labels": invalid (pxf.default) = "nope": …    (via svc/a.proto, svc/b.proto, svc/c.proto)
+```
+
+The offending file is already named at the head of the line, so it is never listed among the roots reaching it.
+
+The `OK` line carries both counts with several roots — roots asked for, and distinct files covered — because the covered count alone no longer says how many roots produced it. Glob expansion is left to your shell (`--schema=proto/*.proto` works; `**` means different things in bash and fish and nothing in sh, so this command does not implement its own). Files found under a directory are named the way their siblings import them, protoc's `-I` contract; two different files that would compile under one name are rejected rather than silently checked once. The single-file form is untouched — same output, same `OK` line.
 
 This is the CLI half of [#134](https://github.com/trendvidia/chameleon/issues/134), and it is the answer for a repo that only *authors* schemas and hands them to someone else — a consumer never runs its CLI. The library half checks the same rules at `resolver.New`, so a program that constructs a Resolver is covered without running anything.
 
