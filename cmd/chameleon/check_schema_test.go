@@ -6,10 +6,12 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -1302,6 +1304,168 @@ func TestCheckSchema_NoSkippedFieldWithoutExclusions(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if want := "OK\t3 root(s)\t6 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// --- following symlinks (#167) ---
+
+// linkedRepo builds the layout #167 was filed for: a directory the
+// operator names, with a subtree symlinked into it from outside.
+func linkedRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "proto", "top.proto"), `
+syntax = "proto3";
+package top.v1;
+message T { string x = 1; }
+`)
+	write(t, filepath.Join(dir, "elsewhere", "ext", "e.proto"), `
+syntax = "proto3";
+package ext.v1;
+message E { string x = 1; }
+`)
+	if err := os.Symlink(filepath.Join(dir, "elsewhere", "ext"), filepath.Join(dir, "proto", "linked")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	return dir
+}
+
+// The motivating case. Before #167 the linked subtree was not searched
+// and the run said OK over a narrower set than the operator named,
+// with the file count the only hint.
+func TestCheckSchema_FollowsSymlinkedDirectories(t *testing.T) {
+	dir := linkedRepo(t)
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + filepath.Join(dir, "proto")}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "OK\t2 root(s)\t2 file(s) checked\t1 linked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// Decision 3 of #167: a symlinked .proto file, not only a directory.
+func TestCheckSchema_FollowsSymlinkedFiles(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "proto", "top.proto"), `
+syntax = "proto3";
+package top.v1;
+message T { string x = 1; }
+`)
+	write(t, filepath.Join(dir, "outside", "e.proto"), `
+syntax = "proto3";
+package ext.v1;
+message E { string x = 1; }
+`)
+	if err := os.Symlink(filepath.Join(dir, "outside", "e.proto"), filepath.Join(dir, "proto", "e.proto")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + filepath.Join(dir, "proto")}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "OK\t2 root(s)\t2 file(s) checked\t1 linked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// A link pointing at an ancestor is the reason WalkDir does not follow
+// by default. The search must terminate, and must not report the files
+// it already walked a second time.
+func TestCheckSchema_SymlinkCycleTerminates(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "proto")
+	write(t, filepath.Join(root, "a.proto"), `
+syntax = "proto3";
+package a.v1;
+message A { string x = 1; }
+`)
+	if err := os.Symlink(root, filepath.Join(root, "loop")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	done := make(chan string, 1)
+	go func() {
+		var out bytes.Buffer
+		if err := checkSchemaCmd(&out, []string{"--schema=" + root}); err != nil {
+			done <- "error: " + err.Error()
+			return
+		}
+		done <- out.String()
+	}()
+	select {
+	case got := <-done:
+		if want := "OK\t1 root(s)\t1 file(s) checked\n"; got != want {
+			t.Errorf("output = %q, want %q (the cycle must add nothing)", got, want)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("search did not terminate on a symlink cycle")
+	}
+}
+
+// One file, one name. A file reachable both directly and through a
+// link must be compiled once: twice would be two descriptors for one
+// file, which is the duplicate-symbol failure the naming rules exist
+// to prevent.
+func TestCheckSchema_FileReachableTwiceIsCheckedOnce(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "proto")
+	write(t, filepath.Join(root, "real", "a.proto"), `
+syntax = "proto3";
+package a.v1;
+message A { string x = 1; }
+`)
+	if err := os.Symlink(filepath.Join(root, "real"), filepath.Join(root, "alias")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + root}); err != nil {
+		t.Fatalf("the same file under two paths must not collide: %v", err)
+	}
+	// One root, and no "linked" — the direct path is walked first, so
+	// the file is not reached by crossing a link.
+	if want := "OK\t1 root(s)\t1 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// --exclude tests the link's own name, which is what the operator sees
+// in the tree — not the name of whatever it points at.
+func TestCheckSchema_ExcludeMatchesTheLinkName(t *testing.T) {
+	dir := linkedRepo(t)
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "proto"), "--exclude=linked",
+	}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "OK\t1 root(s)\t1 file(s) checked\t1 skipped\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// A dangling link names nothing. It must not fail the run, and must
+// not be counted as anything.
+func TestCheckSchema_DanglingSymlinkIsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "proto")
+	write(t, filepath.Join(root, "a.proto"), `
+syntax = "proto3";
+package a.v1;
+message A { string x = 1; }
+`)
+	if err := os.Symlink(filepath.Join(dir, "no", "such", "target.proto"), filepath.Join(root, "b.proto")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + root}); err != nil {
+		t.Fatalf("a dangling link must not fail the run: %v", err)
+	}
+	if want := "OK\t1 root(s)\t1 file(s) checked\n"; out.String() != want {
 		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }
