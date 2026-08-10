@@ -173,6 +173,61 @@ func TestPlaintextPathLinksNoKeyManagement(t *testing.T) {
 	}
 }
 
+// protoCompiler is the second thing the plaintext path must not link,
+// for the same reason as keyManagement but by a different mechanism
+// (trendvidia/chameleon#137). Key management got in through an import
+// of an *implementation*; this got in through compiling proto source at
+// *runtime* — internal/header built the chameleon.v1.LayerHeader
+// descriptor from an inline copy of the message, which put a protobuf
+// compiler (13 packages, ~3.2 MB) in every binary that resolves a
+// plaintext layer, to parse a five-field message the generated bindings
+// already describe.
+//
+// A compiler belongs on the path that compiles user-supplied schemas —
+// `chameleon explain`, in the cmd/chameleon module, which the negative
+// control below points at. It does not belong on the resolve path.
+const protoCompiler = "github.com/bufbuild/protocompile"
+
+func TestPlaintextPathLinksNoProtoCompiler(t *testing.T) {
+	if testing.Short() {
+		t.Skip("shells out to go list")
+	}
+
+	for _, pkg := range deps(t, plaintextPath(t)...) {
+		if strings.HasPrefix(pkg, protoCompiler) {
+			t.Errorf("plaintext path links %s.\n"+
+				"Descriptors for chameleon's own protos come from the generated bindings in\n"+
+				"proto/chameleon/v1, which the resolve path links either way. Compiling proto\n"+
+				"source at runtime to describe a message we already generate costs every\n"+
+				"consumer a compiler — trendvidia/chameleon#137.", pkg)
+		}
+	}
+}
+
+func TestProtoCompilerCheckCatchesTheCLI(t *testing.T) {
+	if testing.Short() {
+		t.Skip("shells out to go list")
+	}
+
+	// Negative control, for the reason spelled out in
+	// TestKeyManagementCheckCatchesTheSopsPackage: the test above
+	// passes vacuously if the prefix stops matching anything real, so
+	// point the same check at the module that must fail it.
+	// `chameleon explain` compiles user-supplied schemas, which is what
+	// protocompile is for.
+	var found bool
+	for _, pkg := range depsIn(t, "cmd/chameleon", "./...") {
+		if strings.HasPrefix(pkg, protoCompiler) {
+			found = true
+			break
+		}
+	}
+	assert.Truef(t, found,
+		"cmd/chameleon links no package under %q, so that prefix matches nothing and "+
+			"TestPlaintextPathLinksNoProtoCompiler is not actually checking for it — "+
+			"the module path probably moved", protoCompiler)
+}
+
 func TestLibraryModuleRequiresNoKeyManagement(t *testing.T) {
 	if testing.Short() {
 		t.Skip("shells out to go mod edit")
