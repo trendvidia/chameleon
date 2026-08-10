@@ -163,7 +163,7 @@ Flags:`)
 		AllowUnknownContext: true,
 	})
 	if err != nil {
-		return err
+		return noDecrypterError(err, flagSet(fs, "decrypter"))
 	}
 	defer res.Destroy()
 
@@ -393,6 +393,57 @@ func decrypterOption(dec crypt.Decrypter) resolver.Option {
 	}
 	return resolver.WithDecrypter(dec)
 }
+
+// noDecrypterError re-words the resolver's encrypted-layer refusal for
+// someone holding a command line rather than a Go program
+// (trendvidia/chameleon#141). The resolver's own diagnostic ends in
+// "decryption disabled (WithoutDecrypter)", which is correct for its
+// audience and useless for this one: a CLI user never called
+// WithoutDecrypter, is not told they did anything, and the identifier
+// appears in no --help output.
+//
+// asked reports whether --decrypter was typed on the command line
+// (flagSet), which is the only distinction that changes what the
+// operator needs to hear. Defaulting to "none" is a surprise and gets
+// the instruction; asking for "none" and being refused is the flag
+// working, and gets a statement.
+//
+// Anything else passes through untouched. In particular the
+// no-backend-registered case cannot arise from this binary — the CLI
+// always passes either WithDecrypter or WithoutDecrypter, so the
+// registry is never consulted — and if it somehow did, the resolver's
+// Go-facing wording is the better of the two.
+func noDecrypterError(err error, asked bool) error {
+	var nde *resolver.NoDecrypterError
+	if !errors.As(err, &nde) || !nde.Disabled {
+		return err
+	}
+	if asked {
+		return &cliError{
+			msg: fmt.Sprintf("layer %q is encrypted: --decrypter=none was passed on the command line",
+				nde.LayerID),
+			err: err,
+		}
+	}
+	return &cliError{
+		msg: fmt.Sprintf(`layer %q is encrypted: --decrypter is "none" (the fail-closed default); `+
+			`pass --decrypter=sops to decrypt it, or set decrypter = "sops" on this app in %s`,
+			nde.LayerID, userConfigPath()),
+		err: err,
+	}
+}
+
+// cliError carries a message written for a CLI user over a cause
+// written for a Go caller. Only the message is printed; the cause
+// stays reachable, so errors.Is against resolver.ErrNoDecrypter keeps
+// working for the tests and for any caller that wraps main.
+type cliError struct {
+	msg string
+	err error
+}
+
+func (e *cliError) Error() string { return e.msg }
+func (e *cliError) Unwrap() error { return e.err }
 
 // buildSources derives the source.Source map to register with the
 // resolver from the chain spec. Two-pass:

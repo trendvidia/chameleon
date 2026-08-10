@@ -719,6 +719,78 @@ func TestDecrypterNone_RefusesEncryptedLayer(t *testing.T) {
 	}
 }
 
+// TestDecrypterNone_ErrorSpeaksCLIVocabulary pins the diagnostic
+// (trendvidia/chameleon#141). The behaviour above is correct and
+// deliberate; what a CLI user got told about it was not:
+//
+//	chameleon get: resolver: encrypted layer without Decrypter:
+//	layer="secret": decryption disabled (WithoutDecrypter)
+//
+// WithoutDecrypter is a Go option from chameleon/resolver. Someone
+// running the binary never typed it, disabled nothing knowingly, and
+// finds it in no --help output — so the one thing in the message that
+// looks like an instruction names an identifier they cannot act on.
+//
+// The two wordings differ because only one of the two situations is a
+// surprise: defaulting to "none" needs to say what to pass instead,
+// while asking for "none" and being refused is the flag doing its job.
+func TestDecrypterNone_ErrorSpeaksCLIVocabulary(t *testing.T) {
+	dir := encryptedFixture(t)
+	base := []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(w *bytes.Buffer, args []string) error
+		args []string
+	}{
+		{"explain", func(w *bytes.Buffer, a []string) error { return explainCmd(nil, w, a) }, base},
+		{"get", func(w *bytes.Buffer, a []string) error { return getCmd(nil, w, a) }, base},
+		{
+			"reveal", func(w *bytes.Buffer, a []string) error { return revealCmd(nil, w, a) },
+			append(slices.Clone(base), "--field=api_key"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("defaulted", func(t *testing.T) {
+				var out bytes.Buffer
+				err := tc.run(&out, slices.Clone(tc.args))
+				require.Error(t, err)
+
+				assert.ErrorIs(t, err, resolver.ErrNoDecrypter,
+					"re-wording must not break the sentinel a wrapper matches on")
+				assert.Equal(t, `layer "secret" is encrypted: --decrypter is "none" `+
+					`(the fail-closed default); pass --decrypter=sops to decrypt it, `+
+					`or set decrypter = "sops" on this app in `+userConfigPath(),
+					err.Error())
+				assert.NotContains(t, err.Error(), "WithoutDecrypter",
+					"the Go option name is the whole complaint in #141")
+				assert.NotContains(t, err.Error(), "resolver:",
+					"nor the package that names it")
+			})
+
+			t.Run("asked for", func(t *testing.T) {
+				var out bytes.Buffer
+				err := tc.run(&out, append(slices.Clone(tc.args), "--decrypter=none"))
+				require.Error(t, err)
+
+				assert.ErrorIs(t, err, resolver.ErrNoDecrypter)
+				assert.Equal(t,
+					`layer "secret" is encrypted: --decrypter=none was passed on the command line`,
+					err.Error())
+				assert.NotContains(t, err.Error(), "pass --decrypter=sops",
+					"an operator who typed the flag is not told how to undo what they meant")
+			})
+		})
+	}
+}
+
 // TestDecrypterNone_IsTheDefault: the same refusal with the flag
 // omitted entirely, since "none" is the flag's default value.
 func TestDecrypterNone_IsTheDefault(t *testing.T) {

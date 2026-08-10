@@ -190,7 +190,7 @@ Flags:`)
 		AllowUnknownContext: true,
 	})
 	if err != nil {
-		return err
+		return noDecrypterError(err, flagSet(fs, "decrypter"))
 	}
 	defer res.Destroy()
 

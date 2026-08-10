@@ -320,6 +320,67 @@ layers = [{ id = "secret" path = "secret.pxf" for_each = ONCE encrypted = true r
 	assert.Zero(t, atomic.LoadInt32(&fake.calls), "the registered backend must not have been called")
 }
 
+// TestNoDecrypterError_CarriesTheLayerAndTheCase pins the structured
+// form of the failure (#141). A CLI cannot re-word "decryption
+// disabled (WithoutDecrypter)" for someone who typed --decrypter=none
+// unless it can recover which layer stopped it and which of the two
+// cases it was; scraping that back out of the message is not an
+// interface. The message strings are asserted verbatim because they
+// are what a Go caller that does NOT re-word keeps printing — this
+// change must be invisible to them.
+func TestNoDecrypterError_CarriesTheLayerAndTheCase(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "secret" path = "secret.pxf" for_each = ONCE encrypted = true required = true }]
+`)
+
+	t.Run("disabled", func(t *testing.T) {
+		registerBackend(t, "fake", crypt.Backend{Decrypter: &recordingDecrypter{}})
+		r, err := resolver.New[*dynamicpb.Message](dynamicpb.NewMessage(appDesc), spec,
+			resolver.WithSource("default", source.FS(ciphertextFS())),
+			resolver.WithoutDecrypter(),
+		)
+		require.NoError(t, err)
+
+		_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+		require.Error(t, err)
+
+		var nde *resolver.NoDecrypterError
+		require.ErrorAs(t, err, &nde, "the concrete error a re-wording caller reaches for")
+		assert.Equal(t, "secret", nde.LayerID)
+		assert.True(t, nde.Disabled, "WithoutDecrypter was passed")
+		assert.NoError(t, nde.Err, "the registry is never consulted when decryption is off")
+		assert.ErrorIs(t, err, resolver.ErrNoDecrypter, "and the sentinel still matches")
+		assert.Equal(t,
+			`resolver: encrypted layer without Decrypter: layer="secret": decryption disabled (WithoutDecrypter)`,
+			err.Error())
+	})
+
+	t.Run("no backend", func(t *testing.T) {
+		require.Empty(t, crypt.Registered(), "this test binary must link no backend")
+		r, err := resolver.New[*dynamicpb.Message](dynamicpb.NewMessage(appDesc), spec,
+			resolver.WithSource("default", source.FS(ciphertextFS())),
+		)
+		require.NoError(t, err)
+
+		_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+		require.Error(t, err)
+
+		var nde *resolver.NoDecrypterError
+		require.ErrorAs(t, err, &nde)
+		assert.Equal(t, "secret", nde.LayerID)
+		assert.False(t, nde.Disabled, "nothing disabled decryption; there was nothing to use")
+		assert.ErrorIs(t, nde.Err, crypt.ErrNoBackend)
+		assert.ErrorIs(t, err, crypt.ErrNoBackend, "reachable through the wrapper too")
+		assert.Equal(t,
+			`resolver: encrypted layer without Decrypter: layer="secret": crypt: no decryption backend registered; `+
+				"link one with `import _ \"github.com/trendvidia/chameleon/sops\"`, or pass resolver.WithDecrypter",
+			err.Error())
+	})
+}
+
 func TestWithoutDecrypter_PlaintextChainStillResolves(t *testing.T) {
 	// Opting out of decryption is not opting out of resolving: a
 	// chain with no encrypted layer must be unaffected.

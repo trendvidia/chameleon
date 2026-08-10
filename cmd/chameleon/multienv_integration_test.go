@@ -260,8 +260,12 @@ func TestMultiEnv_WrongKeyFailsToDecryptEnvLayer(t *testing.T) {
 	t.Setenv("SOPS_AGE_KEY", s.prod.identity)
 	// --decrypter=sops is load-bearing here, not decoration: without
 	// it the CLI wires resolver.WithoutDecrypter and this test passes
-	// on the non-zero exit from "decryption disabled" — proving
-	// nothing about recipient isolation, which is the whole point.
+	// on the non-zero exit from the refusal — proving nothing about
+	// recipient isolation, which is the whole point. The guard below
+	// keys on the CLI's own wording (#141) rather than the resolver's
+	// "decryption disabled (WithoutDecrypter)", which no longer reaches
+	// a CLI user's stderr; both of the CLI's two phrasings share the
+	// substring it looks for.
 	stdout, stderr, exit := runBinary(t,
 		"get",
 		"--schema="+s.schema,
@@ -273,7 +277,7 @@ func TestMultiEnv_WrongKeyFailsToDecryptEnvLayer(t *testing.T) {
 	)
 	assert.NotEqual(t, 0, exit,
 		"prod-key must not decrypt sandbox's per-env layer")
-	assert.NotContains(t, stderr, "decryption disabled",
+	assert.NotContains(t, stderr, "is encrypted: --decrypter",
 		"the failure must come from the key, not from a resolver with no decrypter")
 	assert.Empty(t, stdout,
 		"no resolution should be printed on decrypt failure")

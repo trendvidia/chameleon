@@ -88,6 +88,52 @@ var ErrNoSource = errors.New("resolver: layer references unregistered source")
 // backend case. The diagnostic says which of the two happened.
 var ErrNoDecrypter = errors.New("resolver: encrypted layer without Decrypter")
 
+// NoDecrypterError is the concrete error behind [ErrNoDecrypter]. It
+// names the layer that turned out to be encrypted and says which of
+// the two cases happened, so a caller can re-word the failure in its
+// own vocabulary rather than repeating this package's option names to
+// an audience that never typed them — a CLI telling its user to pass a
+// flag, not to call [WithDecrypter]. See trendvidia/chameleon#141.
+//
+// Reach it with [errors.As]. errors.Is against [ErrNoDecrypter], and
+// against the crypt sentinel underneath, keeps working unchanged.
+type NoDecrypterError struct {
+	// LayerID is the chain entry whose layer is encrypted — the same
+	// id the diagnostic quotes.
+	LayerID string
+
+	// Disabled reports that this Resolver was told not to decrypt
+	// ([WithoutDecrypter]), as opposed to having no Decrypter to hand
+	// the layer to. Err is nil when Disabled is true: with decryption
+	// off, the registry is never consulted, so there is no lookup
+	// failure to report.
+	Disabled bool
+
+	// Err is the [crypt.SoleDecrypter] lookup failure —
+	// [crypt.ErrNoBackend] or [crypt.ErrAmbiguousBackend].
+	Err error
+}
+
+func (e *NoDecrypterError) Error() string {
+	if e.Disabled {
+		return fmt.Sprintf("%s: layer=%q: decryption disabled (WithoutDecrypter)",
+			ErrNoDecrypter.Error(), e.LayerID)
+	}
+	return fmt.Sprintf("%s: layer=%q: %s%s",
+		ErrNoDecrypter.Error(), e.LayerID, e.Err, decrypterHint(e.Err))
+}
+
+// Unwrap reports the sentinel and the registry failure together, so
+// errors.Is matches [ErrNoDecrypter], [crypt.ErrNoBackend] and
+// [crypt.ErrAmbiguousBackend] exactly as the fmt.Errorf %w chain this
+// type replaced did.
+func (e *NoDecrypterError) Unwrap() []error {
+	if e.Err == nil {
+		return []error{ErrNoDecrypter}
+	}
+	return []error{ErrNoDecrypter, e.Err}
+}
+
 // ErrRequiredLayerMissing is returned when a LayerRef is marked
 // required but the source returned ErrNotFound.
 var ErrRequiredLayerMissing = errors.New("resolver: required layer missing")
@@ -636,13 +682,12 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 			return nil, fmt.Errorf("%w: layer=%q source=%q", ErrNoSource, ref.EntryID, ref.Source)
 		}
 		if ref.Encrypted && r.noDec {
-			return nil, fmt.Errorf("%w: layer=%q: decryption disabled (WithoutDecrypter)", ErrNoDecrypter, ref.EntryID)
+			return nil, &NoDecrypterError{LayerID: ref.EntryID, Disabled: true}
 		}
 		if ref.Encrypted && dec == nil {
 			d, name, lookupErr := crypt.SoleDecrypter()
 			if lookupErr != nil {
-				return nil, fmt.Errorf("%w: layer=%q: %w%s",
-					ErrNoDecrypter, ref.EntryID, lookupErr, decrypterHint(lookupErr))
+				return nil, &NoDecrypterError{LayerID: ref.EntryID, Err: lookupErr}
 			}
 			dec = d
 			if trace != nil {
