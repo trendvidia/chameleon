@@ -124,9 +124,14 @@ schema-only repo's CI wants: every root is compiled once, together, so
 a violation in a shared import is reported once rather than once per
 importing file.
 
-A directory is searched recursively for *.proto. Symlinks are not
-followed, so a subtree symlinked into place is not searched. Note that
-a glob is NOT a shorter spelling of this: no shell expands
+A directory is searched recursively for *.proto, following symlinks —
+both linked directories and linked files. A subtree symlinked into
+place is part of the tree you named, so it is checked; the OK line
+counts what was reached only that way, which is also what the run
+pulled in from outside that tree. A file reachable both directly and
+through a link is checked once, under the path that crosses no link,
+and a link pointing at an ancestor terminates rather than looping.
+Note that a glob is NOT a shorter spelling of this: no shell expands
 `+"`"+`--schema=proto/*.proto`+"`"+`, because the pattern has to match the whole
 word, flag name included — bash passes it through literally, zsh and
 fish abort. Pass the directory, or have your script build the repeated
@@ -234,17 +239,20 @@ Flags:`)
 		fmt.Fprintf(out, "OK\t%s\t%d file(s) checked\n", search.named, report.closure)
 		return nil
 	}
-	// The skipped count appears only when something was skipped, so no
-	// run without --exclude grows a field — though such a run's line can
-	// still change shape, since a directory holding a single .proto now
-	// prints the root(s) form. Its absence is not a claim that nothing
-	// was pruned by some other means, only that no pattern pruned
-	// anything.
-	skipped := ""
+	// Both trailing fields appear only when they have something to
+	// report, so no run without --exclude or a symlink grows one —
+	// though such a run's line can still change SHAPE, since a
+	// directory holding a single .proto now prints the root(s) form.
+	// Their absence is not a claim about the tree, only that this run
+	// pruned nothing and crossed nothing.
+	extra := ""
 	if search.skipped > 0 {
-		skipped = fmt.Sprintf("\t%d skipped", search.skipped)
+		extra += fmt.Sprintf("\t%d skipped", search.skipped)
 	}
-	fmt.Fprintf(out, "OK\t%d root(s)\t%d file(s) checked%s\n", len(roots), report.closure, skipped)
+	if search.linked > 0 {
+		extra += fmt.Sprintf("\t%d linked", search.linked)
+	}
+	fmt.Fprintf(out, "OK\t%d root(s)\t%d file(s) checked%s\n", len(roots), report.closure, extra)
 	return nil
 }
 
@@ -271,6 +279,15 @@ type schemaSearch struct {
 	// leaving the import paths alone (chameleon#159), which is the
 	// ordinary shape rather than a corner.
 	skipped int
+
+	// linked counts the .proto files no path through the real tree
+	// reaches — the ones the directory searches got to only by crossing
+	// a symlink, which is what chameleon#167 made them do. A linked
+	// subtree looks like any other directory in the output, so the
+	// count is what makes "this run left the tree you named" visible.
+	// Deduplicated across arguments and cancelled by any route that
+	// crosses no link, so it never exceeds the file count.
+	linked int
 
 	// named is the one --schema value when exactly one was given and
 	// it named a file, and "" otherwise. It decides the OK line's
@@ -301,9 +318,13 @@ type schemaRoot struct {
 // resolveSchemaRoots turns the --schema values into the concrete list
 // of files to compile, plus the import paths to compile them against.
 //
-// A value that names a directory is searched recursively for *.proto;
-// a value that names a regular file is taken as-is. Symlinks are not
-// followed, so a subtree symlinked into place is not searched.
+// A value that names a directory is searched recursively for *.proto
+// with symlinks followed (chameleon#167, see [protoFilesUnder]); a
+// value that names a regular file is taken as-is. One file is one
+// root however many paths reach it: candidates are folded by resolved
+// path, so two directories linked to a shared tree do not compile it
+// twice under two names, and the path that crosses no link is the one
+// it is named by.
 //
 // excludes prune that search by element name — see [protoFilesUnder].
 // They apply to the walk only: a file named directly by --schema is
@@ -349,9 +370,13 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) (schemaSearch,
 	// candidate is a file some --schema value named, before duplicates
 	// are folded together and before it is given its compile name.
 	type candidate struct {
-		path string // absolute
+		path string // absolute, as walked
 		arg  string
 		dir  string // absolute directory --schema it was found under, "" if named directly
+		// linked says every route to this file so far crossed a
+		// symlink. Carried rather than counted on the spot, because a
+		// later argument may reach the same file without one.
+		linked bool
 	}
 
 	// Import paths are assembled in protoc's search order at the end:
@@ -359,28 +384,45 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) (schemaSearch,
 	// resolves), then directories handed to --schema, then --include.
 	var (
 		cands          []candidate
-		seenPath       = map[string]bool{}
+		byReal         = map[string]int{} // resolved path -> index in cands
 		fileDirs       []string
 		dirImports     []string
 		includeImports []string
-		// pruned holds every .proto path an --exclude took out of a
-		// directory search, across all of them. Paths rather than a
-		// running total, because whether one of them is a root the run
-		// lost depends on the final root set; resolved at the end.
-		pruned = map[string]bool{}
+		// The three sets below are keyed by RESOLVED path, not by the
+		// path a walk happened to reach a file by: following symlinks
+		// (#167) gave one file many names, and every question asked of
+		// them — was it pruned, was it checked anyway, did anything but
+		// a link reach it — is about the file, not the name. Sets
+		// rather than running totals, because whether a pruned file is
+		// a root the run lost depends on the final root set; settled
+		// once every argument has been seen.
+		pruned        = map[string]bool{} // --exclude took it out of a search
+		reachedDirect = map[string]bool{} // some route to it crossed no link
+		reachedByLink = map[string]bool{} // some route to it did
 	)
 	// The same file named twice — `--schema=proto --schema=proto/a.proto`,
 	// or a repeated flag — is one root, not two, and has to be folded
 	// together before anything downstream counts candidates: whether
 	// there is one root or several is what decides how roots are named.
+	// Folded by resolved path, because two --schema directories linked
+	// to one shared tree reach the same file under two names, and
+	// compiling it twice is the duplicate-symbol failure the naming
+	// rules exist to prevent.
+	//
 	// First mention wins, so the name follows the argument order the
-	// operator wrote.
-	addCand := func(path, arg, dir string) {
-		if seenPath[path] {
+	// operator wrote — except that a route crossing no link outranks
+	// one that does, whatever the order. A link's path is a second name
+	// for the file, and giving a root that name is what leaves a
+	// sibling's import of the real one compiling a second copy.
+	addCand := func(path, resolved, arg, dir string, viaLink bool) {
+		if i, dup := byReal[resolved]; dup {
+			if cands[i].linked && !viaLink {
+				cands[i] = candidate{path: path, arg: arg, dir: dir}
+			}
 			return
 		}
-		seenPath[path] = true
-		cands = append(cands, candidate{path: path, arg: arg, dir: dir})
+		byReal[resolved] = len(cands)
+		cands = append(cands, candidate{path: path, arg: arg, dir: dir, linked: viaLink})
 	}
 	for _, arg := range schemas {
 		abs, err := filepath.Abs(arg)
@@ -409,25 +451,36 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) (schemaSearch,
 			// subtrees the operator asked to skip, which is why it is
 			// [allProtoFilesUnder] and cannot fail the run.
 			//
-			// Paths, not a count: a file this walk pruned may still be
+			// Files, not a count: a file this walk pruned may still be
 			// named directly by another --schema, and then it is a root
 			// anyway and must not be reported as skipped. Resolved
 			// against the final root set below, once every argument
 			// has been seen.
+			//
+			// Compared by identity rather than by walked path, because
+			// the two walks need not reach a file the same way:
+			// excluding a directory can leave a link as the only route
+			// into it, and the file is then checked under the link's
+			// name rather than pruned.
 			if len(excludes) > 0 {
 				kept := make(map[string]bool, len(found))
 				for _, f := range found {
-					kept[f] = true
+					kept[f.resolved] = true
 				}
 				for _, f := range allProtoFilesUnder(abs) {
-					if !kept[f] {
-						pruned[f] = true
+					if !kept[f.resolved] {
+						pruned[f.resolved] = true
 					}
 				}
 			}
 			dirImports = appendUnique(dirImports, abs)
 			for _, f := range found {
-				addCand(f, arg, abs)
+				if f.linked {
+					reachedByLink[f.resolved] = true
+				} else {
+					reachedDirect[f.resolved] = true
+				}
+				addCand(f.path, f.resolved, arg, abs, f.linked)
 			}
 			continue
 		}
@@ -438,7 +491,17 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) (schemaSearch,
 		if !st.Mode().IsRegular() {
 			return schemaSearch{}, fmt.Errorf("read schema %s: not a regular file", arg)
 		}
-		addCand(abs, arg, "")
+		// Resolved only so that the same file found under a directory
+		// --schema folds into this one candidate. However many links
+		// the path crosses, naming it is not a search "reaching" it, so
+		// it never contributes to the linked count — and it cancels one
+		// a directory search claimed.
+		resolved, err := filepath.EvalSymlinks(abs)
+		if err != nil {
+			return schemaSearch{}, fmt.Errorf("read schema %s: %w", arg, err)
+		}
+		reachedDirect[resolved] = true
+		addCand(abs, resolved, arg, "", false)
 	}
 	for _, p := range includePaths {
 		abs, err := filepath.Abs(p)
@@ -523,12 +586,24 @@ func resolveSchemaRoots(schemas, includePaths, excludes []string) (schemaSearch,
 	// there and it is not counted. What is left is roots lost to the
 	// patterns — not files left unread; see [schemaSearch.skipped].
 	skipped := 0
-	for path := range pruned {
-		if !seenPath[path] {
+	for resolved := range pruned {
+		if _, checked := byReal[resolved]; !checked {
 			skipped++
 		}
 	}
-	return schemaSearch{roots: roots, importPaths: importPaths, skipped: skipped, named: named}, nil
+	// linked is settled the same way and for the same reason: one
+	// search reaching a file only through a link does not make it a
+	// file the run reached only that way. Another argument may name it
+	// directly or hold the real path to it, and counting per search
+	// would also count a file twice when two arguments — or the same
+	// one repeated — cross a link to it.
+	linked := 0
+	for resolved := range reachedByLink {
+		if !reachedDirect[resolved] {
+			linked++
+		}
+	}
+	return schemaSearch{roots: roots, importPaths: importPaths, skipped: skipped, linked: linked, named: named}, nil
 }
 
 // emptySearchError explains a directory --schema that produced no
@@ -553,10 +628,8 @@ func emptySearchError(arg, abs string, excludes []string) error {
 }
 
 // allProtoFilesUnder is [protoFilesUnder] with no patterns and no
-// verdict: it answers "what is under here, unpruned" for the two
-// reports that describe what --exclude did — the skipped count and
-// [emptySearchError] — and a directory it cannot read is left out
-// rather than failing the walk.
+// failure: it reports what it could read and swallows what it could
+// not.
 //
 // Tolerating that is the point of having it. This walk descends into
 // exactly the subtrees the filtered one pruned, so an error returned
@@ -565,24 +638,22 @@ func emptySearchError(arg, abs string, excludes []string) error {
 // search that succeeded, and it must not be turned into a failure by
 // the code that reports on it afterwards. What cannot be read goes
 // uncounted, which is also what the run itself never read.
-func allProtoFilesUnder(dir string) []string {
-	var found []string
-	// WalkDir only ever returns what the callback returned, and this
-	// one returns nil however the walk goes, so there is nothing left
-	// to report here.
-	_ = filepath.WalkDir(dir, func(path string, d iofs.DirEntry, err error) error {
-		// A directory whose entries cannot be listed — WalkDir reports
-		// it on a second visit to the same path — is skipped, and its
-		// siblings are still walked.
-		if err != nil {
-			return nil //nolint:nilerr // an unreadable subtree undercounts the report; it must not fail the run
-		}
-		if d.IsDir() || !strings.HasSuffix(path, ".proto") {
-			return nil
-		}
-		found = append(found, path)
+//
+// It follows symlinks like the filtered walk, and returns the same
+// [protoFile] identities. Both matter to the callers: the count is
+// compared against the filtered walk's results by resolved path, and
+// excluding a directory can leave a link as the only route into it —
+// compared by walked path, the file would be reported as skipped in a
+// run that checked it under the link's name.
+func allProtoFilesUnder(dir string) []protoFile {
+	found, err := protoFilesUnder(dir, nil, tolerateUnreadable)
+	if err != nil {
+		// tolerateUnreadable leaves only the root's own resolution able
+		// to fail, and the caller has already stat'd it. Anything that
+		// still gets here is a race with the filesystem, and the report
+		// is worth less than the run it must not break.
 		return nil
-	})
+	}
 	return found
 }
 
@@ -609,11 +680,66 @@ func firstContaining(dirs []string, path string) string {
 	return ""
 }
 
-// protoFilesUnder returns every *.proto file under dir, recursively,
-// in lexical order (what WalkDir already guarantees) so a run's output
-// does not depend on directory iteration order. WalkDir does not
-// follow symlinks, so a subtree symlinked into place is not searched —
-// see [resolveSchemaRoots] on what the directory form does not cover.
+// protoFile is one .proto file a directory search found.
+type protoFile struct {
+	// path is the file as walked — through the symlink rather than
+	// resolved past it, because that is the name the operator wrote and
+	// the one its siblings import it by.
+	path string
+	// resolved is the same file with every symlink resolved: its
+	// identity on disk, and the key everything that has to recognise
+	// two names for one file compares on.
+	resolved string
+	// linked says no path through the real tree reaches this file — it
+	// was found only by crossing a symlink. A file reachable both ways
+	// is not marked, so the flag does not move with whether a link's
+	// name sorts before its target's.
+	linked bool
+}
+
+// protoFilesUnder returns every *.proto file under dir, recursively.
+// Order is deterministic: the real tree first, in the lexical order
+// os.ReadDir gives, then whatever only a symlink reaches.
+//
+// Symlinks are followed, directories and files alike (chameleon#167).
+// [filepath.WalkDir] does not descend into a linked directory, which
+// meant a subtree symlinked into place — a normal monorepo layout, and
+// this command exists for the shared-schema repo most likely to have
+// one — was silently skipped, with the file count on the OK line the
+// only hint and no baseline to read it against.
+//
+// Following them brings two obligations the non-following walk did not
+// have, both handled here rather than left to protocompile:
+//
+//   - Cycles. A link pointing at an ancestor would recurse forever, so
+//     each directory is entered once per pass, keyed by its resolved
+//     path. Terminating is all that guarantees: the ancestor's other
+//     subtrees still enter the search, because leaving the directory
+//     the operator named is what following a link means and is the
+//     whole point of the linked-subtree case.
+//   - One file, one name. A file reachable both directly and through a
+//     link would otherwise be compiled twice under two names, which is
+//     the duplicate-symbol failure the naming rules in
+//     [resolveSchemaRoots] exist to prevent. Files are deduplicated by
+//     resolved path, and the real path always wins the name — see the
+//     two passes below.
+//
+// A dangling link names nothing and is skipped. The non-following walk
+// collected a *.proto link by name without ever asking what it pointed
+// at, so a dangling one reached the compiler and failed there, and one
+// whose target it also reached directly was compiled twice. It is
+// linked *directories* whose contents are new here.
+//
+// The search runs in two passes. The first crosses no link, so it is
+// exactly the walk — and exactly the order — that predates #167. The
+// second, run only if the first saw a link at all, repeats it with the
+// links followed, so everything it turns up is by construction a file
+// the real tree does not reach: that is what [protoFile.linked] means,
+// and why it cannot depend on what anyone named their link. Splitting
+// the passes per directory instead would settle it by whichever
+// sibling sorted first — with `aaa/l -> ../zzz` the link is reached
+// before zzz is, and the file would be named `aaa/l/x.proto` while a
+// sibling's `import "zzz/x.proto"` compiled a second copy of it.
 //
 // excludes are [filepath.Match] patterns tested against one path
 // element at a time — a directory's or a file's own name, never a path
@@ -624,42 +750,166 @@ func firstContaining(dirs []string, path string) string {
 // an element the usual Match syntax applies, so "*_test.proto" skips
 // those files wherever they are, and a malformed one stops the walk
 // instead of quietly matching nothing — see [matchesAny] for why that
-// verdict can only be reached here.
+// verdict can only be reached here. A pattern is tested against the
+// link's own name, not its target's: the name is what the operator
+// sees in the tree.
 //
 // dir itself is never tested. Excluding the directory the operator
 // just named is a contradiction, and reading it as one would turn
 // `--schema=./third_party --exclude=third_party` into "no .proto files
 // found" rather than into the obvious intent.
-func protoFilesUnder(dir string, excludes []string) ([]string, error) {
-	var found []string
-	err := filepath.WalkDir(dir, func(path string, d iofs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if path != dir {
-			skip, err := matchesAny(excludes, d.Name())
-			if err != nil {
-				return err
-			}
-			if skip {
-				// Pruning the whole subtree is the point for a directory;
-				// a file is simply not collected.
-				if d.IsDir() {
-					return iofs.SkipDir
-				}
-				return nil
-			}
-		}
-		if d.IsDir() || !strings.HasSuffix(path, ".proto") {
-			return nil
-		}
-		found = append(found, path)
-		return nil
-	})
+func protoFilesUnder(dir string, excludes []string, opts ...walkOption) ([]protoFile, error) {
+	// Resolved rather than cleaned: the cycle guard has to recognise
+	// two paths that are the same directory, and every file's identity
+	// is built from its directory's. A failure is real and reported —
+	// swallowing it would surface as "no .proto files found under this
+	// directory" and send the operator to check the path they typed
+	// rather than the one that broke.
+	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return nil, err
 	}
-	return found, nil
+	w := &protoWalk{excludes: excludes, seen: map[string]bool{}}
+	for _, opt := range opts {
+		opt(w)
+	}
+	w.dirs = map[string]bool{}
+	if err := w.walk(dir, resolved); err != nil {
+		return nil, err
+	}
+	if w.sawLink {
+		// Fresh cycle guard: the first pass entered every real
+		// directory, and the second has to enter them again to find the
+		// links below them.
+		w.dirs = map[string]bool{}
+		w.follow = true
+		if err := w.walk(dir, resolved); err != nil {
+			return nil, err
+		}
+	}
+	return w.found, nil
+}
+
+// walkOption configures [protoFilesUnder]. There is exactly one, and
+// it exists because the two callers want opposite things from an
+// unreadable directory: the search itself must say so, and the
+// after-the-fact count must not.
+type walkOption func(*protoWalk)
+
+// tolerateUnreadable makes the walk skip a directory it cannot list
+// rather than fail. See [allProtoFilesUnder] for why that is right
+// there and wrong everywhere else.
+func tolerateUnreadable(w *protoWalk) { w.tolerant = true }
+
+// protoWalk carries the state a symlink-following search needs and a
+// [filepath.WalkDir] callback cannot hold: which directories this pass
+// has entered, and which files the search has already collected.
+type protoWalk struct {
+	excludes []string
+	seen     map[string]bool // resolved files collected, the one-name guard
+	dirs     map[string]bool // resolved directories entered this pass, the cycle guard
+	follow   bool            // second pass: cross the links the first one only noted
+	sawLink  bool            // a link was seen, so the second pass has something to do
+	tolerant bool            // a directory that cannot be read is skipped, not returned
+	found    []protoFile
+}
+
+// walk reads one directory and recurses. resolved is dir with its
+// symlinks resolved, threaded down rather than recomputed per file: a
+// non-symlink entry of an already-resolved directory is resolved by
+// joining its name, so a tree with no links costs no more lstats than
+// the walk that predates #167.
+func (w *protoWalk) walk(dir, resolved string) error {
+	if w.dirs[resolved] {
+		return nil
+	}
+	w.dirs[resolved] = true
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if w.tolerant {
+			// Skipped, not fatal: its siblings are still worth walking,
+			// and the caller wanted a count rather than a verdict.
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		// A link is matched by its own name, which is what the operator
+		// sees in the tree rather than what it points at.
+		skip, err := matchesAny(w.excludes, e.Name())
+		if err != nil {
+			return err
+		}
+		if skip {
+			// Pruning the whole subtree is the point for a directory;
+			// a file is simply not collected.
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if e.Type()&iofs.ModeSymlink != 0 {
+			w.sawLink = true
+			if !w.follow {
+				continue
+			}
+			// Lstat said "symlink"; Stat follows it and says what it
+			// actually is, or fails because it names nothing. A
+			// dangling link is skipped rather than fatal: it is a
+			// broken tree, but not one this command can say anything
+			// useful about.
+			st, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+			if err := w.cross(path, st); err != nil {
+				return err
+			}
+			continue
+		}
+		if e.IsDir() {
+			if err := w.walk(path, filepath.Join(resolved, e.Name())); err != nil {
+				return err
+			}
+			continue
+		}
+		w.add(path, filepath.Join(resolved, e.Name()))
+	}
+	return nil
+}
+
+// cross follows one symlink, into the directory or onto the file it
+// names — both are wanted, decision 3 of #167. st is the caller's Stat
+// of path, which has already established that it names something.
+func (w *protoWalk) cross(path string, st os.FileInfo) error {
+	if !st.IsDir() && !st.Mode().IsRegular() {
+		return nil
+	}
+	// Not the dangling case — Stat just followed this link — so a
+	// failure here is a target that vanished or became unreadable
+	// underneath us, and it earns the same error the directory read
+	// does rather than a file quietly missing from a green run.
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		return w.walk(path, target)
+	}
+	w.add(path, target)
+	return nil
+}
+
+// add collects path if it is a .proto the search has not already
+// reached by another route.
+func (w *protoWalk) add(path, resolved string) {
+	if !strings.HasSuffix(path, ".proto") || w.seen[resolved] {
+		return
+	}
+	w.seen[resolved] = true
+	// Only the second pass can reach a file the first did not, so
+	// "found while following links" and "not reachable without one"
+	// are the same statement here.
+	w.found = append(w.found, protoFile{path: path, resolved: resolved, linked: w.follow})
 }
 
 // matchesAny reports whether name matches any of the patterns, and is

@@ -422,7 +422,16 @@ The `OK` line carries both counts for a directory search — roots asked for, an
 
 Files found under a directory are named the way their siblings import them, protoc's `-I` contract: with `--schema=./proto/svc --include=./proto` a file is `svc/a.proto`, not `a.proto`, so a sibling's `import "svc/base.proto"` resolves to the same file rather than compiling a second copy of it. Two different files that would compile under one name are rejected rather than silently checked once.
 
-The directory form is what replaces a glob; a glob is not a shorter spelling of it. No shell expands `--schema=proto/*.proto`, because the pattern has to match the whole word, flag name included — bash passes it through literally, zsh and fish abort. Pass the directory, or have your script build the repeated flags. The search does not follow symlinks, so a subtree symlinked into place is not searched.
+The directory form is what replaces a glob; a glob is not a shorter spelling of it. No shell expands `--schema=proto/*.proto`, because the pattern has to match the whole word, flag name included — bash passes it through literally, zsh and fish abort. Pass the directory, or have your script build the repeated flags.
+
+The search **follows symlinks** ([#167](https://github.com/trendvidia/chameleon/issues/167)), linked directories and linked files alike: a subtree symlinked into place is part of the tree you named, and skipping it silently meant a green run over a narrower set than you asked for. Three consequences worth knowing — a file reachable both directly and through a link is checked once and named by the path that crosses no link, rather than compiled twice under two names; a link pointing at an ancestor terminates instead of looping, though the rest of that ancestor's tree does enter the search, because leaving the directory you named is what following a link means; and a dangling link is skipped rather than failing the run, where the old walk handed it to the compiler and died there. The `OK` line counts the files no path through the real tree reaches, so the number is how much of the run came from outside the directory you named:
+
+```sh
+chameleon check-schema --schema=./proto
+# OK    2 root(s)    2 file(s) checked    1 linked
+```
+
+`--exclude` matches a link by its own name — `--exclude=linked` prunes it — because that is the name you see in the tree, not the one it points at.
 
 ##### Skipping part of the tree
 
