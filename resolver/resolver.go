@@ -39,14 +39,28 @@
 //
 //  1. chain.Expand → ordered []LayerRef.
 //  2. For each ref: source.Open → bytes (decrypt if encrypted) →
-//     pxf.UnmarshalFull → (layer message, *pxf.Result).
+//     pxf.UnmarshalFull → (layer message, *pxf.Result). Scalar-shorthand
+//     pxf.Secret values are sealed into Enclaves during this decode
+//     rather than landing on the layer message at all.
 //  3. merge.Merge: overlay each layer onto the running destination.
-//  4. parse.Move: extract pxf.Secret values into per-field memguard
-//     Enclaves, returning a secret.Map keyed by dotted field path.
-//  5. Wrap as [Resolution]; destroy closure wipes the Map's enclaves.
+//  4. defaults.Apply: fill (pxf.default) values for fields no layer
+//     set, marking those paths present for step 6.
+//  5. interpolate.Apply: expand ${field.path} against the merged
+//     state, with cycle detection.
+//  6. validate.Validate: (pxf.required) check on the merged result.
+//  7. parse.Move: fold the block-form pxf.Secret values into the same
+//     secret.Map, keyed by dotted field path.
+//  8. Wrap as [Resolution]; destroy closure wipes the Map's enclaves.
 //
-// The defaults / interpolation / validation passes are not yet wired —
-// they layer in here once their helpers are implemented.
+// Steps 4–6 are ordered, not merely sequential, and each order is
+// load-bearing. Defaults run BEFORE interpolation because a default
+// may itself be a template (api.${base_url}) that interpolation then
+// resolves against the merged state — trendvidia/chameleon#135.
+// Validation runs AFTER defaults so a default-filled required field
+// counts as satisfied, and BEFORE step 7 so no secret is extracted out
+// of a configuration that was never valid. Interpolation also precedes
+// step 7 because its walker skips pxf.Secret subtrees: a secret is
+// neither templated nor referenceable from another field's template.
 package resolver
 
 import (
