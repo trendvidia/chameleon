@@ -34,13 +34,8 @@ require (
 // chameleon's @header preamble depends on. See
 // internal/upstream/protowire_go_patches.go for the cross-repo contract.
 
-// trendvidia/sops is the canonical sops module chameleon depends on.
-// Carries the chameleon-required additions over upstream getsops/sops
-// (PXF store + comment directives, context.Context end-to-end + encrypt
-// package + DataIntoWriter, PXF multi-key age files + --age-key-name +
-// name<->recipient lookup helpers, PXF dispatch on SOPS_AGE_KEY /
-// SOPS_AGE_KEY_CMD content, unified four-source key resolution with a
-// hardcoded $HOME/.config/sops/age/keys.pxf default + CLI flags
-// --age-key-file / --age-key / --age-key-cmd that translate to the
-// SOPS_AGE_KEY* env vars). Consumed directly under its own module path
-// (github.com/trendvidia/sops/v4); no replace directive is needed.
+// No key management appears above, and none may: every consumer's
+// `go list -m all`, dependency review and SBOM inherits this module's
+// requirements (trendvidia/chameleon#130). The sops fork moved with the
+// backend — see sops/go.mod. TestLibraryModuleRequiresNoKeyManagement
+// in linkage_test.go reads `go mod edit -json` and fails if it returns.

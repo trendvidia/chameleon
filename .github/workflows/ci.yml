@@ -42,7 +42,11 @@ jobs:
           # TestLibraryModuleRequiresNoKeyManagement catches it, but only
           # if go.mod reflects the imports.
           for m in . sops cmd/chameleon; do (cd "$m" && go mod tidy); done
-          git diff --exit-code -- '**/go.mod' '**/go.sum' go.mod go.sum
+          # go.work.sum is tracked and the build/vet/test steps above run
+          # in workspace mode, which rewrites it whenever it needs a hash
+          # the committed file lacks. Left unchecked, a PR lands with it
+          # stale and every contributor gets a dirty tree on first build.
+          git diff --exit-code -- '**/go.mod' '**/go.sum' go.mod go.sum go.work go.work.sum
 
   lint:
     name: lint

@@ -7,6 +7,18 @@
 // require below at that tag, then tag sops/vX.Y.Z. The go.work at the
 // repo root makes local development and CI resolve against the
 // working tree regardless.
+//
+// trendvidia/sops is the canonical sops module chameleon depends on,
+// and this is the only chameleon module that depends on it. Carries the
+// chameleon-required additions over upstream getsops/sops (PXF store +
+// comment directives, context.Context end-to-end + encrypt package +
+// DataIntoWriter, PXF multi-key age files + --age-key-name +
+// name<->recipient lookup helpers, PXF dispatch on SOPS_AGE_KEY /
+// SOPS_AGE_KEY_CMD content, unified four-source key resolution with a
+// hardcoded $HOME/.config/sops/age/keys.pxf default + CLI flags
+// --age-key-file / --age-key / --age-key-cmd that translate to the
+// SOPS_AGE_KEY* env vars). Consumed directly under its own module path
+// (github.com/trendvidia/sops/v4); no replace directive is needed.
 module github.com/trendvidia/chameleon/sops
 
 go 1.26.1
@@ -133,7 +145,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
-	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect

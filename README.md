@@ -856,9 +856,9 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 - **`(pxf.default)` inside a `oneof` yields to the layer's choice.** Setting any oneof member clears its siblings, so a default is skipped whenever some layer already selected a different member of the same oneof — otherwise filling `timeout`'s default would silently discard an operator's explicit `file = "/tmp/x"`. Fields from proto3 `optional` (a synthetic single-field oneof) are unaffected and default normally.
 
-- **Sops `context.Context` threading — closed via the `trendvidia/sops/v4` fork.** Chameleon's `Decrypter.Decrypt` threads `ctx` through `decrypt.DataIntoWriterContext`; in-flight KMS round-trips abort on `ctx` deadline / cancellation natively for AWS / GCP / Azure / Vault. HuaweiCloud KMS is approximated via a goroutine shim (see fork [#10](https://github.com/trendvidia/sops/issues/10)). The `chameleon migrate` CLI uses the corresponding `encrypt.UsingSameKeysAsWithContext` so re-encrypts honor ctx the same way. Upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) tracks the merge candidate; chameleon consumes the fork directly under its `github.com/trendvidia/sops/v4` module path — no `replace` directive required.
+- **Sops `context.Context` threading — closed via the `trendvidia/sops/v4` fork.** Chameleon's `Decrypter.Decrypt` threads `ctx` through `decrypt.DataIntoWriterContext`; in-flight KMS round-trips abort on `ctx` deadline / cancellation natively for AWS / GCP / Azure / Vault. HuaweiCloud KMS is approximated via a goroutine shim (see fork [#10](https://github.com/trendvidia/sops/issues/10)). The `chameleon migrate` CLI uses the corresponding `encrypt.UsingSameKeysAsWithContext` so re-encrypts honor ctx the same way. Upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) tracks the merge candidate; the `chameleon/sops` module — the only one of the three that depends on the fork since v0.23.0 — consumes it directly under its `github.com/trendvidia/sops/v4` module path, so no `replace` directive is required.
 
-- **Forked dependencies require an explicit `replace` directive in consumer `go.mod`.** Chameleon depends on `trendvidia/protobuf-go` (a soft fork of `google.golang.org/protobuf`); Go's `replace` directive is non-transitive so the chameleon repo's `replace` does NOT propagate to consumers. The other fork chameleon depends on — `trendvidia/sops/v4` — is consumed directly under its own module path and does NOT need a `replace`. See **Compatibility → Replace directives** above for the exact line to copy into your own `go.mod`.
+- **Forked dependencies require an explicit `replace` directive in consumer `go.mod`.** Chameleon depends on `trendvidia/protobuf-go` (a soft fork of `google.golang.org/protobuf`); Go's `replace` directive is non-transitive so the chameleon repo's `replace` does NOT propagate to consumers. The other fork — `trendvidia/sops/v4`, reached only if you pull in the `chameleon/sops` module — is consumed directly under its own module path and does NOT need a `replace`. See **Compatibility → Replace directives** above for the exact line to copy into your own `go.mod`.
 
 ## Compatibility
 
@@ -866,7 +866,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 |---|---|
 | Go | 1.26+ |
 | `github.com/trendvidia/protowire-go` | `>= v0.77.0` (block-form `OnSecretField` routing; v0.76.0+ covers scalar shorthand) |
-| `github.com/trendvidia/sops/v4` | `>= v4.0.0` (soft-fork of `getsops/sops` consumed directly under its own module path — no `replace` directive needed) |
+| `github.com/trendvidia/sops/v4` | `>= v4.0.0` — **only reached through the `chameleon/sops` module**; the library module has not required it since v0.23.0 (soft-fork of `getsops/sops` consumed directly under its own module path — no `replace` directive needed) |
 | `github.com/awnumar/memguard` | `>= v0.22.5` |
 
 ### Modules in this repo
@@ -882,7 +882,7 @@ Since v0.23.0 the repo publishes three modules, so that a consumer of the librar
 Each is tagged separately (`v0.23.0`, `sops/v0.23.0`, `cmd/chameleon/v0.23.0`); see [docs/RELEASING.md](docs/RELEASING.md). Two practical consequences:
 
 - **Encrypted-layer consumers gain one `require` line.** `go get github.com/trendvidia/chameleon/sops` — or just add the blank import and let `go mod tidy` do it. The KMS SDKs land in *that* module's graph, where they are actually used.
-- **`go install .../cmd/chameleon@latest` is unchanged**, but a version pin now names the CLI's own tag (`@cmd/chameleon/v0.23.0`, not `@v0.23.0`). `protoc-gen-chameleon-go` stays in the library module and its pins are unaffected.
+- **`go install .../cmd/chameleon@latest` is unchanged, and so is the spelling of a version pin** — you still write `@v0.23.0`, which Go resolves to this module's `cmd/chameleon/v0.23.0` repo tag on its own (the same mapping that makes `go install golang.org/x/tools/gopls@v0.14.2` find the `gopls/v0.14.2` tag). What changes is which commit it lands on: from v0.23.0 a pin follows the CLI module's tags, while an older `@v0.22.1` still resolves through the root module. `protoc-gen-chameleon-go` stays in the library module and its pins are unaffected.
 
 Reachability-based scanners (`govulncheck`) never saw the KMS tree for a plaintext consumer even before the split; what the split fixes is everything that reads `go.mod` — dependency review, SBOMs, `go list -m all`.
 
@@ -905,7 +905,7 @@ The fork keeps the upstream module path (`google.golang.org/protobuf`), so any c
 
 When upstream eventually merges the relevant parts, drop the `replace` from your `go.mod` and bump the chameleon minimum to the merged upstream tag.
 
-The other fork chameleon depends on — `github.com/trendvidia/sops/v4` — is consumed directly under its own module path (it doesn't override `getsops/sops`), so no consumer-side `replace` is needed.
+The other fork — `github.com/trendvidia/sops/v4` — is consumed directly under its own module path (it doesn't override `getsops/sops`), so no consumer-side `replace` is needed. Since v0.23.0 it enters your module graph only via the `chameleon/sops` module, i.e. only if some layer of yours is encrypted.
 
 ## Test status
 

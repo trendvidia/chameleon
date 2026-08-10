@@ -6,6 +6,13 @@
 // Release order: root module, then sops, then this — each pointing at
 // the tag below it. The go.work at the repo root makes local
 // development and CI resolve against the working tree regardless.
+//
+// The two replace directives at the bottom of this file are
+// development-only and MUST be dropped before `cmd/chameleon/vX.Y.Z` is
+// tagged: `go install pkg@version` rejects a module whose go.mod carries
+// a replace, so tagging with them in place breaks every pinned and
+// @latest install of the CLI, and a pushed tag cannot be recalled.
+// docs/RELEASING.md step 4 has the command and the pre-tag assertion.
 module github.com/trendvidia/chameleon/cmd/chameleon
 
 go 1.26.1
@@ -18,7 +25,7 @@ require (
 	github.com/trendvidia/chameleon/sops v0.23.0
 	github.com/trendvidia/protowire-go v1.0.0
 	github.com/trendvidia/sops/v4 v4.0.1
-	golang.org/x/tools v0.44.0
+	golang.org/x/tools v0.45.0
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -135,8 +142,8 @@ require (
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
-	golang.org/x/mod v0.35.0 // indirect
-	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/mod v0.36.0 // indirect
+	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
@@ -153,7 +160,9 @@ require (
 )
 
 // Local development and CI resolve the sibling modules from the
-// working tree; consumers ignore these. See docs/RELEASING.md.
+// working tree; consumers ignore these. DROP BOTH BEFORE TAGGING THIS
+// MODULE — `go install pkg@version` refuses a go.mod carrying a
+// replace. See docs/RELEASING.md step 4.
 replace github.com/trendvidia/chameleon => ../../
 
 replace github.com/trendvidia/chameleon/sops => ../../sops

@@ -19,7 +19,7 @@ import (
 // binary; a single import of the sops *module* from any package or test
 // in this module puts them back into every consumer's module graph.
 // Both happened up to v0.22.1 — 2.7 MB → 68 MB on a program resolving
-// two plaintext layers, and 8 → 350 modules in its `go list -m all`
+// two plaintext layers, and 35 → 347 modules in its `go list -m all`
 // (trendvidia/chameleon#130).
 //
 // So the graphs themselves are the assertions. These tests read the
@@ -69,8 +69,16 @@ func goCmd(t *testing.T, dir string, args ...string) string {
 	}
 	cmd := exec.CommandContext(t.Context(), "go", args...)
 	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "go %s in %q failed: %s", strings.Join(args, " "), dir, out)
+	// stdout only. The go command writes progress to stderr — a
+	// toolchain switch alone emits "go: downloading go1.x.y" — and
+	// both callers below parse what comes back: one as JSON, one as a
+	// whitespace-separated package list. Folding stderr in turns a
+	// benign notice into "invalid character 'g'", or into a package
+	// name that no prefix check ever matches.
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	require.NoError(t, err, "go %s in %q failed: %s", strings.Join(args, " "), dir, stderr.String())
 	return string(out)
 }
 

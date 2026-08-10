@@ -118,6 +118,22 @@ func TestBuild_EndToEnd(t *testing.T) {
 		}
 	}
 
+	// 6b. Both halves of the pipeline were handed the format derived
+	// from the layer's own path (every fixture here is `.pxf` →
+	// FormatProtowire). Sampled before step 7, which drives the fake
+	// directly and would otherwise show up in the same log. A
+	// hardcoded format survives every other assertion in this test:
+	// the fake ignores it and the round trip still closes.
+	encFormats, decFormats := backend.formatsSeen()
+	if len(decFormats) != 3 || len(encFormats) != 3 {
+		t.Errorf("format log = %d decrypts / %d encrypts, want 3 each", len(decFormats), len(encFormats))
+	}
+	for i, f := range append(append([]crypt.Format(nil), decFormats...), encFormats...) {
+		if f != crypt.FormatProtowire {
+			t.Errorf("call %d used format %v, want %v (derived from the .pxf layer path)", i, f, crypt.FormatProtowire)
+		}
+	}
+
 	// 7. Every encrypted layer in the bundle must decrypt and
 	// unmarshal as the schema with denied secrets stripped.
 	for _, name := range []string{"base.pxf", "env/prod.pxf", "env/sandbox.pxf"} {
@@ -221,6 +237,40 @@ func TestBuild_RejectsCtxTemplate(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ctx") {
 		t.Errorf("error should mention ctx, got: %v", err)
+	}
+}
+
+func TestBuild_RejectsZipUnsafePaths(t *testing.T) {
+	// The zip entry name is the layer's resolved path verbatim. Go's
+	// own reader refuses to open an entry that is not an fs.ValidPath,
+	// so a bundle carrying one is unreadable by chameleon anyway — but
+	// `unzip` and most CI unpack steps happily walk out of the
+	// extraction root, so planLayers has to refuse to write it.
+	// A leading "../" is the obvious shape; an embedded one is the
+	// shape that used to slip past.
+	for _, p := range []string{"../escape.pxf", "/abs.pxf", "layers/../../etc/cron.d/x.pxf", "..", "."} {
+		t.Run(p, func(t *testing.T) {
+			err := Build(context.Background(), BuildOptions{
+				Manifest: &chameleonv1.BundleManifest{},
+				Module:   "anything",
+				Schema:   buildTestDescriptor(t),
+				ChainSpec: &chameleonv1.ChainSpec{
+					Version:      "1",
+					Environments: []*chameleonv1.Environment{{Name: "prod"}},
+					Layers: []*chameleonv1.LayerEntry{{
+						Id: "escape", Path: p, ForEach: chameleonv1.LayerEntry_ONCE,
+					}},
+				},
+				LayersFS: fstest.MapFS{},
+				Output:   &bytes.Buffer{},
+			})
+			if err == nil {
+				t.Fatalf("Build should reject the zip-unsafe layer path %q", p)
+			}
+			if !strings.Contains(err.Error(), "zip-unsafe") {
+				t.Errorf("error should say zip-unsafe, got: %v", err)
+			}
+		})
 	}
 }
 

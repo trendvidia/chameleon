@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"path"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -244,9 +243,13 @@ func planLayers(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.BundleMani
 			return nil, fmt.Errorf("bundler: expand env %q: %w", envName, err)
 		}
 		for _, ref := range refs {
-			if !path.IsAbs(ref.Path) && !strings.HasPrefix(ref.Path, "../") && ref.Path != ".." {
-				// fine — relative, no escape
-			} else {
+			// fs.ValidPath is the exact bar the bundle reader holds
+			// entry names to, so anything it rejects could never be
+			// read back anyway: unrooted, slash-separated, and with
+			// no "." / ".." element anywhere — not just at the front,
+			// which is what a "layers/../../etc/cron.d/x" entry needs
+			// to walk a third-party extractor out of its root.
+			if !fs.ValidPath(ref.Path) || ref.Path == "." {
 				return nil, fmt.Errorf("bundler: layer %q (entry %q): zip-unsafe path", ref.Path, ref.EntryID)
 			}
 			plan, ok := byPath[ref.Path]
@@ -431,10 +434,13 @@ func chameleonVersion() string {
 //     age / PGP keys, including any not expressible as a chain
 //     spec key_name (cloud KMS ARNs, third-party PGP recipients,
 //     etc.).
-//   - chain.EffectiveKeyName per env — the in-config named age
-//     key declared on Environment, handed to the caller's
+//   - chain.EffectiveKeyName per env — the in-config named key
+//     declared on Environment, handed to the caller's
 //     recipientsForKeyName hook so the bundler never sees keystore
-//     internals (nor links a backend to reach them).
+//     internals (nor links a backend to reach them). Whatever the
+//     hook returns is unioned in whole; chameleon/sops resolves a
+//     name to an age recipient, but a caller's own key store is free
+//     to map one to KMS or PGP.
 //
 // Either source may be absent. A chain spec without any key_name
 // degenerates to the historical module-only behavior; a manifest
@@ -481,7 +487,15 @@ func unionRecipients(chainSpec *chameleonv1.ChainSpec, module *chameleonv1.Bundl
 			if err != nil {
 				return crypt.Recipients{}, fmt.Errorf("env %q: %w", env, err)
 			}
+			// Every field, not just Age: the hook returns a full
+			// crypt.Recipients and a caller's key store may well map a
+			// name to a KMS ARN or a PGP fingerprint. Keeping only Age
+			// would encrypt the layer to a smaller set than the chain
+			// asked for — the same silent narrowing the nil check
+			// above refuses to allow.
+			out.KMS = append(out.KMS, r.KMS...)
 			out.Age = append(out.Age, r.Age...)
+			out.PGP = append(out.PGP, r.PGP...)
 		}
 	}
 

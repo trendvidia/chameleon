@@ -15,6 +15,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sopskeypb "github.com/trendvidia/sops/v4/age/keypb"
+
+	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
 // bundleFixtures stamps a self-contained bundle test setup into dir:
@@ -220,6 +223,60 @@ func TestBundleBuildCmd_MissingRequiredFlag(t *testing.T) {
 	}
 }
 
+// TestBundleBuildCmd_WiresKeyNameResolver pins the one production line
+// the module split added: bundle.go handing sops.RecipientsFromKeyName
+// to BuildOptions.RecipientsForKeyName. Nothing else in this module
+// exercises it — every other bundle test builds a plaintext chain, and
+// the bundler's own tests supply a fake — so deleting the wiring left
+// the whole suite green while `chameleon bundle build` on any chain
+// spec declaring key_name started failing outright.
+//
+// The assertion is where the build gets to. planLayers resolves
+// recipients before any layer is read, so with the hook wired the run
+// reaches processLayer and stops on the missing decrypter; with it
+// unwired it never gets that far and dies in unionRecipients instead.
+// No crypto needed either way.
+func TestBundleBuildCmd_WiresKeyNameResolver(t *testing.T) {
+	dir := bundleFixtures(t)
+	noUserConfig(t)
+	writeAgeKeystore(t, map[string]string{"prod-key": bundleTestIdentity})
+
+	// Same fixture, but the env names a key and the layer is encrypted.
+	writeFixture(t, dir, map[string]string{
+		"chain.pxf": `version = "1.0.0"
+environments = [{ name = "prod" key_name = "prod-key" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true encrypted = true }]
+`,
+	})
+
+	err := bundleCmd(&bytes.Buffer{}, append([]string{"build"}, bundleArgs(dir)...))
+	require.Error(t, err, "an encrypted layer with --decrypter=none must fail")
+	assert.Contains(t, err.Error(), "no Decrypter was provided",
+		"key_name must have resolved through the real key store before the pipeline reached the layer")
+	assert.NotContains(t, err.Error(), "RecipientsForKeyName is nil",
+		"bundle.go must pass sops.RecipientsFromKeyName to the bundler")
+}
+
+// TestBundleBuildCmd_KeyNameLookupFailureSurfaces is the other half:
+// the CLI must not swallow a keystore miss into a generic bundle
+// failure — the operator needs the name that could not be resolved.
+func TestBundleBuildCmd_KeyNameLookupFailureSurfaces(t *testing.T) {
+	dir := bundleFixtures(t)
+	noUserConfig(t)
+	writeAgeKeystore(t, map[string]string{"some-other-key": bundleTestIdentity})
+
+	writeFixture(t, dir, map[string]string{
+		"chain.pxf": `version = "1.0.0"
+environments = [{ name = "prod" key_name = "prod-key" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true encrypted = true }]
+`,
+	})
+
+	err := bundleCmd(&bytes.Buffer{}, append([]string{"build"}, bundleArgs(dir)...))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "prod-key", "the unresolvable key name belongs in the error")
+}
+
 func TestBundleCmd_NoSubcommand(t *testing.T) {
 	err := bundleCmd(&bytes.Buffer{}, nil)
 	require.Error(t, err)
@@ -241,6 +298,32 @@ func TestBundleCmd_Help(t *testing.T) {
 }
 
 // --- small file-test helpers used only by this file ---
+
+// bundleTestIdentity is a throwaway age secret key. Fixed rather than
+// generated so the fixture stays deterministic; it guards nothing.
+const bundleTestIdentity = "AGE-SECRET-KEY-1G0Q5K9TV4REQ3ZSQRMTMG8NSWQGYT0T7TZ33RAZEE0GZYVZN0APSU24RK7"
+
+// noUserConfig points the CLI's user-config lookup at a path that does
+// not exist. Without it these tests inherit whatever ~/.chameleon the
+// developer happens to have, and an app entry setting `decrypter =
+// "sops"` silently overrides the --decrypter default (see
+// applyAppDefaults, which treats "none" as unset).
+func noUserConfig(t *testing.T) {
+	t.Helper()
+	t.Setenv("CHAMELEON_USER_CONFIG", filepath.Join(t.TempDir(), "no-such-config"))
+}
+
+// writeAgeKeystore points SOPS_AGE_KEY_FILE at a temp PXF keystore
+// carrying the named identities — the store sops.RecipientsFromKeyName
+// reads. Mirrors sops/keyname_test.go's helper.
+func writeAgeKeystore(t *testing.T, keys map[string]string) {
+	t.Helper()
+	data, err := pxf.Marshal(&sopskeypb.AgeKeyFile{Keys: keys})
+	require.NoError(t, err, "marshal keystore")
+	path := filepath.Join(t.TempDir(), "keys.pxf")
+	require.NoError(t, os.WriteFile(path, data, 0o600), "write keystore")
+	t.Setenv("SOPS_AGE_KEY_FILE", path)
+}
 
 func keys(m map[string][]byte) []string {
 	out := make([]string, 0, len(m))

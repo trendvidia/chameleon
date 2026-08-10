@@ -6,7 +6,10 @@
 # Three modules live in this repo (see docs/RELEASING.md): the library
 # at the root, the sops backend, and the CLI. Per-module targets loop
 # over $(MODULES) because `./...` stops at a module boundary — a target
-# that forgets the loop silently tests a third of the repo.
+# that forgets the loop silently tests a third of the repo. `cover`,
+# `bench` and `fuzz` deliberately do not loop: they are the library
+# module's tools (the other two have no benchmarks or fuzz targets),
+# and each prints what it did and did not cover.
 
 SHELL          := /usr/bin/env bash
 .SHELLFLAGS    := -eu -o pipefail -c
@@ -94,7 +97,8 @@ bench: ## Run benchmarks (BENCH_PKG, BENCH_COUNT, BENCHTIME overridable).
 cover: ## Write a coverage profile to $(COVER_PROFILE) and print summary.
 	$(GO) test $(TEST_FLAGS) -coverprofile=$(COVER_PROFILE) -covermode=atomic ./...
 	$(GO) tool cover -func=$(COVER_PROFILE) | tail -n 20
-	@echo "note: library module only — cover the others with 'cd sops && make -C .. cover'"
+	@echo "note: library module only. For another module, run the tools in it directly —"
+	@echo "      cd sops && go test $(TEST_FLAGS) -coverprofile=cover.out -covermode=atomic ./... && go tool cover -func=cover.out"
 
 .PHONY: cover-html
 cover-html: cover ## Open the coverage profile in a browser.

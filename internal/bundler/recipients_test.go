@@ -115,6 +115,41 @@ func TestUnionRecipients_NoKeyNameNeedsNoResolver(t *testing.T) {
 	}
 }
 
+func TestUnionRecipients_KeyNameContributesEveryRecipientKind(t *testing.T) {
+	// The hook's signature is crypt.Recipients, not []string: a
+	// caller with its own key store may map a name to a KMS ARN or a
+	// PGP fingerprint. Keeping only .Age — which was safe while the
+	// bundler called chameleon/sops directly, since that resolver
+	// only ever returns age keys — encrypts the layer to a strictly
+	// smaller set than the chain asked for.
+	spec := &chameleonv1.ChainSpec{
+		Environments: []*chameleonv1.Environment{
+			{Name: "prod", KeyName: "prod-key"},
+		},
+	}
+	const (
+		kmsARN      = "arn:aws:kms:us-east-1:111122223333:key/abcd"
+		pgpFinger   = "85D77543B3D624B63CEA9E6DBC17301B491B3F21"
+		ageFromHook = testRecipient
+	)
+
+	got, err := unionRecipients(spec, nil, []string{"prod"}, func(string) (crypt.Recipients, error) {
+		return crypt.Recipients{KMS: []string{kmsARN}, Age: []string{ageFromHook}, PGP: []string{pgpFinger}}, nil
+	})
+	if err != nil {
+		t.Fatalf("unionRecipients: %v", err)
+	}
+	if len(got.KMS) != 1 || got.KMS[0] != kmsARN {
+		t.Errorf("KMS = %v, want [%s]", got.KMS, kmsARN)
+	}
+	if len(got.Age) != 1 || got.Age[0] != ageFromHook {
+		t.Errorf("Age = %v, want [%s]", got.Age, ageFromHook)
+	}
+	if len(got.PGP) != 1 || got.PGP[0] != pgpFinger {
+		t.Errorf("PGP = %v, want [%s]", got.PGP, pgpFinger)
+	}
+}
+
 func TestUnionRecipients_KeyNameWithoutResolverErrors(t *testing.T) {
 	// The dangerous case: the chain names a key, the caller wired no
 	// resolver. Dropping it silently would encrypt the layer to a
