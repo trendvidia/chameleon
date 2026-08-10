@@ -1,7 +1,7 @@
 # chameleon developer Makefile.
 #
-# `make help` lists every target. CI mirrors `test`, `vet`, and `lint`;
-# `make ci` reproduces the GitHub Actions workflow locally.
+# `make help` lists every target. CI mirrors `test`, `vet`, `lint` and
+# `fmt-check`; `make ci` reproduces the GitHub Actions workflow locally.
 #
 # Three modules live in this repo (see docs/RELEASING.md): the library
 # at the root, the sops backend, and the CLI. Per-module targets loop
@@ -114,12 +114,19 @@ cover-html: cover ## Open the coverage profile in a browser.
 vet: ## go vet ./... in every module.
 	@for m in $(MODULES); do echo "==> vet $$m"; (cd $$m && $(GO) vet ./...); done
 
-.PHONY: lint
-lint: ## golangci-lint run (pinned to $(GOLANGCI_LINT_VERSION)).
+# Shared by lint, fmt and fmt-check so the install hint has one home. It
+# checks presence only: the version the three targets actually get is
+# whatever `make tools` last installed, which is why GOLANGCI_LINT_VERSION
+# is pinned and CI installs the same string.
+.PHONY: require-golangci-lint
+require-golangci-lint:
 	@command -v golangci-lint >/dev/null 2>&1 || { \
 		echo "golangci-lint not on PATH — run 'make tools' to install $(GOLANGCI_LINT_VERSION)."; \
 		exit 1; \
 	}
+
+.PHONY: lint
+lint: require-golangci-lint ## golangci-lint run (pinned to $(GOLANGCI_LINT_VERSION)).
 	@for m in $(MODULES); do echo "==> lint $$m"; (cd $$m && golangci-lint run); done
 
 .PHONY: self-lint
@@ -127,16 +134,46 @@ self-lint: $(CHAMELEON_BIN) ## Run `chameleon lint` against this repo (eats own 
 	$(CHAMELEON_BIN) lint ./...
 
 # --- Formatting ---------------------------------------------------------------
+#
+# gofumpt, applied through the pinned golangci-lint rather than a
+# standalone binary. One tool, one version, one answer: a separately
+# installed gofumpt drifts ahead of the one golangci-lint bundles (v0.10.0
+# splits `f(a, b,` onto its own line where the bundled build does not), and
+# a formatter whose check and fix disagree is worse than no formatter.
+# `make tools` installs the pinned version; lint, fmt and fmt-check all
+# share the require-golangci-lint guard.
+#
+# Scope follows golangci-lint's own file discovery. Generated code is
+# excluded by .golangci.yml (reformatting it would be reverted by the next
+# `make generate`), and cmd/chameleon/testdata is skipped because
+# golangci-lint ignores testdata directories the way the go tool does.
+# That skip is what keeps `make fmt` off the analyzer fixtures — note it is
+# the only thing that does, since nothing in .golangci.yml names them.
+# lint_test.go itself would survive a reformat: it pins expectations with
+# same-line `// want` markers, not absolute line numbers.
+#
+# The MODULES loop here is belt-and-braces rather than load-bearing:
+# unlike `go build ./...`, `golangci-lint fmt` walks the filesystem and
+# already descends into sops/ and cmd/chameleon/ from the root. Three
+# short runs are cheap insurance against the gate silently narrowing to
+# one module if that ever changes.
 
 .PHONY: fmt
-fmt: ## gofmt -w on all tracked Go files.
-	gofmt -w -s $(shell find . -name '*.go' -not -path './examples/buf/gen/*' -not -path './vendor/*')
+fmt: require-golangci-lint ## Format every module with gofumpt (via the pinned golangci-lint).
+	@for m in $(MODULES); do echo "==> fmt $$m"; (cd $$m && golangci-lint fmt); done
 
+# Checks every module before failing. Stopping at the first one sends the
+# contributor round the fix-and-rerun loop once per module for a drift
+# that a single run could have listed in full.
 .PHONY: fmt-check
-fmt-check: ## Fail if anything is not gofmt-clean.
-	@unformatted=$$(gofmt -l $(shell find . -name '*.go' -not -path './examples/buf/gen/*' -not -path './vendor/*')); \
-	if [ -n "$$unformatted" ]; then \
-		echo "Unformatted files (run 'make fmt'):"; echo "$$unformatted"; exit 1; \
+fmt-check: require-golangci-lint ## Fail if anything is not gofumpt-clean.
+	@failed=""; \
+	for m in $(MODULES); do \
+		echo "==> fmt-check $$m"; \
+		(cd $$m && golangci-lint fmt --diff) || failed="$$failed $$m"; \
+	done; \
+	if [ -n "$$failed" ]; then \
+		echo "Not gofumpt-clean (run 'make fmt'):$$failed"; exit 1; \
 	fi
 
 # --- Module hygiene -----------------------------------------------------------
@@ -175,10 +212,10 @@ tools: ## Install dev tools: golangci-lint pinned to $(GOLANGCI_LINT_VERSION).
 # --- Meta ---------------------------------------------------------------------
 
 .PHONY: ci
-ci: modules-check vet test lint ## Reproduce the CI matrix locally (modules-check + vet + test -race + lint).
+ci: modules-check fmt-check vet test lint ## Reproduce the CI matrix locally (modules-check + fmt-check + vet + test -race + lint).
 
 .PHONY: check
-check: fmt-check vet test ## Fast pre-commit suite (fmt, vet, test).
+check: fmt-check vet test ## Fast pre-commit suite (fmt-check, vet, test).
 
 .PHONY: clean
 clean: ## Remove built binaries and coverage artifacts.

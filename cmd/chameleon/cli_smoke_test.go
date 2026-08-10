@@ -701,8 +701,10 @@ func TestDecrypterNone_RefusesEncryptedLayer(t *testing.T) {
 	}{
 		{"explain", func(w *bytes.Buffer, a []string) error { return explainCmd(nil, w, a) }, base},
 		{"get", func(w *bytes.Buffer, a []string) error { return getCmd(nil, w, a) }, base},
-		{"reveal", func(w *bytes.Buffer, a []string) error { return revealCmd(nil, w, a) },
-			append(append([]string{}, base...), "--field=api_key")},
+		{
+			"reveal", func(w *bytes.Buffer, a []string) error { return revealCmd(nil, w, a) },
+			append(append([]string{}, base...), "--field=api_key"),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var out bytes.Buffer

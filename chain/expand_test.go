@@ -459,4 +459,3 @@ layers = [
 	assert.True(t, refs[6].Encrypted)
 	assert.Equal(t, "secrets", refs[6].Source)
 }
-

@@ -399,19 +399,25 @@ func decrypterOption(dec crypt.Decrypter) resolver.Option {
 //
 //  1. Every source declared in spec.GetSources() — interpret its
 //     `kind` + `options`. Supported kinds:
-//       - "fs": filesystem-backed. `options["root"]` is the FS root,
-//         resolved relative to chainDir (the chain.pxf's own
-//         directory) when not absolute. When no root is supplied,
-//         fall back to layersDir so a `{ kind = "fs" }` entry
-//         behaves like the historical single-source case.
-//       - "env": process-environment-backed. `options["prefix"]`
-//         optionally narrows which env vars participate (matches
-//         only names that begin with the prefix; remainder is
-//         compared to the uppercased dotted field path). Requires
-//         the resolved message descriptor so the source can walk
-//         the schema and coerce values at Open time.
-//     Unknown kinds error so callers don't silently get the
-//     wrong behavior.
+//
+//     "fs" is filesystem-backed. `options["root"]` is the FS root,
+//     resolved relative to chainDir (the chain.pxf's own directory)
+//     when not absolute. When no root is supplied, fall back to
+//     layersDir so a `{ kind = "fs" }` entry behaves like the
+//     historical single-source case.
+//
+//     "env" is process-environment-backed. `options["prefix"]`
+//     optionally narrows which env vars participate (matches only
+//     names that begin with the prefix; remainder is compared to the
+//     uppercased dotted field path). Requires the resolved message
+//     descriptor so the source can walk the schema and coerce values
+//     at Open time.
+//
+//     Unknown kinds error so callers don't silently get the wrong
+//     behavior — that covers every kind above, not just the last
+//     one. (Kinds are paragraphs rather than sub-bullets because
+//     gofmt's doc-comment printer flattens nested lists to a single
+//     indent, which silently reattaches this sentence to "env".)
 //
 //  2. Every source NAME referenced by a layer that wasn't declared
 //     in (1). Auto-register as fs at layersDir — this is the

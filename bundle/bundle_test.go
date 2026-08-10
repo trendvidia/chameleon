@@ -282,5 +282,7 @@ func isBase64Char(c byte) bool {
 // Ensure the base64 package is referenced even if every test stops
 // using it during a refactor — Go's unused-import check otherwise
 // breaks the test file silently when a single test is commented out.
-var _ = base64.StdEncoding
-var _ = io.ReadAll
+var (
+	_ = base64.StdEncoding
+	_ = io.ReadAll
+)

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/trendvidia/sops/v4/age/keypb"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
+	"github.com/trendvidia/sops/v4/age/keypb"
 )
 
 // Direct unit tests for RecipientsFromKeyName. Previously covered

@@ -84,3 +84,34 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
+
+# Formatting is gofumpt, applied through golangci-lint rather than a
+# separate binary: this config is already pinned and CI already installs
+# it, so `make fmt` needs no tool the lint job does not have. gofumpt is
+# a strict superset of gofmt -s, so nothing here contradicts `go fmt`.
+formatters:
+  enable:
+    - gofumpt
+
+  settings:
+    gofumpt:
+      # Base rules only. Measured against v2.12.2 rather than assumed:
+      # the one extra rule that actually fires in this tree is same-type
+      # parameter grouping (`func f(a int, b int)` -> `func f(a, b int)`),
+      # which rewrites hand-written signatures for no readability gain.
+      # Two things the extras are commonly believed to cover but do not:
+      # octal normalization (0777 -> 0o777) is a *base* rule and applies
+      # either way, and golangci-lint's bundled gofumpt never performs
+      # interface{} -> any at all.
+      extra-rules: false
+
+  exclusions:
+    # Generated files are rewritten by `make generate`, so formatting
+    # them is churn that reverts on the next buf run. `strict` keys off
+    # the "Code generated ... DO NOT EDIT." header, which every .pb.go
+    # here carries; the explicit paths cover the ones that do not.
+    generated: strict
+    paths:
+      - 'examples/buf/gen'
+      - '\.pb\.go$'
+      - '\.chameleon\.go$'

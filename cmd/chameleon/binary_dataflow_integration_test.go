@@ -7,9 +7,9 @@
 // pinned dispatch / exit codes / usage; this file runs the actual
 // data path through the binary boundary:
 //
-//     chameleon bundle build  → bundle.zip on disk
-//     chameleon get --bundle=…  → reads it
-//     chameleon explain --bundle=…  → reads it
+//	chameleon bundle build  → bundle.zip on disk
+//	chameleon get --bundle=…  → reads it
+//	chameleon explain --bundle=…  → reads it
 //
 // What we'd miss without it: a regression in the bundle.zip on-disk
 // format, in the bundleflags parser, or in the cross-subcommand

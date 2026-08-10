@@ -106,6 +106,20 @@ jobs:
         with:
           version: v2.12.2
           working-directory: cmd/chameleon
+      # Runs after the actions above because they are what put the pinned
+      # golangci-lint on PATH; `make fmt-check` shells out to it rather than
+      # to a standalone gofumpt, so the version that checks formatting here
+      # is the same one `make fmt` applies locally.
+      #
+      # Not redundant with those three steps, though it looks it: the
+      # `formatters:` block means `golangci-lint run` reports gofumpt
+      # issues too, but `run` only ever loads files matching the current
+      # build tags. Every `//go:build integration` file (sops/ and
+      # cmd/chameleon/ integration tests) is invisible to it and is checked
+      # only here. Running last also means a formatting failure never masks
+      # the lint findings — both land in one job.
+      - name: gofumpt (all modules)
+        run: make fmt-check
 
   bench:
     name: bench (vs main)

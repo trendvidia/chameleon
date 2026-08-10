@@ -13,8 +13,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/trendvidia/sops/v4/encrypt"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
+	"github.com/trendvidia/sops/v4/encrypt"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/trendvidia/chameleon/chain"

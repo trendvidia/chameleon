@@ -110,15 +110,15 @@ type Catalog struct {
 //     ALLOW_ALL default (non-secrets pass through unchanged).
 //
 //   - Per-module default policy (secret side):
-//       module.default if explicitly set (not UNSPECIFIED)
-//       else DENY_ALL if module.allow is non-empty (whitelist intent)
-//       else manifest.default if set
-//       else ALLOW_ALL (the proto's documented top-level default)
+//     module.default if explicitly set (not UNSPECIFIED)
+//     else DENY_ALL if module.allow is non-empty (whitelist intent)
+//     else manifest.default if set
+//     else ALLOW_ALL (the proto's documented top-level default)
 //
 //   - Per-module default policy (attribute side):
-//       module.attribute_default if explicitly set
-//       else DENY_ALL if module.attribute_allow is non-empty
-//       else ALLOW_ALL (non-secrets pass through by default)
+//     module.attribute_default if explicitly set
+//     else DENY_ALL if module.attribute_allow is non-empty
+//     else ALLOW_ALL (non-secrets pass through by default)
 //
 //   - Catalog validation: every allow/deny pattern must match at
 //     least one site's SchemaPath in the corresponding catalog

@@ -94,4 +94,3 @@ func joinPath(parent, name string) string {
 	}
 	return parent + "." + name
 }
-
