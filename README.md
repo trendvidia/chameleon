@@ -309,7 +309,7 @@ Currently only `pxf.Secret` has a metadata concept (`hint`, `fingerprint`). Othe
 
 ### `chameleon` CLI
 
-Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/chameleon@latest`. It lives in its own module (it links the sops backend; see [Modules in this repo](#modules-in-this-repo)), so a version-pinned install names `@cmd/chameleon/vX.Y.Z`. Subcommands:
+Companion CLI installable via `go install github.com/trendvidia/chameleon/cmd/chameleon@latest`. It lives in its own module because it links the sops backend (see [Modules in this repo](#modules-in-this-repo)); the install command is unchanged either way, including a version pin — `@vX.Y.Z` resolves to the CLI module's own tag. Subcommands:
 
 - `chameleon explain` — resolve a chain spec and print per-field provenance (which layer set the value, whether a default was applied, whether interpolation rewrote it, whether the field is sensitive). Accepts on-disk `--chain` + `--layers` or a `--bundle` input (file / stdin / env var, optionally `--base64`).
 - `chameleon get` — resolve a chain spec and print the result as a PXF document. Same input flags as `explain`; secret fields render as `<redacted>`. Pipe into `pxf query` to extract individual values.
