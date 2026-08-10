@@ -60,9 +60,9 @@ Enumeration is exhaustive — `go doc <pkg>` at the v1.0 tag should produce the 
 
 ### `github.com/trendvidia/chameleon/resolver`
 
-- **Functions**: `New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolver[T], error)`, `WithDecrypter`, `WithMeterProvider`, `WithSource`, `WithStrictMetadata`, `WithTrace`.
+- **Functions**: `New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolver[T], error)`, `WithDecrypter`, `WithDecrypterNamed`, `WithoutDecrypter`, `WithMaxLayerBytes`, `WithMeterProvider`, `WithSource`, `WithStrictMetadata`, `WithTrace`.
 - **Types**: `Resolver[T proto.Message]`, `Resolution[T proto.Message]`, `Request`, `Trace`, `TraceEntry`, `ClobberRecord`, `Option`.
-- **Errors**: `ErrNoSource`, `ErrNoDecrypter`, `ErrRequiredLayerMissing`.
+- **Errors**: `ErrNoSource`, `ErrNoDecrypter`, `ErrRequiredLayerMissing`, `ErrLayerTooLarge`.
 - **Methods**: `(*Resolver[T]).Resolve(ctx, Request) (*Resolution[T], error)`, `(*Resolution[T]).Destroy()`.
 
 ### `github.com/trendvidia/chameleon/chain`
@@ -107,12 +107,23 @@ Enumeration is exhaustive — `go doc <pkg>` at the v1.0 tag should produce the 
 - **Functions**: `Validate(msg, present) error`.
 - **Errors**: `ErrMissingRequired`.
 
+### `github.com/trendvidia/chameleon/crypt`
+
+The decryption contract, kept free of any implementation so consumers link one only by choice (see CHANGELOG [#130](https://github.com/trendvidia/chameleon/issues/130)).
+
+- **Functions**: `FormatForPath(path) Format`, `Register(name, Backend)`, `Unregister(name) bool`, `Registered() []string`, `Get(name) (Backend, error)`, `SoleDecrypter() (Decrypter, string, error)`.
+- **Types**: `Decrypter`, `Encrypter`, `Recipients` (with `IsEmpty()` method), `Backend`, `Format` (with `String()` method).
+- **Constants**: `FormatAuto`, `FormatProtowire`, `FormatBinary`, `FormatDotenv`, `FormatINI`, `FormatJSON`, `FormatYAML`.
+- **Errors**: `ErrNoBackend`, `ErrAmbiguousBackend`, `ErrUnknownBackend`, `ErrEncryptOnlyBackend`.
+
 ### `github.com/trendvidia/chameleon/sops`
 
-- **Functions**: `Default() Decrypter`, `DefaultEncrypter() Encrypter`, `FormatForPath(path) Format`.
-- **Types**: `Decrypter`, `Encrypter`, `Recipients`, `Format` (with `String()` method).
-- **Constants**: `FormatAuto`, `FormatProtowire`, `FormatBinary`, `FormatDotenv`, `FormatINI`, `FormatJSON`, `FormatYAML`.
+One implementation of the above, registered as `"sops"` from `init`.
+
+- **Functions**: `Default() crypt.Decrypter`, `DefaultEncrypter() crypt.Encrypter`, `RecipientsFromKeyName(name) (crypt.Recipients, error)`.
+- **Constants**: `BackendName`.
 - **Errors**: `ErrEmptyCiphertext`, `ErrPlaintextTooLarge`, `ErrEmptyPlaintext`, `ErrNoRecipients`.
+- **Deprecated aliases** for the `crypt` types of the same name, kept so existing consumer code compiles unchanged: `Decrypter`, `Encrypter`, `Recipients`, `Format`, the `Format*` constants, `FormatForPath`.
 
 ### `github.com/trendvidia/chameleon/source`
 

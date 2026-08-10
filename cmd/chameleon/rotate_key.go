@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/trendvidia/chameleon/chain"
+	"github.com/trendvidia/chameleon/crypt"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	chsops "github.com/trendvidia/chameleon/sops"
 )
@@ -203,7 +204,7 @@ func planEncryptedLayers(spec proto.Message) ([]*layerRotatePlan, error) {
 // key_name, and re-encrypts in place. Returns rotateSkipped on the
 // soft-skip cases (missing optional file, non-default source, env
 // in the plan's env set without key_name) and rotateDone otherwise.
-func rotateOne(ctx context.Context, w io.Writer, plan *layerRotatePlan, layersDir string, dryRun bool, dec chsops.Decrypter, enc chsops.Encrypter, spec proto.Message) (rotateStatus, error) {
+func rotateOne(ctx context.Context, w io.Writer, plan *layerRotatePlan, layersDir string, dryRun bool, dec crypt.Decrypter, enc crypt.Encrypter, spec proto.Message) (rotateStatus, error) {
 	if plan.Source != "" && plan.Source != "default" {
 		fmt.Fprintf(w, "SKIP\t%s\t(non-default source %q not supported)\n", plan.Path, plan.Source)
 		return rotateSkipped, nil
@@ -239,11 +240,11 @@ func rotateOne(ctx context.Context, w io.Writer, plan *layerRotatePlan, layersDi
 		return rotateDone, nil
 	}
 
-	// Decrypt. chsops.Decrypter wipes the input ciphertext on
+	// Decrypt. crypt.Decrypter wipes the input ciphertext on
 	// success; pass a copy so the original bytes stay intact for
 	// diagnostics if downstream steps fail.
 	rawForDec := append([]byte{}, raw...)
-	buf, err := dec.Decrypt(ctx, rawForDec, chsops.FormatProtowire)
+	buf, err := dec.Decrypt(ctx, rawForDec, crypt.FormatProtowire)
 	if err != nil {
 		return rotateSkipped, fmt.Errorf("decrypt %q: %w", full, err)
 	}
@@ -251,7 +252,7 @@ func rotateOne(ctx context.Context, w io.Writer, plan *layerRotatePlan, layersDi
 	buf.Destroy()
 	defer wipeBytes(plain)
 
-	ciph, err := enc.Encrypt(ctx, plain, chsops.FormatProtowire, recipients)
+	ciph, err := enc.Encrypt(ctx, plain, crypt.FormatProtowire, recipients)
 	if err != nil {
 		return rotateSkipped, fmt.Errorf("re-encrypt %q: %w", full, err)
 	}
@@ -272,13 +273,13 @@ func rotateOne(ctx context.Context, w io.Writer, plan *layerRotatePlan, layersDi
 // (rotation doesn't consult BundleManifest). Duplicate recipients
 // — typical when child envs inherit a parent's key_name — collapse
 // to one entry.
-func resolveChainRecipients(spec proto.Message, envs []string) (chsops.Recipients, []string, error) {
-	var out chsops.Recipients
+func resolveChainRecipients(spec proto.Message, envs []string) (crypt.Recipients, []string, error) {
+	var out crypt.Recipients
 	var missing []string
 	for _, env := range envs {
 		keyName, err := chain.EffectiveKeyName(spec, env)
 		if err != nil {
-			return chsops.Recipients{}, nil, err
+			return crypt.Recipients{}, nil, err
 		}
 		if keyName == "" {
 			missing = append(missing, env)
@@ -286,7 +287,7 @@ func resolveChainRecipients(spec proto.Message, envs []string) (chsops.Recipient
 		}
 		r, err := chsops.RecipientsFromKeyName(keyName)
 		if err != nil {
-			return chsops.Recipients{}, nil, fmt.Errorf("env %q: %w", env, err)
+			return crypt.Recipients{}, nil, fmt.Errorf("env %q: %w", env, err)
 		}
 		out.Age = append(out.Age, r.Age...)
 	}

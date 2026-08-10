@@ -61,12 +61,13 @@ spec, err := chain.LoadSpec("config/chain.pxf")
 For complex setups (multiple sources, sops-encrypted layers, request context) use the full `resolver.New(...)` API:
 
 ```go
+import _ "github.com/trendvidia/chameleon/sops"  // only if some layer is encrypted
+
 r, err := resolver.New[*myappv1.AppConfig](
     &myappv1.AppConfig{},
     spec,
     resolver.WithSource("default", source.FS(os.DirFS("./layers"))),
     resolver.WithSource("secrets", source.FS(os.DirFS("./layers/secrets"))),
-    resolver.WithDecrypter(sops.Default()),
     resolver.WithTrace(),  // opt-in per-field provenance
 )
 res, err := r.Resolve(ctx, resolver.Request{
@@ -268,6 +269,8 @@ Without `WithMeterProvider`, instruments use the noop provider — every record 
 
 `Resolution.Trace.ClobberedMetadata` also lists any WKT-metadata losses detected during merge — e.g., a higher layer's `db_password = "y"` silently drops a lower layer's `hint`. See [WKT metadata clobber](#wkt-metadata-clobber-warning) below.
 
+`Resolution.Trace.Decrypter` names the backend the resolver picked out of the crypt registry for this call, and is set only when it picked one — empty if no encrypted layer was reached, empty if you named the `Decrypter` yourself. That is the "who decrypted my layers" answer for the auto-selection path, which is the one nobody wrote down: see [Runtime decryption](#runtime-decryption).
+
 ### Debugging: pairing resolve-time provenance with runtime state
 
 Two production-debugging questions, two distinct answers:
@@ -458,16 +461,34 @@ Envs without a `key_name` fall back to whatever recipient set the encrypted file
 
 ### Runtime decryption
 
-Production runtimes wire `sops.Default()` into the resolver:
+Decryption is opt-in **at link time**. The resolver depends on the `crypt.Decrypter` interface, never on an implementation, so a program whose layers are all plaintext links no key-management code at all. A program with encrypted layers blank-imports a backend, which registers itself — the same model `database/sql` uses for drivers:
 
 ```go
+import (
+    "github.com/trendvidia/chameleon/resolver"
+    _ "github.com/trendvidia/chameleon/sops"   // registers the "sops" backend
+)
+
 r, err := resolver.New[*AppConfig](sample, spec,
     resolver.WithSource("default", source.FS(os.DirFS("./config"))),
-    resolver.WithDecrypter(sops.Default()),
 )
 ```
 
-`sops.Default()` reads keys from the ambient environment, exactly the same lookup the `sops` CLI does:
+With exactly one backend linked in, the resolver picks it up the first time an encrypted layer appears. Nothing else is needed — and if you forget the import, the error says so:
+
+```
+resolver: encrypted layer without Decrypter: layer="secrets": crypt: no decryption
+backend registered; link one with `import _ "github.com/trendvidia/chameleon/sops"`,
+or pass resolver.WithDecrypter
+```
+
+Three escape hatches. `resolver.WithDecrypter(sops.Default())` passes an implementation explicitly — use it for a `Decrypter` you constructed yourself (see [Custom decryption](#custom-decryption-programmatic-key-injection)), or to pin one in a build that links several. `resolver.WithDecrypterNamed("sops")` picks a registered backend by name, which is what a build with more than one needs: auto-selection is only defined for the single-backend case, and several linked in without a choice is an error, not a coin flip. `resolver.WithoutDecrypter()` says no: an encrypted layer returns `ErrNoDecrypter` even when the build has a backend registered. The three are mutually exclusive.
+
+> **When you need `WithoutDecrypter`.** Registration follows the *module graph*, not your configuration — the same trade `database/sql` makes. A dependency that imports `chameleon/sops` for its own reasons registers the backend in your build too, so "I passed no decrypter" stopped being a reliable way to mean "do not decrypt". `crypt.Registered()` reports what a build ended up with. This is why `chameleon get/explain/reveal --decrypter=none` is wired to `WithoutDecrypter` rather than to a nil `Decrypter` — and why `resolver.WithDecrypter(nil)` is an error rather than a silent fall-through to auto-selection. Note that [`chameleon.Load`](#quick-start) takes no options and so cannot opt out: a program that needs encrypted layers refused must use `resolver.New` directly.
+
+> **Why link-time.** Until v0.22.1 the resolver imported `chameleon/sops` directly, so every consumer linked the whole sops key-management tree — AWS, Azure, GCP, Vault, Huawei KMS and their transitive weight — whether or not a single layer was encrypted. A program resolving two plaintext layers measured **68 MB**; the same program on v0.23.0 measures **11.7 MB**, of which 7.0 MB is the protobuf runtime any protobuf program pays ([#130](https://github.com/trendvidia/chameleon/issues/130)).
+
+`sops.Default()` — and the registered backend, which is the same wiring — reads keys from the ambient environment, exactly the same lookup the `sops` CLI does:
 
 | Backend | Credential source |
 |---|---|
@@ -596,12 +617,14 @@ The `BundleManifest` declares per-module allow/deny over secret-bearing field pa
 
 ## Custom decryption (programmatic key injection)
 
-`sops.Default()` sources keys from the ambient environment (`SOPS_AGE_KEY`, etc.). For programmatic key injection — say, fetching keys from a secret manager at runtime — implement the `sops.Decrypter` interface yourself:
+`sops.Default()` sources keys from the ambient environment (`SOPS_AGE_KEY`, etc.). For programmatic key injection — say, fetching keys from a secret manager at runtime — implement the `crypt.Decrypter` interface yourself. `chameleon/crypt` is a leaf package (standard library plus memguard), so a custom backend costs your binary nothing beyond what you wire into it:
 
 ```go
+import "github.com/trendvidia/chameleon/crypt"
+
 type myDecrypter struct{ ageKey string }
 
-func (d *myDecrypter) Decrypt(ctx context.Context, ciphertext []byte, format sops.Format) (*memguard.LockedBuffer, error) {
+func (d *myDecrypter) Decrypt(ctx context.Context, ciphertext []byte, format crypt.Format) (*memguard.LockedBuffer, error) {
     // Set SOPS_AGE_KEY for this call's duration, or pre-decrypt with
     // the age library + wrap in a memguard buffer manually.
     // Then call back into sops's decrypt.Data, OR roll your own.
@@ -614,7 +637,9 @@ r, _ := resolver.New[*AppConfig](sample, spec,
 )
 ```
 
-The `Decrypter` interface is one method (`Decrypt`) — straightforward to wrap any encryption backend.
+The `Decrypter` interface is one method (`Decrypt`) — straightforward to wrap any encryption backend. Pass it to `resolver.WithDecrypter`, or register it under your own name with `crypt.Register` from an `init` if you would rather select it with a blank import the way `chameleon/sops` does.
+
+`sops.Decrypter`, `sops.Encrypter`, `sops.Format`, `sops.Recipients` and the `sops.Format*` constants still exist as aliases for their `crypt` counterparts, so code written against the old spellings compiles unchanged — but they are deprecated, and importing `chameleon/sops` to name a type is what put 56 MB of cloud SDKs in binaries that never decrypted anything. Switch the import to `chameleon/crypt`.
 
 ## Distribution bundles
 
@@ -847,6 +872,8 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 | `github.com/trendvidia/protowire-go` | `>= v0.77.0` (block-form `OnSecretField` routing; v0.76.0+ covers scalar shorthand) |
 | `github.com/trendvidia/sops/v4` | `>= v4.0.0` (soft-fork of `getsops/sops` consumed directly under its own module path — no `replace` directive needed) |
 | `github.com/awnumar/memguard` | `>= v0.22.5` |
+
+**Module graph vs. linked code.** Since v0.23.0 a plaintext consumer *links* no key-management code (see [Runtime decryption](#runtime-decryption)), but `go list -m all` still lists the KMS SDK modules: chameleon's own `go.mod` requires them for the `chameleon/sops` package and the CLI, and Go's module graph is per-module, not per-import. So dependency-review and SBOM tooling that reads `go.mod` still sees them; binary size, link time, and reachability-based scanners (`govulncheck`) do not. Removing them from the graph as well means splitting `chameleon/sops` into its own module — the open half of [#130](https://github.com/trendvidia/chameleon/issues/130).
 
 ### Replace directives — required in your `go.mod`
 

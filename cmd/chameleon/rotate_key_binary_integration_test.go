@@ -35,6 +35,7 @@ import (
 	"github.com/trendvidia/sops/v4/age/keypb"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 
+	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
 )
 
@@ -131,7 +132,7 @@ layers = [{ id = "secrets" path = "secrets/${env}.pxf" for_each = PER_ENV encryp
 	t.Setenv("SOPS_AGE_KEY_FILE", "")
 	t.Setenv("SOPS_AGE_KEY", rotNewIdentity)
 	buf, err := chsops.Default().Decrypt(
-		context.Background(), ciphForNew, chsops.FormatProtowire,
+		context.Background(), ciphForNew, crypt.FormatProtowire,
 	)
 	require.NoError(t, err, "new-key alone must decrypt the rotated layer")
 	defer buf.Destroy()
@@ -143,7 +144,7 @@ layers = [{ id = "secrets" path = "secrets/${env}.pxf" for_each = PER_ENV encryp
 	// recipient set wasn't actually swapped.
 	t.Setenv("SOPS_AGE_KEY", rotOldIdentity)
 	_, err = chsops.Default().Decrypt(
-		context.Background(), ciphForOld, chsops.FormatProtowire,
+		context.Background(), ciphForOld, crypt.FormatProtowire,
 	)
 	require.Error(t, err,
 		"old-key MUST NOT decrypt the rotated layer; if it can, rotation didn't actually swap recipients")

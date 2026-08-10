@@ -49,6 +49,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
 )
 
@@ -197,7 +198,7 @@ feature_flags = [
 	buf, err := chsops.Default().Decrypt(
 		context.Background(),
 		ciphertext,
-		chsops.FormatProtowire,
+		crypt.FormatProtowire,
 	)
 	require.NoError(t, err, "chameleon Decrypter on PGP-encrypted ciphertext")
 	defer buf.Destroy()
@@ -235,7 +236,7 @@ func TestRoundTrip_PGP_WrongKeyFails(t *testing.T) {
 	_, err = chsops.Default().Decrypt(
 		context.Background(),
 		ciphertext,
-		chsops.FormatProtowire,
+		crypt.FormatProtowire,
 	)
 	require.Error(t, err, "decrypt with empty keyring must fail")
 	assert.Contains(t, strings.ToLower(err.Error()), "decrypt",

@@ -7,11 +7,15 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/trendvidia/chameleon/crypt"
+	"github.com/trendvidia/chameleon/resolver"
 )
 
 // CLI subcommand smoke tests. The *Cmd entry points went from 0%
@@ -612,4 +616,179 @@ func TestUsage(t *testing.T) {
 	assert.NotContains(t, got, "TODO",
 		"usage text shouldn't carry leftover placeholders")
 	_ = strings.Repeat // keep strings import
+}
+
+// --- --decrypter=none ---
+
+// encryptedFixture is a chain whose one layer is marked
+// `encrypted = true`, with garbage where the ciphertext should be.
+// Nothing here can be decrypted; the point is which error comes out.
+func encryptedFixture(t *testing.T) string {
+	t.Helper()
+	// The user config can set `decrypter = "sops"` for the default
+	// app, and applyAppDefaults adopts it when --decrypter is absent —
+	// which would decide this test on the developer's machine config
+	// rather than on the code. Point the loader at a path that does
+	// not exist. CHAMELEON_USER_CONFIG rather than HOME because
+	// userConfigPath() checks the env var *first*: overriding HOME
+	// alone leaves an exported CHAMELEON_USER_CONFIG in charge, which
+	// is the same environment dependency one level down.
+	t.Setenv("CHAMELEON_USER_CONFIG", filepath.Join(t.TempDir(), "nonexistent"))
+	dir := t.TempDir()
+	writeFixture(t, dir, map[string]string{
+		// A pxf.Secret field so `reveal` gets past its is-this-a-secret
+		// check and actually reaches the resolve — the case that would
+		// otherwise print decrypted plaintext to stdout.
+		"pxf/secret.proto": `syntax = "proto3";
+package pxf;
+message Secret {
+  string value = 1;
+  string hint = 2;
+  string fingerprint = 3;
+}
+`,
+		"app.proto": `syntax = "proto3";
+package smoke.v1;
+import "pxf/secret.proto";
+message Cfg {
+  string base_url = 1;
+  pxf.Secret api_key = 2;
+}
+`,
+		"chain.pxf": `version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "secret" path = "secret.pxf" for_each = ONCE encrypted = true required = true }]
+`,
+		"secret.pxf": "not-actually-ciphertext",
+	})
+	return dir
+}
+
+// TestDecrypterNone_RefusesEncryptedLayer pins the flag's documented
+// contract: "none" errors if any encrypted layer is hit.
+//
+// It regressed silently when the crypt registry landed
+// (trendvidia/chameleon#130). "none" produced a nil Decrypter, the
+// caller passed no option, and "no decrypter configured" used to be
+// the same thing as "do not decrypt" — but this binary links
+// chameleon/sops for bundle/migrate/rotate-key, so sops's init
+// registers the backend and the resolver's new fallback auto-selects
+// it. `--decrypter=none` reached for ambient KMS/age credentials the
+// operator had explicitly declined, and for `reveal` that means
+// plaintext on stdout.
+//
+// The tell is which error surfaces: ErrNoDecrypter means the layer
+// was refused, a sops unmarshal error means it was attempted.
+func TestDecrypterNone_RefusesEncryptedLayer(t *testing.T) {
+	require.NotEmpty(t, crypt.Registered(),
+		"this binary must link a backend, or this test cannot regress")
+
+	dir := encryptedFixture(t)
+	base := []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+		"--decrypter=none",
+	}
+
+	for _, tc := range []struct {
+		name string
+		run  func(w *bytes.Buffer, args []string) error
+		args []string
+	}{
+		{"explain", func(w *bytes.Buffer, a []string) error { return explainCmd(nil, w, a) }, base},
+		{"get", func(w *bytes.Buffer, a []string) error { return getCmd(nil, w, a) }, base},
+		{"reveal", func(w *bytes.Buffer, a []string) error { return revealCmd(nil, w, a) },
+			append(append([]string{}, base...), "--field=api_key")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := tc.run(&out, tc.args)
+			require.Error(t, err, "an encrypted layer under --decrypter=none must fail")
+			assert.ErrorIs(t, err, resolver.ErrNoDecrypter,
+				"want the layer refused; got %v", err)
+			assert.NotContains(t, err.Error(), "sops:",
+				"sops must not have been invoked at all: %v", err)
+			assert.Empty(t, out.String(), "and nothing may reach the writer")
+		})
+	}
+}
+
+// TestDecrypterNone_IsTheDefault: the same refusal with the flag
+// omitted entirely, since "none" is the flag's default value.
+func TestDecrypterNone_IsTheDefault(t *testing.T) {
+	dir := encryptedFixture(t)
+
+	var out bytes.Buffer
+	err := explainCmd(nil, &out, []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, resolver.ErrNoDecrypter)
+}
+
+// TestDecrypterNone_SurvivesUserConfig is the same opt-out with a user
+// config that says otherwise.
+//
+// applyAppDefaults used to read "none" as "unset" — the flag's Go
+// default is "none", so the value alone cannot say whether the
+// operator typed it — and adopt `decrypter = "sops"` from
+// $HOME/.chameleon. That turned the one explicit way to decline
+// decryption into a no-op on any machine whose config named a
+// decrypter, and for `reveal` the result was plaintext on stdout. The
+// flag is now looked up on the FlagSet, so typing it wins.
+//
+// The `reveal` leg is the one with teeth: it is the subcommand whose
+// success path prints the secret.
+func TestDecrypterNone_SurvivesUserConfig(t *testing.T) {
+	dir := encryptedFixture(t)
+
+	cfgPath := filepath.Join(t.TempDir(), ".chameleon")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`@type chameleon.v1.UserConfig
+
+default_app = "smoke"
+
+apps = {
+  "smoke": {
+    root      = "`+dir+`"
+    decrypter = "sops"
+  }
+}
+`), 0o644))
+	// Overrides the fixture's own isolation, on purpose: this test is
+	// about a config that *does* name a decrypter.
+	t.Setenv("CHAMELEON_USER_CONFIG", cfgPath)
+
+	base := []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+		"--field=api_key",
+	}
+
+	var out bytes.Buffer
+	err := revealCmd(nil, &out, append(slices.Clone(base), "--decrypter=none"))
+	require.Error(t, err, "an explicit --decrypter=none must outrank the user config")
+	assert.ErrorIs(t, err, resolver.ErrNoDecrypter,
+		"want the layer refused; got %v", err)
+	assert.Empty(t, out.String(), "and nothing may reach the writer")
+
+	// The other half of the contract: with the flag absent, the
+	// config's decrypter is still adopted. sops then fails on the
+	// garbage ciphertext, which is what proves it was reached.
+	out.Reset()
+	err = revealCmd(nil, &out, slices.Clone(base))
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, resolver.ErrNoDecrypter,
+		"the config's decrypter should have been adopted; got %v", err)
 }

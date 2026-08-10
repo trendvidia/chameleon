@@ -12,27 +12,6 @@ import (
 	sopspgp "github.com/trendvidia/sops/v4/pgp"
 )
 
-func TestRecipients_IsEmpty(t *testing.T) {
-	cases := []struct {
-		name string
-		r    Recipients
-		want bool
-	}{
-		{"all unset", Recipients{}, true},
-		{"empty slices", Recipients{KMS: []string{}, Age: []string{}, PGP: []string{}}, true},
-		{"only kms", Recipients{KMS: []string{"arn:..."}}, false},
-		{"only age", Recipients{Age: []string{"age1..."}}, false},
-		{"only pgp", Recipients{PGP: []string{"DEAD..."}}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.r.IsEmpty(); got != tc.want {
-				t.Errorf("IsEmpty() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestEncrypt_EmptyPlaintext(t *testing.T) {
 	_, err := DefaultEncrypter().Encrypt(context.Background(), nil, FormatProtowire, Recipients{Age: []string{"age1xyz"}})
 	if !errors.Is(err, ErrEmptyPlaintext) {

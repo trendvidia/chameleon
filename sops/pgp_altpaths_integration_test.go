@@ -42,6 +42,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
 )
 
@@ -112,7 +113,7 @@ func TestPGP_MultiRecipient_BothFingerprintsRecorded(t *testing.T) {
 	// Round-trip: keyring has both secrets, so either path can
 	// decrypt; sops picks one and produces plaintext.
 	buf, err := chsops.Default().Decrypt(
-		context.Background(), ciphertext, chsops.FormatProtowire,
+		context.Background(), ciphertext, crypt.FormatProtowire,
 	)
 	require.NoError(t, err, "multi-fingerprint ciphertext should round-trip via the full keyring")
 	defer buf.Destroy()
@@ -166,7 +167,7 @@ func TestMixedAgePGP_AgeKeyAloneDecrypts(t *testing.T) {
 		"decrypt must use a different GNUPGHOME than encrypt")
 
 	buf, err := chsops.Default().Decrypt(
-		context.Background(), ciphertext, chsops.FormatProtowire,
+		context.Background(), ciphertext, crypt.FormatProtowire,
 	)
 	require.NoError(t, err, "age-only decrypt should succeed via the age MasterKey")
 	defer buf.Destroy()
@@ -203,7 +204,7 @@ func TestMixedAgePGP_PGPKeyAloneDecrypts(t *testing.T) {
 	require.NotEmpty(t, homePGP, "PGP keyring path must be set")
 
 	buf, err := chsops.Default().Decrypt(
-		context.Background(), ciphertext, chsops.FormatProtowire,
+		context.Background(), ciphertext, crypt.FormatProtowire,
 	)
 	require.NoError(t, err, "pgp-only decrypt should succeed via the pgp MasterKey")
 	defer buf.Destroy()

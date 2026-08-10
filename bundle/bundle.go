@@ -49,7 +49,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/trendvidia/chameleon/chain"
-	"github.com/trendvidia/chameleon/internal/bundler"
+	"github.com/trendvidia/chameleon/internal/bundlelayout"
 )
 
 // Bundle is the in-memory view of an opened chameleon bundle. The
@@ -128,7 +128,7 @@ func openZipBytes(data []byte) (*Bundle, error) {
 		return nil, fmt.Errorf("bundle: open zip: %w", err)
 	}
 
-	chainBytes, err := readZipEntry(zr, bundler.ChainEntryPath)
+	chainBytes, err := readZipEntry(zr, bundlelayout.ChainEntryPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, ErrMissingChain
@@ -137,14 +137,14 @@ func openZipBytes(data []byte) (*Bundle, error) {
 	}
 	chainMsg, err := chain.ParseSpec(chainBytes)
 	if err != nil {
-		return nil, fmt.Errorf("bundle: parse %s: %w", bundler.ChainEntryPath, err)
+		return nil, fmt.Errorf("bundle: parse %s: %w", bundlelayout.ChainEntryPath, err)
 	}
 
 	// Audit entry is optional — bundles produced before the entry
 	// existed (or by other tooling) won't have it. Surface as nil
 	// rather than error.
 	var audit []byte
-	if data, err := readZipEntry(zr, bundler.AuditEntryPath); err == nil {
+	if data, err := readZipEntry(zr, bundlelayout.AuditEntryPath); err == nil {
 		audit = data
 	}
 

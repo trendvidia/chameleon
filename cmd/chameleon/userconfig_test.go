@@ -194,7 +194,7 @@ func TestApplyAppDefaults_FillsEmptyFlags(t *testing.T) {
 		schema, message, chainPath, layersDir, env, decrypter string
 		includePaths                                          []string
 	)
-	applyAppDefaults(app, &schema, &message, &chainPath, &layersDir, &env, &decrypter, &includePaths)
+	applyAppDefaults(nil, app, &schema, &message, &chainPath, &layersDir, &env, &decrypter, &includePaths)
 
 	assert.Equal(t, "/proj/app.proto", schema)
 	assert.Equal(t, "x.Y", message)
@@ -223,7 +223,7 @@ func TestApplyAppDefaults_CLIWins(t *testing.T) {
 	decrypter := "none"
 	includePaths := []string{"/cli/proto"}
 
-	applyAppDefaults(app, &schema, &message, &chainPath, &layersDir, &env, &decrypter, &includePaths)
+	applyAppDefaults(nil, app, &schema, &message, &chainPath, &layersDir, &env, &decrypter, &includePaths)
 
 	assert.Equal(t, "/cli/schema.proto", schema, "schema CLI override preserved")
 	assert.Equal(t, "explicit.Msg", message)
@@ -248,7 +248,7 @@ func TestApplyAppDefaults_LayersDotIsTreatedAsUnset(t *testing.T) {
 		schema, message, chainPath, env, decrypter string
 		includePaths                               []string
 	)
-	applyAppDefaults(app, &schema, &message, &chainPath, &layersDir, &env, &decrypter, &includePaths)
+	applyAppDefaults(nil, app, &schema, &message, &chainPath, &layersDir, &env, &decrypter, &includePaths)
 	assert.Equal(t, "/proj/config/layers", layersDir,
 		"--layers default of \".\" should be overridden by the AppConfig")
 }
@@ -259,7 +259,7 @@ func TestApplyAppDefaults_LayersDotIsTreatedAsUnset(t *testing.T) {
 func TestApplyAppDefaults_NilApp(t *testing.T) {
 	schema, message, chainPath, layersDir, env, decrypter := "x", "y", "z", "/l", "e", "d"
 	includePaths := []string{"i"}
-	applyAppDefaults(nil, &schema, &message, &chainPath, &layersDir, &env, &decrypter, &includePaths)
+	applyAppDefaults(nil, nil, &schema, &message, &chainPath, &layersDir, &env, &decrypter, &includePaths)
 	assert.Equal(t, "x", schema)
 	assert.Equal(t, "y", message)
 	assert.Equal(t, "z", chainPath)

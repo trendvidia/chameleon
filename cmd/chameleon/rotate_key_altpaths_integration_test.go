@@ -30,6 +30,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
 )
 
@@ -131,7 +132,7 @@ layers = [{ id = "shared" path = "shared.pxf" for_each = ONCE encrypted = true r
 	t.Setenv("SOPS_AGE_KEY_FILE", "")
 	t.Setenv("SOPS_AGE_KEY", rotNewIdentity)
 	buf, err := chsops.Default().Decrypt(
-		context.Background(), ciphForNew, chsops.FormatProtowire,
+		context.Background(), ciphForNew, crypt.FormatProtowire,
 	)
 	require.NoError(t, err, "new-key alone must decrypt the union-encrypted layer")
 	defer buf.Destroy()
@@ -142,7 +143,7 @@ layers = [{ id = "shared" path = "shared.pxf" for_each = ONCE encrypted = true r
 	// rotation that targeted prod's new-key).
 	t.Setenv("SOPS_AGE_KEY", rotOldIdentity)
 	buf2, err := chsops.Default().Decrypt(
-		context.Background(), ciphForOld, chsops.FormatProtowire,
+		context.Background(), ciphForOld, crypt.FormatProtowire,
 	)
 	require.NoError(t, err, "old-key alone must ALSO decrypt — proves UNION not subset")
 	defer buf2.Destroy()

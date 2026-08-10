@@ -15,8 +15,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/types/dynamicpb"
 
+	"github.com/trendvidia/chameleon/crypt"
 	"github.com/trendvidia/chameleon/resolver"
-	"github.com/trendvidia/chameleon/sops"
 	"github.com/trendvidia/chameleon/source"
 )
 
@@ -26,19 +26,19 @@ import (
 // floor — e.g. by forgetting to assign to c.dec — would silently
 // fall back to the default decrypter (or none) at resolve time.
 
-// recordingDecrypter is a fake sops.Decrypter that records its call
+// recordingDecrypter is a fake crypt.Decrypter that records its call
 // arguments and returns a fixed plaintext. Lets us assert WithDecrypter
 // installed THIS specific decrypter (rather than the package default)
 // in the resolver's config.
 type recordingDecrypter struct {
 	calls       int32
 	gotCipher   []byte
-	gotFormat   sops.Format
+	gotFormat   crypt.Format
 	plaintextTo []byte // returned in the memguard buffer
 	err         error
 }
 
-func (r *recordingDecrypter) Decrypt(ctx context.Context, ciphertext []byte, format sops.Format) (*memguard.LockedBuffer, error) {
+func (r *recordingDecrypter) Decrypt(ctx context.Context, ciphertext []byte, format crypt.Format) (*memguard.LockedBuffer, error) {
 	atomic.AddInt32(&r.calls, 1)
 	r.gotCipher = append(r.gotCipher[:0], ciphertext...)
 	r.gotFormat = format
@@ -50,7 +50,8 @@ func (r *recordingDecrypter) Decrypt(ctx context.Context, ciphertext []byte, for
 
 func TestWithDecrypter_InstallsAndIsInvokedOnEncryptedLayer(t *testing.T) {
 	// One encrypted layer in the chain spec → Resolve must call
-	// the decrypter we installed via WithDecrypter, NOT sops.Default().
+	// the decrypter we installed via WithDecrypter, NOT a registered
+	// backend (this test binary links none — see registry_test.go).
 	// The fake's call counter is the canary; the plaintext it
 	// returns also ends up in the resolved config, providing a
 	// second independent check.
@@ -92,7 +93,7 @@ layers = [{ id = "secret" path = "secret.pxf" for_each = ONCE encrypted = true r
 	assert.Equal(t, string(ciphertext), string(fake.gotCipher),
 		"fake decrypter must receive the layer's raw bytes")
 	// Format is FormatProtowire (the PXF spelling sops calls "pxf").
-	assert.Equal(t, sops.FormatProtowire, fake.gotFormat,
+	assert.Equal(t, crypt.FormatProtowire, fake.gotFormat,
 		"resolver must pass FormatProtowire to the decrypter")
 
 	// The resolved plaintext propagates into the message.
