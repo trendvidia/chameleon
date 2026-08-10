@@ -20,6 +20,14 @@
 //     plaintext sensitive values out of the template namespace and
 //     keeps the interpolation API decoupled from value-type
 //     internals.
+//   - google.protobuf.StringValue is the single exception on the
+//     write side: its payload is user-authored config text, so a
+//     `${...}` in it is expanded, and the rewrite is reported at the
+//     WKT field's own path rather than an inner ".value". It is still
+//     not readable — `${some_wrapper.value}` stays an
+//     ErrInvalidReference, exactly as for a Secret. Writing into a WKT
+//     leaks nothing; reading out of one is what the boundary is for.
+//     See [wkt.TemplatableText] and chameleon#135.
 //
 // Resolution semantics:
 //
@@ -129,7 +137,15 @@ func (w *walker) message(m protoreflect.Message, prefix string) error {
 	// WKT subtrees are skipped — their internals are not user-
 	// templatable and including them would expose Secret.value to
 	// callers of the interpolation namespace.
+	//
+	// google.protobuf.StringValue is the one exception: its payload IS
+	// user-authored config text, and a (pxf.default) landing on it may
+	// itself be a template. See [wkt.TemplatableText] for why that does
+	// not reopen the boundary the skip exists for.
 	if wkt.Atomic(m.Descriptor()) {
+		if wkt.TemplatableText(m.Descriptor()) {
+			return w.textPayload(m, prefix)
+		}
 		return nil
 	}
 	desc := m.Descriptor()
@@ -142,6 +158,34 @@ func (w *walker) message(m protoreflect.Message, prefix string) error {
 		if err := w.field(m, fd, prefix); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// textPayload expands a template in an atomic WKT's text payload —
+// today only google.protobuf.StringValue.value.
+//
+// path is the WKT field's OWN dotted path, not an inner ".value": the
+// merge, defaults and presence passes all treat the WKT as a single
+// value and key it that way, so reporting "api_url.value" here would
+// put a path in resolver.Trace that no other pass ever produces, and
+// leave the entry an operator actually asked about untagged.
+func (w *walker) textPayload(m protoreflect.Message, path string) error {
+	fd := m.Descriptor().Fields().ByName("value")
+	if fd == nil || fd.Kind() != protoreflect.StringKind {
+		return nil
+	}
+	v := m.Get(fd).String()
+	if !hasTemplate(v) {
+		return nil
+	}
+	resolved, err := w.expand(v, nil)
+	if err != nil {
+		return err
+	}
+	m.Set(fd, protoreflect.ValueOfString(resolved))
+	if w.onApplied != nil {
+		w.onApplied(path)
 	}
 	return nil
 }

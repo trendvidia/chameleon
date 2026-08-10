@@ -823,7 +823,13 @@ message M {
 // google.protobuf.StringValue is never expanded, while the same
 // literal on a plain string field is. Documented in the package
 // godoc and README; pinned so closing the gap is a deliberate change.
-func TestApply_WKTDefaultIsNotInterpolated(t *testing.T) {
+// TestApply_WKTDefaultIsInterpolated is the inverted form of what
+// #132 pinned as a limitation. The ordering godoc — "a default value
+// may itself be a template (api.${base_url}), which interpolation then
+// resolves against the merged state" — promised this for every field
+// #129 let a default land on, and delivered it only for the scalar
+// half. Both halves now hold. See #135.
+func TestApply_WKTDefaultIsInterpolated(t *testing.T) {
 	const src = `
 syntax = "proto3";
 package def_test.v1;
@@ -841,8 +847,8 @@ message M {
 
 	assert.Equal(t, "api.example.com", get(t, msg, "api_plain").String(),
 		"a scalar default is a template, as documented")
-	assert.Equal(t, "api.${base}", inner(t, sub(t, msg, "api_wrapped"), "value").String(),
-		"a WKT default is NOT interpolated: interpolate stops at the atomic boundary")
+	assert.Equal(t, "api.example.com", inner(t, sub(t, msg, "api_wrapped"), "value").String(),
+		"and so is a default on a StringValue — the raw template no longer reaches the config")
 }
 
 // TestApply_ExplicitNullIsNotReDefaulted pins the invariant that

@@ -112,6 +112,67 @@ func TestAtomic_NilSafe(t *testing.T) {
 	assert.False(t, wkt.Atomic(nil))
 }
 
+// TemplatableText is the one place the four packages sharing Atomic
+// disagree, so its width is pinned exhaustively rather than by the one
+// type that should say yes. Everything here is Atomic; only
+// StringValue carries user-authored text, and admitting any other —
+// pxf.Secret above all — would put a value through interpolate.expand
+// that the boundary exists to keep out. See #135.
+func TestTemplatableText_IsExactlyStringValue(t *testing.T) {
+	f := compile(t)
+	hasWKTs := f.Messages().ByName("HasWKTs")
+	require.NotNil(t, hasWKTs)
+
+	cases := []struct {
+		field string
+		want  bool
+	}{
+		{"sv", true},      // google.protobuf.StringValue
+		{"t", false},      // google.protobuf.Timestamp
+		{"d", false},      // google.protobuf.Duration
+		{"iv", false},     // google.protobuf.Int32Value
+		{"a", false},      // google.protobuf.Any
+		{"secret", false}, // pxf.Secret — the one that must never widen
+		{"big", false},    // pxf.BigInt
+		{"dec", false},    // pxf.Decimal
+		{"bf", false},     // pxf.BigFloat
+		{"plain", false},  // user-defined message
+	}
+	for _, c := range cases {
+		fd := hasWKTs.Fields().ByName(protoreflect.Name(c.field))
+		require.NotNil(t, fd, "field %q", c.field)
+		assert.Equal(t, c.want, wkt.TemplatableText(fd.Message()),
+			"TemplatableText(%s)", c.field)
+	}
+}
+
+func TestTemplatableText_NilSafe(t *testing.T) {
+	assert.False(t, wkt.TemplatableText(nil))
+}
+
+// A user-defined message named StringValue in someone else's package
+// must not be admitted, for the same reason Atomic consults FullName.
+func TestTemplatableText_FullNameDrivenOnly(t *testing.T) {
+	const lookalikeSrc = `
+syntax = "proto3";
+package not_google.v1;
+message StringValue { string value = 1; }
+`
+	c := protocompile.Compiler{
+		Resolver: protocompile.WithStandardImports(
+			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(
+				map[string]string{"l.proto": lookalikeSrc},
+			)},
+		),
+	}
+	res, err := c.Compile(context.Background(), "l.proto")
+	require.NoError(t, err)
+	fake := res[0].Messages().ByName("StringValue")
+	require.NotNil(t, fake)
+	assert.False(t, wkt.TemplatableText(fake),
+		"a user-defined StringValue must not be treated as the WKT")
+}
+
 func TestAtomic_FullNameDrivenOnly(t *testing.T) {
 	// User-defined message that's NOT a WKT but happens to share the
 	// shape of one (three fields named value/hint/fingerprint). The
