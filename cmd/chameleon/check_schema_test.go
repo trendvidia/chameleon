@@ -436,7 +436,11 @@ func TestCheckSchema_SharedViolationReportedOnceWithItsRoots(t *testing.T) {
 	if n := strings.Count(got, "common.v1.Shared.labels"); n != 1 {
 		t.Errorf("violation printed %d times, want 1\ngot: %s", n, got)
 	}
-	if !strings.Contains(got, "(via a.proto, b.proto, c.proto)") {
+	// Named the way the repo's own files import them: --include=<dir>
+	// is the -I root, so it outranks the searched directory, and
+	// "svc/a.proto" is the name a sibling would write. This is the line
+	// the README and the changelog fragment quote.
+	if !strings.Contains(got, "(via svc/a.proto, svc/b.proto, svc/c.proto)") {
 		t.Errorf("the reaching roots are the blast radius and must be named\ngot: %s", got)
 	}
 }
@@ -466,7 +470,7 @@ func TestCheckSchema_DirectorySearchIsRecursiveAndProtocNamed(t *testing.T) {
 }
 
 // The OK line's two counts answer different questions — how much was
-// asked for, and how much was covered. #148 made the file count
+// asked for, and how much was covered. #144 made the file count
 // load-bearing as the cheapest signal that --include is wrong; with
 // several roots the covered count alone cannot carry that, because it
 // no longer says how many roots produced it.
@@ -637,5 +641,178 @@ message Cfg { string a = 1; }
 	}
 	if strings.Contains(out.String(), "(via") {
 		t.Errorf("a root's own violation needs no via-list\ngot: %s", out.String())
+	}
+}
+
+// --- review of #158 ---
+
+// An empty --schema value is not "no --schema": it resolves to the
+// working directory, which is a directory, which is now searched. The
+// unset-variable spelling `--schema=$DIR` has to stay the error it was
+// rather than become a green run over every .proto in the tree.
+func TestCheckSchema_EmptySchemaValueIsRejected(t *testing.T) {
+	dir := schemaRepo(t, true)
+	t.Chdir(dir)
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema="})
+	if err == nil {
+		t.Fatalf("an empty --schema checked the working directory instead of failing\ngot: %s", out.String())
+	}
+	if !strings.Contains(err.Error(), "-schema") {
+		t.Errorf("the error must name the flag, got %v", err)
+	}
+	if strings.Contains(out.String(), "OK") {
+		t.Errorf("nothing should be checked\ngot: %s", out.String())
+	}
+}
+
+// Same for --include: an empty value is the working directory, which
+// would silently become an import root and rename every root under it.
+func TestCheckSchema_EmptyIncludeValueIsRejected(t *testing.T) {
+	dir := schemaRepo(t, false)
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema=" + filepath.Join(dir, "svc", "a.proto"), "--include="})
+	if err == nil || !strings.Contains(err.Error(), "-include") {
+		t.Fatalf("got %v, want an empty --include rejected", err)
+	}
+}
+
+// --schema=./proto/svc --include=./proto is the narrowing shape: check
+// the files I own, resolve imports the way they are written. The root
+// names have to come from the --include, because that is what a
+// sibling's `import "svc/base.proto"` resolves to — naming them
+// relative to the searched directory instead compiles base.proto twice,
+// once as the root "base.proto" and once as the import "svc/base.proto",
+// and the run dies on duplicate symbols without reporting anything.
+func TestCheckSchema_DirSchemaUnderIncludeUsesIncludeRelativeNames(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "pxf", "annotations.proto"), annotationsSrc)
+	write(t, filepath.Join(dir, "svc", "base.proto"), `
+syntax = "proto3";
+package svc.v1;
+import "pxf/annotations.proto";
+message Base { repeated string labels = 1 [(pxf.default) = "nope"]; }
+`)
+	write(t, filepath.Join(dir, "svc", "a.proto"), `
+syntax = "proto3";
+package svc.v1;
+import "svc/base.proto";
+message Cfg { Base b = 1; }
+`)
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "svc"),
+		"--include=" + dir,
+	})
+	if !errors.Is(err, errSchemaViolations) {
+		t.Fatalf("got %v, want errSchemaViolations (a sibling import must not compile the file twice)", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "svc/base.proto: field") {
+		t.Errorf("want the -I-relative name, which is how a.proto imports it\ngot: %s", got)
+	}
+	if n := strings.Count(got, "svc.v1.Base.labels"); n != 1 {
+		t.Errorf("violation printed %d times, want 1\ngot: %s", n, got)
+	}
+}
+
+// Naming is decided by how many distinct roots there are, so it has to
+// be decided after duplicates are folded together: an accidentally
+// repeated flag is still one root and must report under one name.
+func TestCheckSchema_RepeatedIdenticalFlagKeepsTheSingleRootName(t *testing.T) {
+	dir := schemaRepo(t, true)
+	target := filepath.Join(dir, "common", "v1", "common.proto")
+
+	var once, twice bytes.Buffer
+	if err := checkSchemaCmd(&once, []string{"--schema=" + target, "--include=" + dir}); !errors.Is(err, errSchemaViolations) {
+		t.Fatalf("got %v, want errSchemaViolations", err)
+	}
+	if err := checkSchemaCmd(&twice, []string{"--schema=" + target, "--schema=" + target, "--include=" + dir}); !errors.Is(err, errSchemaViolations) {
+		t.Fatalf("got %v, want errSchemaViolations", err)
+	}
+	if once.String() != twice.String() {
+		t.Errorf("naming one root twice changed the report\nonce:  %s\ntwice: %s", once.String(), twice.String())
+	}
+}
+
+// pxf.ValidateFile documents its result as sorted by declaring file;
+// the single-root form inherited that, and folding roots together must
+// not trade it for "whichever root got there first".
+func TestCheckSchema_ViolationsStaySortedByFileAcrossRoots(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "pxf", "annotations.proto"), annotationsSrc)
+	for _, n := range []string{"zz", "aa"} {
+		write(t, filepath.Join(dir, n+".proto"), `
+syntax = "proto3";
+package `+n+`.v1;
+import "pxf/annotations.proto";
+message Cfg { repeated string tags = 1 [(pxf.default) = "nope"]; }
+`)
+	}
+	var out bytes.Buffer
+	// Named worst-case first: zz.proto is asked for before aa.proto.
+	err := checkSchemaCmd(&out, []string{
+		"--schema=" + filepath.Join(dir, "zz.proto"),
+		"--schema=" + filepath.Join(dir, "aa.proto"),
+		"--include=" + dir,
+	})
+	if !errors.Is(err, errSchemaViolations) {
+		t.Fatalf("got %v, want errSchemaViolations", err)
+	}
+	aa, zz := strings.Index(out.String(), "aa.proto:"), strings.Index(out.String(), "zz.proto:")
+	if aa < 0 || zz < 0 {
+		t.Fatalf("want a violation from each root\ngot: %s", out.String())
+	}
+	if aa > zz {
+		t.Errorf("violations must be sorted by declaring file, not by root order\ngot: %s", out.String())
+	}
+}
+
+// An import root is a directory, so a file is never inside itself. An
+// --include that names a .proto by mistake would otherwise become that
+// file's naming prefix and ask protocompile for a file called ".".
+func TestCheckSchema_IncludeNamingAFileIsNotAPrefix(t *testing.T) {
+	dir := schemaRepo(t, false)
+	a := filepath.Join(dir, "svc", "a.proto")
+	roots, _, err := resolveSchemaRoots(
+		[]string{a, filepath.Join(dir, "svc", "b.proto")},
+		[]string{a},
+	)
+	if err != nil {
+		t.Fatalf("resolveSchemaRoots: %v", err)
+	}
+	for _, r := range roots {
+		if r.name == "." || r.name == "" {
+			t.Errorf("root %s got the degenerate name %q", r.path, r.name)
+		}
+	}
+}
+
+// A directory that is both the --schema and the --include — the form
+// the README and the changelog recommend — must be searched once, not
+// handed to protocompile twice.
+func TestCheckSchema_ImportPathsAreDeduplicatedAcrossFlags(t *testing.T) {
+	dir := schemaRepo(t, false)
+	_, importPaths, err := resolveSchemaRoots([]string{dir}, []string{dir, dir})
+	if err != nil {
+		t.Fatalf("resolveSchemaRoots: %v", err)
+	}
+	if len(importPaths) != 1 || importPaths[0] != dir {
+		t.Errorf("importPaths = %v, want exactly [%s]", importPaths, dir)
+	}
+}
+
+// The invocation the README's "Checking a whole schema repo" section
+// prints, with the counts it claims.
+func TestCheckSchema_WholeRepoFormMatchesTheDocumentedOutput(t *testing.T) {
+	dir := schemaRepo(t, false)
+	var out bytes.Buffer
+	if err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--include=" + dir}); err != nil {
+		t.Fatalf("clean repo rejected: %v", err)
+	}
+	// 5 roots: pxf/annotations.proto, common/v1/common.proto and the
+	// three svc files. 6 files: those plus descriptor.proto.
+	if want := "OK\t5 root(s)\t6 file(s) checked\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }

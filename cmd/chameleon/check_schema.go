@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -13,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/bufbuild/protocompile"
@@ -56,11 +56,25 @@ func checkSchemaCmd(out io.Writer, args []string) error {
 	message := fs.String("message", "", "optional: also assert this message exists, e.g. myapp.v1.AppConfig")
 	var schemas []string
 	fs.Func("schema", ".proto file, or directory to search for .proto files (repeatable; required)", func(s string) error {
+		// An empty value is not "no value": it resolves to the working
+		// directory, which is a directory, which would now be searched.
+		// `--schema=$PROTO_DIR` with PROTO_DIR unset has to stay the
+		// error it was before directories were accepted, rather than a
+		// green run over every .proto in the tree.
+		if s == "" {
+			return errors.New("empty path")
+		}
 		schemas = append(schemas, s)
 		return nil
 	})
 	var includePaths []string
 	fs.Func("include", "directory to search for proto imports (repeatable, like protoc -I)", func(s string) error {
+		// Same reason: an empty --include is the working directory,
+		// which silently becomes an import root and renames every root
+		// underneath it.
+		if s == "" {
+			return errors.New("empty path")
+		}
 		includePaths = append(includePaths, s)
 		return nil
 	})
@@ -81,9 +95,16 @@ that OWNS the shared schema, not only in the ones that consume it.
 --schema is repeatable and also takes a directory, which is what a
 schema-only repo's CI wants: every root is compiled once, together, so
 a violation in a shared import is reported once rather than once per
-importing file. A directory is searched recursively for *.proto. Glob
-expansion is left to your shell — `+"`"+`--schema=proto/*.proto`+"`"+` works
-because the shell expands it into repeated flags.
+importing file.
+
+A directory is searched recursively for *.proto. Symlinks are not
+followed and there is no exclusion filter, so point it at the subtrees
+you own rather than at a tree that also vendors a second copy of a
+file its siblings import. Note that a glob is NOT a shorter spelling
+of this: no shell expands `+"`"+`--schema=proto/*.proto`+"`"+`, because the
+pattern has to match the whole word, flag name included — bash passes
+it through literally, zsh and fish abort. Pass the directory, or have
+your script build the repeated flags.
 
 --message is optional. It does not change what is checked — the rules
 are per file closure, not per message — it only additionally asserts
@@ -180,8 +201,10 @@ type schemaRoot struct {
 	// violations in it are reported as. See [resolveSchemaRoots].
 	name string
 	// arg is the --schema value it came from — the file itself, or the
-	// directory it was found under. Diagnostics quote this rather than
-	// name, because it is what the operator typed.
+	// directory it was found under. Diagnostics about the run as a
+	// whole quote this rather than name, because it is what the
+	// operator typed; one that has to distinguish two files found under
+	// the same argument quotes path instead.
 	arg string
 }
 
@@ -189,45 +212,49 @@ type schemaRoot struct {
 // of files to compile, plus the import paths to compile them against.
 //
 // A value that names a directory is searched recursively for *.proto;
-// a value that names a regular file is taken as-is. Glob expansion is
-// deliberately NOT implemented here: `**` means different things in
-// bash and fish and nothing in sh, so a glob this command expanded
-// itself would disagree with the same string typed at a prompt. A
-// shell that expands `proto/*.proto` hands back repeated --schema
-// flags, which this already accepts.
+// a value that names a regular file is taken as-is. Symlinks are not
+// followed and there is no exclusion filter, so a tree that vendors a
+// second copy of a file its siblings also import is not one this form
+// can check whole — it would compile both copies and fail on the
+// duplicate symbols.
+//
+// Glob expansion is deliberately NOT implemented here: `**` means
+// different things in bash and fish and nothing in sh, so a glob this
+// command expanded itself would disagree with the same string typed at
+// a prompt. No shell does it for you either — pathname expansion
+// matches the whole word, so `--schema=proto/*.proto` matches nothing
+// in bash (and is passed through literally) and aborts in zsh and
+// fish. The directory form is what replaces the glob; repeated flags
+// are for a script that builds them.
 //
 // Naming rules, which decide what violations are reported as:
 //
-//   - a file found under a directory --schema is named relative to
-//     that directory, which is also added as an import path — the
-//     protoc -I contract, and what makes a file's name here match how
-//     its siblings import it.
-//   - a file named directly by --schema is named by its basename, with
-//     its own directory added as an import path. This is what the
-//     single-file form has always done.
-//   - EXCEPT when there are several roots and the file lies under a
-//     directory --schema or an --include path: then the first rule
-//     wins, longest prefix first. Two roots naming the same file
-//     differently is not cosmetic — protocompile would compile it
-//     twice, once as a root and once as the other root's import, and
-//     report its violations under both names. That cannot happen with
-//     one root (nothing else is compiled to collide with it), which is
-//     why the single-file form keeps its unqualified name.
+//   - a file lying under an --include path is named relative to it,
+//     longest match first. --include is the operator stating the
+//     protoc -I contract — "imports around here are written relative
+//     to this" — so it outranks the directory the file was found
+//     under. --schema=./proto/svc --include=./proto names a file
+//     "svc/a.proto", not "a.proto", because that is how its siblings
+//     import it. Naming it "a.proto" would make protocompile compile
+//     it twice, once as a root and once as a sibling's import, and
+//     the run would die on duplicate symbols rather than report
+//     anything.
+//   - otherwise, a file found under a directory --schema is named
+//     relative to that directory, which is also added as an import
+//     path.
+//   - otherwise — a file named directly by --schema and lying under no
+//     import root — it is named by its basename, with its own
+//     directory added as an import path. This is what the single-file
+//     form has always done, and it is also what a lone --schema=a.proto
+//     keeps regardless of the rules above: with one root nothing else
+//     is compiled to collide with it.
 func resolveSchemaRoots(schemas, includePaths []string) ([]schemaRoot, []string, error) {
+	// candidate is a file some --schema value named, before duplicates
+	// are folded together and before it is given its compile name.
 	type candidate struct {
-		path   string // absolute
-		arg    string
-		prefix string // absolute dir the name is taken relative to, "" for basename
-	}
-
-	// Import roots contributed by directory --schema values and by
-	// --include, longest first so the naming rule below can prefer the
-	// most specific one.
-	var prefixes []string
-	addPrefix := func(p string) {
-		if !slices.Contains(prefixes, p) {
-			prefixes = append(prefixes, p)
-		}
+		path string // absolute
+		arg  string
+		dir  string // absolute directory --schema it was found under, "" if named directly
 	}
 
 	// Import paths are assembled in protoc's search order at the end:
@@ -235,10 +262,24 @@ func resolveSchemaRoots(schemas, includePaths []string) ([]schemaRoot, []string,
 	// resolves), then directories handed to --schema, then --include.
 	var (
 		cands          []candidate
+		seenPath       = map[string]bool{}
 		fileDirs       []string
 		dirImports     []string
 		includeImports []string
 	)
+	// The same file named twice — `--schema=proto --schema=proto/a.proto`,
+	// or a repeated flag — is one root, not two, and has to be folded
+	// together before anything downstream counts candidates: whether
+	// there is one root or several is what decides how roots are named.
+	// First mention wins, so the name follows the argument order the
+	// operator wrote.
+	addCand := func(path, arg, dir string) {
+		if seenPath[path] {
+			return
+		}
+		seenPath[path] = true
+		cands = append(cands, candidate{path: path, arg: arg, dir: dir})
+	}
 	for _, arg := range schemas {
 		abs, err := filepath.Abs(arg)
 		if err != nil {
@@ -256,12 +297,9 @@ func resolveSchemaRoots(schemas, includePaths []string) ([]schemaRoot, []string,
 			if len(found) == 0 {
 				return nil, nil, fmt.Errorf("--schema %q: no .proto files found under this directory", arg)
 			}
-			addPrefix(abs)
-			if !slices.Contains(dirImports, abs) {
-				dirImports = append(dirImports, abs)
-			}
+			dirImports = appendUnique(dirImports, abs)
 			for _, f := range found {
-				cands = append(cands, candidate{path: f, arg: arg, prefix: abs})
+				addCand(f, arg, abs)
 			}
 			continue
 		}
@@ -272,42 +310,45 @@ func resolveSchemaRoots(schemas, includePaths []string) ([]schemaRoot, []string,
 		if !st.Mode().IsRegular() {
 			return nil, nil, fmt.Errorf("read schema %s: not a regular file", arg)
 		}
-		cands = append(cands, candidate{path: abs, arg: arg})
+		addCand(abs, arg, "")
 	}
 	for _, p := range includePaths {
 		abs, err := filepath.Abs(p)
 		if err != nil {
 			return nil, nil, fmt.Errorf("resolve --include %q: %w", p, err)
 		}
-		addPrefix(abs)
-		if !slices.Contains(includeImports, abs) {
-			includeImports = append(includeImports, abs)
-		}
+		includeImports = appendUnique(includeImports, abs)
 	}
 
-	// Longest prefix wins, so a file under both ./proto and
+	// Longest match first, so a file under both ./proto and
 	// ./proto/myapp is named relative to the latter — the same rule
-	// protoc applies when several -I paths match.
-	longest := append([]string(nil), prefixes...)
-	sort.Slice(longest, func(i, j int) bool { return len(longest[i]) > len(longest[j]) })
+	// protoc applies when several -I paths match. Kept in two lists
+	// because an --include outranks a directory --schema whatever the
+	// lengths are; see the naming rules above.
+	longestFirst := func(a, b string) int { return len(b) - len(a) }
+	includePrefixes := slices.Clone(includeImports)
+	slices.SortFunc(includePrefixes, longestFirst)
+	dirPrefixes := slices.Clone(dirImports)
+	slices.SortFunc(dirPrefixes, longestFirst)
 
 	multi := len(cands) > 1
 	var (
-		roots   []schemaRoot
-		byPath  = map[string]int{}
-		byName  = map[string]schemaRoot{}
-		dirSeen = map[string]bool{}
+		roots  []schemaRoot
+		byName = map[string]string{} // compile name -> the absolute path holding it
 	)
 	for _, c := range cands {
-		prefix := c.prefix
-		if prefix == "" && multi {
-			for _, p := range longest {
-				if under(p, c.path) {
-					prefix = p
-					break
-				}
+		var prefix string
+		switch {
+		case c.dir != "":
+			if prefix = firstContaining(includePrefixes, c.path); prefix == "" {
+				prefix = c.dir
+			}
+		case multi:
+			if prefix = firstContaining(includePrefixes, c.path); prefix == "" {
+				prefix = firstContaining(dirPrefixes, c.path)
 			}
 		}
+
 		var name string
 		if prefix != "" {
 			rel, err := filepath.Rel(prefix, c.path)
@@ -319,40 +360,57 @@ func resolveSchemaRoots(schemas, includePaths []string) ([]schemaRoot, []string,
 			name = filepath.Base(c.path)
 			// The file's own directory has to be searchable for the
 			// basename to resolve.
-			if dir := filepath.Dir(c.path); !dirSeen[dir] {
-				dirSeen[dir] = true
-				fileDirs = append(fileDirs, dir)
-			}
+			fileDirs = appendUnique(fileDirs, filepath.Dir(c.path))
 		}
 
-		// The same file named twice — `--schema=proto --schema=proto/a.proto`,
-		// or a repeated flag — is one root, not two. First mention wins,
-		// so the name is a function of the argument order the operator
-		// wrote rather than of map iteration.
-		if _, dup := byPath[c.path]; dup {
-			continue
-		}
 		if prev, clash := byName[name]; clash {
 			return nil, nil, fmt.Errorf(
-				"--schema %q and %q both compile as %q: pass --include=<common root> so they can be told apart",
-				prev.path, c.path, name)
+				"%s and %s both compile as %q: pass --include=<common root> so they can be told apart",
+				prev, c.path, name)
 		}
-		r := schemaRoot{path: c.path, name: name, arg: c.arg}
-		byPath[c.path] = len(roots)
-		byName[name] = r
-		roots = append(roots, r)
+		byName[name] = c.path
+		roots = append(roots, schemaRoot{path: c.path, name: name, arg: c.arg})
 	}
 
-	importPaths := make([]string, 0, len(fileDirs)+len(dirImports)+len(includeImports))
-	importPaths = append(importPaths, fileDirs...)
-	importPaths = append(importPaths, dirImports...)
-	importPaths = append(importPaths, includeImports...)
+	// Deduplicated across all three lists, not just within each: a
+	// directory is commonly both the --schema and the --include, which
+	// would otherwise have protocompile search it twice for every
+	// import it cannot resolve.
+	var importPaths []string
+	for _, p := range slices.Concat(fileDirs, dirImports, includeImports) {
+		importPaths = appendUnique(importPaths, p)
+	}
 	return roots, importPaths, nil
+}
+
+// appendUnique appends p to dst unless it is already there. The lists
+// it guards are import roots — a handful, typically one — so a linear
+// scan beats carrying a parallel set, and it keeps the order the
+// caller built.
+func appendUnique(dst []string, p string) []string {
+	if slices.Contains(dst, p) {
+		return dst
+	}
+	return append(dst, p)
+}
+
+// firstContaining returns the first directory in dirs that contains
+// path, or "" if none does. dirs is ordered longest first by the
+// caller, so the most specific import root wins.
+func firstContaining(dirs []string, path string) string {
+	for _, d := range dirs {
+		if under(d, path) {
+			return d
+		}
+	}
+	return ""
 }
 
 // protoFilesUnder returns every *.proto file under dir, recursively,
 // in lexical order (what WalkDir already guarantees) so a run's output
-// does not depend on directory iteration order.
+// does not depend on directory iteration order. WalkDir does not
+// follow symlinks, so a subtree symlinked into place is not searched —
+// see [resolveSchemaRoots] on what the directory form does not cover.
 func protoFilesUnder(dir string) ([]string, error) {
 	var found []string
 	err := filepath.WalkDir(dir, func(path string, d iofs.DirEntry, err error) error {
@@ -371,14 +429,18 @@ func protoFilesUnder(dir string) ([]string, error) {
 	return found, nil
 }
 
-// under reports whether path is inside dir. Both must be absolute and
-// cleaned. Prefix comparison alone would call /a/bc a child of /a/b.
+// under reports whether path is strictly inside dir. Both must be
+// absolute and cleaned. Prefix comparison alone would call /a/bc a
+// child of /a/b; equality is excluded as well, because an import root
+// is a directory and a file is never inside itself — an --include that
+// names a .proto file by mistake would otherwise become that file's
+// naming prefix and compile it under the name ".".
 func under(dir, path string) bool {
 	rel, err := filepath.Rel(dir, path)
 	if err != nil {
 		return false
 	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // compileRoots compiles every root in one pass, so a shared import is
@@ -448,8 +510,10 @@ func (r rootedViolation) line(annotate bool) string {
 }
 
 type schemaReport struct {
-	// violations are deduplicated across roots and ordered by first
-	// sighting, roots in the order the operator named them.
+	// violations are deduplicated across roots and ordered the way
+	// [pxf.ValidateFile] orders one root's — by declaring file, then by
+	// element. Each one's roots are in the order the operator named
+	// them.
 	violations []rootedViolation
 	// closure is the number of distinct files the roots span, imports
 	// included and counted once.
@@ -486,6 +550,19 @@ func checkRoots(roots []schemaRoot, files linker.Files) schemaReport {
 			rep.violations[idx].roots = append(rep.violations[idx].roots, r.name)
 		}
 	}
+	// pxf.ValidateFile documents its result as sorted by declaring file
+	// and then by element, and the single-root form inherited that.
+	// Folding several roots together loses it: first-sighting order is
+	// a function of which root happened to reach a file first, which is
+	// the property this report exists to keep out of the output.
+	// Stable, so the element order ValidateFile already fixed within
+	// one file survives.
+	slices.SortStableFunc(rep.violations, func(a, b rootedViolation) int {
+		return cmp.Or(
+			strings.Compare(a.v.File, b.v.File),
+			strings.Compare(a.v.Element, b.v.Element),
+		)
+	})
 	rep.closure = len(fset)
 	return rep
 }

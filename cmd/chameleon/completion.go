@@ -98,7 +98,7 @@ _chameleon() {
     subcmds=(
         'explain:Resolve a config and print per-field provenance'
         'verify:Check @header.content_sha256 of every layer in a chain'
-        'check-schema:Check a .proto and its imports against the PXF bind-time rules'
+        'check-schema:Check .proto files and their imports against the PXF bind-time rules'
         'migrate:Bulk-edit layer files in a chain spec'
         'hash:Print the canonical body SHA-256 of a single layer file'
         'lint:Flag pxfv1.Secret.Value reads / writes in consumer code'
@@ -135,7 +135,7 @@ _chameleon() {
             ;;
         check-schema)
             _arguments \
-                '--schema=[.proto file to check]:proto file:_files -g "*.proto"' \
+                '*--schema=[.proto file, or directory to search (repeatable)]:proto file or dir:_files -g "*.proto"' \
                 '--message=[optional: assert this message exists]:name:' \
                 '*--include=[import search directory]:dir:_files -/' \
                 '--help'
@@ -179,7 +179,7 @@ complete -c chameleon -f
 # Top-level subcommands
 complete -c chameleon -n '__fish_use_subcommand' -a explain    -d 'Resolve a config and print per-field provenance'
 complete -c chameleon -n '__fish_use_subcommand' -a verify     -d 'Check @header.content_sha256 of every layer'
-complete -c chameleon -n '__fish_use_subcommand' -a check-schema -d 'Check a .proto against the PXF bind-time rules'
+complete -c chameleon -n '__fish_use_subcommand' -a check-schema -d 'Check .proto files against the PXF bind-time rules'
 complete -c chameleon -n '__fish_use_subcommand' -a migrate    -d 'Bulk-edit layer files'
 complete -c chameleon -n '__fish_use_subcommand' -a hash       -d 'Print canonical body SHA-256'
 complete -c chameleon -n '__fish_use_subcommand' -a lint       -d 'Flag pxfv1.Secret.Value reads / writes in consumer code'
@@ -204,7 +204,7 @@ complete -c chameleon -n '__fish_seen_subcommand_from verify' -l ctx     -d 'key
 complete -c chameleon -n '__fish_seen_subcommand_from verify' -l strict  -d 'Fail on missing content_sha256'
 
 # check-schema
-complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l schema  -d '.proto file to check' -r
+complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l schema  -d '.proto file or directory to check (repeatable)' -r
 complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l message -d 'Optional: assert this message exists'
 complete -c chameleon -n '__fish_seen_subcommand_from check-schema' -l include -d 'Import search directory (repeatable)' -r
 
