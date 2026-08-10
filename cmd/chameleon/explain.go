@@ -362,17 +362,17 @@ func decrypterOption(dec crypt.Decrypter) resolver.Option {
 //
 //  1. Every source declared in spec.GetSources() — interpret its
 //     `kind` + `options`. Supported kinds:
-//       - "fs": filesystem-backed. `options["root"]` is the FS root,
-//         resolved relative to chainDir (the chain.pxf's own
-//         directory) when not absolute. When no root is supplied,
-//         fall back to layersDir so a `{ kind = "fs" }` entry
-//         behaves like the historical single-source case.
-//       - "env": process-environment-backed. `options["prefix"]`
-//         optionally narrows which env vars participate (matches
-//         only names that begin with the prefix; remainder is
-//         compared to the uppercased dotted field path). Requires
-//         the resolved message descriptor so the source can walk
-//         the schema and coerce values at Open time.
+//     - "fs": filesystem-backed. `options["root"]` is the FS root,
+//     resolved relative to chainDir (the chain.pxf's own
+//     directory) when not absolute. When no root is supplied,
+//     fall back to layersDir so a `{ kind = "fs" }` entry
+//     behaves like the historical single-source case.
+//     - "env": process-environment-backed. `options["prefix"]`
+//     optionally narrows which env vars participate (matches
+//     only names that begin with the prefix; remainder is
+//     compared to the uppercased dotted field path). Requires
+//     the resolved message descriptor so the source can walk
+//     the schema and coerce values at Open time.
 //     Unknown kinds error so callers don't silently get the
 //     wrong behavior.
 //

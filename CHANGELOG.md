@@ -130,6 +130,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`resolver.Resolve` no longer stutters the pass name in defaults errors.** The failure surfaced as `resolver: defaults: defaults: <path>: …` because both `defaults.Apply` and the resolver prefixed it. The resolver now wraps with a bare `resolver: `, matching how it wraps `validate`, so the error reads `resolver: defaults: <path>: …` as the docs describe.
 
+### Internal
+
+- **Formatting is gofumpt now, and CI enforces it.** The repo had drifted: `make fmt-check` existed but was not in `make ci` or the CI matrix, so 24 of 162 tracked `.go` files were not even `gofmt`-clean, and "don't run `make fmt`" had become working folklore because a repo-wide run would have buried any real diff. Normalized in one pass — 25 files, formatting only — and the check is now a step in the `lint` job and a prerequisite of `make ci`, so it cannot drift again.
+
+  gofumpt is applied **through the pinned golangci-lint**, not a standalone binary, and that is the load-bearing detail: a separately installed `gofumpt` drifts ahead of the version golangci-lint bundles (v0.10.0 splits `f(a, b,` onto its own line where the bundled build leaves it), and a formatter whose check and fix disagree is worse than no formatter at all. `make tools` already installs the pinned version and CI already runs it, so this adds no tool anywhere.
+
+  Scope follows golangci-lint's own file discovery, which excludes generated code and the analyzer fixtures under `cmd/chameleon/testdata` for free — reformatting the first would be reverted by `make generate`, and the second would shift the line numbers `lint_test.go` asserts on.
+
 ## [0.22.1] — 2026-06-03
 
 Patch release — dependency-only bump to [trendvidia/sops v4.0.1](https://github.com/trendvidia/sops/releases/tag/v4.0.1), plus a substantial round of test hardening across the chameleon code base (~25 PRs landed in `tests/` branches between #107 and #125). No chameleon API surface change, no operator action required. Drop-in upgrade for every consumer.

@@ -12,10 +12,10 @@ import (
 	"testing"
 
 	"filippo.io/age"
-	"github.com/trendvidia/sops/v4/age/keypb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
+	"github.com/trendvidia/sops/v4/age/keypb"
 
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	chsops "github.com/trendvidia/chameleon/sops"

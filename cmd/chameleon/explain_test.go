@@ -110,7 +110,9 @@ func TestCompileSchema_MissingSchema(t *testing.T) {
 // "base", "secrets") via layers without declaring them in the
 // spec.sources map. The old code only registered "default", so
 // resolver.New refused to start with
-//   `layer references unregistered source: source="secrets"`.
+//
+//	`layer references unregistered source: source="secrets"`.
+//
 // Fix: every layer-referenced name not in spec.sources gets
 // auto-registered at layersDir.
 func TestBuildSources_AutoRegistersUndeclaredLayerSources(t *testing.T) {
@@ -141,12 +143,13 @@ func TestBuildSources_AutoRegistersUndeclaredLayerSources(t *testing.T) {
 
 // TestBuildSources_DeclaredRelativeRootAnchorsAtChainDir is the
 // motivating fix for the website/config bug report:
-//   chain.pxf declares `root = "./layers"` next to itself, and the
-//   user passes `--layers layers`. The author wrote `./layers`
-//   meaning "relative to chain.pxf", not "relative to whatever
-//   --layers was set to". Anchoring at chainDir resolves correctly;
-//   anchoring at layersDir double-joined to `layers/layers/...`
-//   and produced ErrRequiredLayerMissing.
+//
+//	chain.pxf declares `root = "./layers"` next to itself, and the
+//	user passes `--layers layers`. The author wrote `./layers`
+//	meaning "relative to chain.pxf", not "relative to whatever
+//	--layers was set to". Anchoring at chainDir resolves correctly;
+//	anchoring at layersDir double-joined to `layers/layers/...`
+//	and produced ErrRequiredLayerMissing.
 func TestBuildSources_DeclaredRelativeRootAnchorsAtChainDir(t *testing.T) {
 	chainDir := t.TempDir()
 	write(t, filepath.Join(chainDir, "layers", "base.pxf"), "x: 1")

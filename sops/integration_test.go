@@ -37,11 +37,11 @@ import (
 	"testing"
 
 	"filippo.io/age"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/trendvidia/sops/v4"
 	sopsage "github.com/trendvidia/sops/v4/age"
 	"github.com/trendvidia/sops/v4/encrypt"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"

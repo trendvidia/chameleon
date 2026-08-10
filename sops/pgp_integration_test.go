@@ -43,11 +43,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/trendvidia/sops/v4"
 	"github.com/trendvidia/sops/v4/encrypt"
 	sopspgp "github.com/trendvidia/sops/v4/pgp"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
@@ -95,7 +95,7 @@ func isolatedGNUPGHOME(t *testing.T) string {
 
 // generateTestPGPKey runs `gpg --quick-gen-key` with a deterministic
 // UID and returns the fingerprint. Uses --pinentry-mode loopback +
-// --passphrase '' to skip interactive prompts (the secret key has
+// --passphrase ” to skip interactive prompts (the secret key has
 // no passphrase, which is fine for a throwaway test key).
 //
 // Algorithm "default default 0" = gpg's defaults (rsa3072 today),

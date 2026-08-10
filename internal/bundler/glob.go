@@ -64,7 +64,7 @@ func matchSegments(pat, path []string) bool {
 
 // validGlob reports whether pattern is syntactically well-formed.
 // Catches the two common authoring mistakes — `pre**fix` (`**` not
-// a whole segment) and `` (empty pattern). Returns nil on success.
+// a whole segment) and “ (empty pattern). Returns nil on success.
 func validGlob(pattern string) error {
 	if pattern == "" {
 		return errEmptyPattern

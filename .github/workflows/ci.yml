@@ -106,6 +106,12 @@ jobs:
         with:
           version: v2.12.2
           working-directory: cmd/chameleon
+      # Runs after the actions above because they are what put the pinned
+      # golangci-lint on PATH; `make fmt-check` shells out to it rather than
+      # to a standalone gofumpt, so the version that checks formatting here
+      # is the same one `make fmt` applies locally.
+      - name: gofumpt (all modules)
+        run: make fmt-check
 
   bench:
     name: bench (vs main)

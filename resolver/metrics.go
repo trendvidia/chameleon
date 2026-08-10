@@ -14,11 +14,11 @@ import (
 // no [WithMeterProvider] option the noop provider is used and every
 // call is a cheap no-op.
 type instruments struct {
-	resolveDuration    metric.Float64Histogram
-	resolveErrors      metric.Int64Counter
-	layerCount         metric.Int64Histogram
-	secretCount        metric.Int64Histogram
-	clobberedMetadata  metric.Int64Counter
+	resolveDuration   metric.Float64Histogram
+	resolveErrors     metric.Int64Counter
+	layerCount        metric.Int64Histogram
+	secretCount       metric.Int64Histogram
+	clobberedMetadata metric.Int64Counter
 }
 
 const meterName = "github.com/trendvidia/chameleon/resolver"

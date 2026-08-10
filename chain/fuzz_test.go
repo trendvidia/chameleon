@@ -14,7 +14,8 @@ import (
 // never panic — invalid inputs return errors, not crashes.
 //
 // Run with:
-//   go test ./chain/ -fuzz=FuzzExpand -fuzztime=30s
+//
+//	go test ./chain/ -fuzz=FuzzExpand -fuzztime=30s
 //
 // The fixed spec exercises the path templating with both ${env} and
 // ${ctx.region} references, so the fuzzed inputs flow through both
@@ -61,4 +62,3 @@ layers = [
 		_, _ = chain.Options{AllowUnknownContextKeys: true}.Expand(spec, env, ctx)
 	})
 }
-

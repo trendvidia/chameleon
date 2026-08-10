@@ -209,10 +209,10 @@ func TestParseTransform_DeleteAndRenameHappy(t *testing.T) {
 
 func TestParseTransform_Errors(t *testing.T) {
 	cases := []struct {
-		name                   string
-		kind, path, from, to   string
-		sv, iv, bv             string
-		want                   string
+		name                 string
+		kind, path, from, to string
+		sv, iv, bv           string
+		want                 string
 	}{
 		{"missing_kind", "", "f", "", "", "x", "", "", "--transform"},
 		{"unknown_kind", "set-default", "f", "", "", "x", "", "", "unknown transform"},
