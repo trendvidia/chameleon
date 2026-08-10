@@ -29,9 +29,11 @@
 // with plaintext layers links no key-management code at all. A program
 // with encrypted layers picks a backend up by blank-importing one
 // (chameleon/sops is the in-tree one), or passes its own to
-// [WithDecrypter]. See the crypt package doc for the model, and
-// trendvidia/chameleon#130 for what it costs when the resolver gets
-// this wrong.
+// [WithDecrypter]. Registration follows the module graph, so a program
+// that wants an encrypted layer to fail rather than be decrypted says
+// so with [WithoutDecrypter]. See the crypt package doc for the model,
+// and trendvidia/chameleon#130 for what it costs when the resolver
+// gets this wrong.
 //
 // Per-call pipeline:
 //
@@ -115,6 +117,7 @@ type Resolver[T proto.Message] struct {
 	spec              proto.Message
 	sources           map[string]source.Source
 	dec               crypt.Decrypter
+	noDec             bool
 	trace             bool
 	strictMetadata    bool
 	maxLayerBytes     int64
@@ -128,7 +131,10 @@ type Option func(*config)
 type config struct {
 	sources        map[string]source.Source
 	dec            crypt.Decrypter
+	decSet         bool // WithDecrypter was passed, even with a nil Decrypter
 	decName        string
+	decNamed       bool // WithDecrypterNamed was passed, even with an empty name
+	noDec          bool
 	trace          bool
 	strictMetadata bool
 	maxLayerBytes  int64
@@ -155,9 +161,20 @@ func WithSource(name string, src source.Source) Option {
 // It is not needed for the common case: with exactly one backend
 // registered (say, a blank import of chameleon/sops), the resolver
 // selects it on its own the first time an encrypted layer appears.
-// Passing nil is the same as not passing the option.
+//
+// A nil Decrypter fails [New] rather than being ignored: before the
+// registry, "no decrypter" and "do not decrypt" were the same thing,
+// so WithDecrypter(nil) reading as "not passed" was harmless. It is
+// not any more — not passing the option now means auto-select — so a
+// caller whose constructor returned nil would silently get ambient
+// credentials instead of the refusal they used to get. Use
+// [WithoutDecrypter] to say no. (This catches a nil interface; a typed
+// nil — WithDecrypter((*myDecrypter)(nil)) — is a non-nil interface
+// value and is installed as given, as everywhere else in Go.)
+//
+// Mutually exclusive with [WithDecrypterNamed] and [WithoutDecrypter].
 func WithDecrypter(d crypt.Decrypter) Option {
-	return func(c *config) { c.dec = d }
+	return func(c *config) { c.dec, c.decSet = d, true }
 }
 
 // WithDecrypterNamed selects a registered backend by name — the
@@ -168,10 +185,31 @@ func WithDecrypter(d crypt.Decrypter) Option {
 //
 // [New] fails if no backend is registered under that name, listing the
 // ones that are, so a typo or a missing import surfaces at
-// construction rather than at the first encrypted layer. Mutually
-// exclusive with [WithDecrypter].
+// construction rather than at the first encrypted layer. An empty name
+// is an error too, rather than a silent fall-through to auto-selection:
+// a caller reading the name out of config or an env var wants the
+// unset case to say so, not to pick whatever the build happens to
+// link. Mutually exclusive with [WithDecrypter] and
+// [WithoutDecrypter].
 func WithDecrypterNamed(name string) Option {
-	return func(c *config) { c.decName = name }
+	return func(c *config) { c.decName, c.decNamed = name, true }
+}
+
+// WithoutDecrypter disables decryption for this Resolver: an encrypted
+// layer returns [ErrNoDecrypter] even if the build has a backend
+// registered.
+//
+// Needed because "no decrypter configured" and "do not decrypt" stopped
+// being the same thing once the registry landed. Registration follows
+// the module graph, so a program links a backend as soon as anything in
+// its dependency tree imports one — this is how a caller says no
+// anyway. The CLI's `--decrypter=none` is exactly that: it must fail on
+// an encrypted layer rather than reach for ambient KMS/age credentials
+// just because the binary also ships `chameleon bundle`.
+//
+// Mutually exclusive with [WithDecrypter] and [WithDecrypterNamed].
+func WithoutDecrypter() Option {
+	return func(c *config) { c.noDec = true }
 }
 
 // WithTrace turns on per-field provenance tracking. When enabled,
@@ -269,16 +307,26 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 		// fall through to "unregistered source" later.
 		return nil, errors.New(`resolver: "default" source required (use WithSource("default", ...))`)
 	}
-	if cfg.dec != nil && cfg.decName != "" {
-		return nil, errors.New("resolver: WithDecrypter and WithDecrypterNamed are mutually exclusive")
+	// The three decrypter options are three different answers to the
+	// same question, so any two of them together is a wiring mistake
+	// rather than a precedence puzzle.
+	if picked := btoi(cfg.decSet) + btoi(cfg.decNamed) + btoi(cfg.noDec); picked > 1 {
+		return nil, errors.New("resolver: WithDecrypter, WithDecrypterNamed and WithoutDecrypter are mutually exclusive")
 	}
-	if cfg.decName != "" {
+	if cfg.decSet && cfg.dec == nil {
+		return nil, errors.New(`resolver: WithDecrypter: nil Decrypter (use WithoutDecrypter to disable decryption)`)
+	}
+	if cfg.decNamed {
+		if cfg.decName == "" {
+			return nil, errors.New(`resolver: WithDecrypterNamed: empty backend name (use WithoutDecrypter to disable decryption)`)
+		}
 		b, err := crypt.Get(cfg.decName)
 		if err != nil {
 			return nil, fmt.Errorf("resolver: WithDecrypterNamed: %w", err)
 		}
 		if b.Decrypter == nil {
-			return nil, fmt.Errorf("resolver: WithDecrypterNamed: backend %q is encrypt-only", cfg.decName)
+			return nil, fmt.Errorf("resolver: WithDecrypterNamed: %w: backend %q is encrypt-only",
+				crypt.ErrEncryptOnlyBackend, cfg.decName)
 		}
 		cfg.dec = b.Decrypter
 	}
@@ -294,6 +342,7 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 		spec:              spec,
 		sources:           cfg.sources,
 		dec:               cfg.dec,
+		noDec:             cfg.noDec,
 		trace:             cfg.trace,
 		strictMetadata:    cfg.strictMetadata,
 		maxLayerBytes:     cfg.maxLayerBytes,
@@ -370,6 +419,20 @@ type Trace struct {
 	// occurred. Surfaced by `chameleon explain` as a separate
 	// section.
 	ClobberedMetadata []ClobberRecord
+
+	// Decrypter names the crypt-registry backend this Resolve
+	// auto-selected, and is set only in that case: empty when no
+	// encrypted layer was reached, and empty when the caller named
+	// the Decrypter itself via WithDecrypter / WithDecrypterNamed
+	// (they already know which one it is).
+	//
+	// Auto-selection is the case worth reporting because it is the
+	// one nobody wrote down — registration follows the module graph,
+	// so a dependency can put a backend in a build without the build's
+	// author choosing it. This is the per-call answer to "who
+	// decrypted my layers"; [crypt.Registered] only says what was
+	// available.
+	Decrypter string
 }
 
 // ClobberRecord describes a single WKT-metadata clobber detected at
@@ -516,8 +579,8 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 	// backend — the sole registered one, looked up the first time an
 	// encrypted layer actually appears. Lazy on purpose: a chain with
 	// no encrypted entries must never require a backend, and the
-	// lookup result is cached here so a chain with twenty encrypted
-	// layers takes one read lock, not twenty.
+	// lookup result is reused for the rest of this call, so a chain
+	// with twenty encrypted layers takes one read lock, not twenty.
 	dec := r.dec
 
 	for _, ref := range refs {
@@ -525,13 +588,19 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 		if !ok {
 			return nil, fmt.Errorf("%w: layer=%q source=%q", ErrNoSource, ref.EntryID, ref.Source)
 		}
+		if ref.Encrypted && r.noDec {
+			return nil, fmt.Errorf("%w: layer=%q: decryption disabled (WithoutDecrypter)", ErrNoDecrypter, ref.EntryID)
+		}
 		if ref.Encrypted && dec == nil {
-			d, _, lookupErr := crypt.SoleDecrypter()
+			d, name, lookupErr := crypt.SoleDecrypter()
 			if lookupErr != nil {
 				return nil, fmt.Errorf("%w: layer=%q: %w%s",
 					ErrNoDecrypter, ref.EntryID, lookupErr, decrypterHint(lookupErr))
 			}
 			dec = d
+			if trace != nil {
+				trace.Decrypter = name
+			}
 		}
 
 		layer := r.fresh()
@@ -659,6 +728,15 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 // r.sample.
 func (r *Resolver[T]) fresh() T {
 	return r.sample.ProtoReflect().New().Interface().(T)
+}
+
+// btoi counts a set option, so the mutual-exclusion check in [New]
+// reads as "how many of the three were passed".
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // decrypterHint turns a [crypt.SoleDecrypter] failure into the next

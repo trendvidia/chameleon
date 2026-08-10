@@ -5,6 +5,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -143,15 +144,20 @@ func resolveAppPath(app *chameleonv1.AppConfig, p string) string {
 
 // applyAppDefaults merges app's values into the supplied flag
 // pointers when the flag is empty. Explicit CLI flags ALWAYS win
-// — this function never overwrites a non-empty target. Path-typed
+// — this function never overwrites a target the user set. Path-typed
 // fields (schema, chain, layers, include) are resolved against
 // app.Root via resolveAppPath. A nil app is a no-op so callers can
 // pass the result of selectApp unconditionally.
 //
+// fs is the command's parsed FlagSet, used only to tell "the user
+// typed this" from "this is the flag's Go default" for flags whose
+// default is not the empty string. Pass nil to treat every flag as
+// untyped (unit tests that exercise the merge rules directly).
+//
 // Pointer arguments rather than a return value keep the call sites
 // in each Cmd readable: the flag variables are already declared at
 // the top of the Cmd; this fills in any that are still empty.
-func applyAppDefaults(app *chameleonv1.AppConfig, schema, message, chainPath, layersDir, env, decrypter *string, includePaths *[]string) {
+func applyAppDefaults(fs *flag.FlagSet, app *chameleonv1.AppConfig, schema, message, chainPath, layersDir, env, decrypter *string, includePaths *[]string) {
 	if app == nil {
 		return
 	}
@@ -175,10 +181,14 @@ func applyAppDefaults(app *chameleonv1.AppConfig, schema, message, chainPath, la
 	if *env == "" {
 		*env = app.GetEnv()
 	}
-	// --decrypter's Go default is "none" (not ""); same shape as
-	// --layers above. Only adopt the config's decrypter when the
-	// CLI either didn't pass --decrypter or passed --decrypter=none.
-	if *decrypter == "" || *decrypter == "none" {
+	// --decrypter's Go default is "none" (not ""), so an unset flag
+	// still looks set — but unlike --layers above, "is it set?"
+	// cannot be answered from the value: `--decrypter=none` is a
+	// deliberate opt-out (it wires resolver.WithoutDecrypter), and
+	// reading it as "unset" would let a config file turn decryption
+	// back on for an operator who explicitly declined it, with
+	// `reveal` then printing plaintext. So ask the FlagSet instead.
+	if !flagSet(fs, "decrypter") && (*decrypter == "" || *decrypter == "none") {
 		if app.GetDecrypter() != "" {
 			*decrypter = app.GetDecrypter()
 		}
@@ -190,4 +200,24 @@ func applyAppDefaults(app *chameleonv1.AppConfig, schema, message, chainPath, la
 		}
 		*includePaths = resolved
 	}
+}
+
+// flagSet reports whether the user actually typed -name on the command
+// line, as opposed to the flag still holding its Go default. fs.Visit
+// walks only the flags Parse saw, which is the one thing the flag
+// package can tell us that the value cannot.
+//
+// A nil fs reports false: callers that merge defaults without a
+// command line (unit tests) get the value-only rules.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	if fs == nil {
+		return false
+	}
+	found := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }

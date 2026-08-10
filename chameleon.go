@@ -29,6 +29,21 @@ import (
 // package doc). Without one, an encrypted layer fails the resolve
 // with resolver.ErrNoDecrypter.
 //
+// That auto-selection is a behavior change, and Load is the entry
+// point that cannot decline it: up to v0.22.1 an encrypted layer
+// always failed here, because Load passes no Decrypter. It now
+// succeeds whenever *anything* in the module graph registers a
+// backend, which a transitive dependency can do without the calling
+// program's knowledge. Load takes no options, so there is no
+// [resolver.WithoutDecrypter] to reach for — a caller who needs
+// encrypted layers to stay refused has to build the Resolver
+// directly:
+//
+//	r, err := resolver.New[T](sample, spec,
+//	    resolver.WithSource("default", source.FS(layersFS)),
+//	    resolver.WithoutDecrypter(),
+//	)
+//
 // Equivalent to:
 //
 //	r, err := resolver.New[T](sample, spec,
@@ -44,8 +59,9 @@ import (
 // prescribe how to load it (file, embed, dynamic compile via
 // bufbuild/protocompile, etc.).
 //
-// For multiple logical sources, request-context values, trace, or an
-// explicitly constructed Decrypter, use [resolver.New] directly.
+// For multiple logical sources, request-context values, trace, an
+// explicitly constructed Decrypter, or no decrypter at all, use
+// [resolver.New] directly.
 func Load[T proto.Message](sample T, spec proto.Message, layersFS fs.FS, env string) (*resolver.Resolution[T], error) {
 	r, err := resolver.New[T](sample, spec,
 		resolver.WithSource("default", source.FS(layersFS)),

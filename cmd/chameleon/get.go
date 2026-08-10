@@ -114,7 +114,7 @@ Flags:`)
 	if err != nil {
 		return err
 	}
-	applyAppDefaults(app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
+	applyAppDefaults(fs, app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
 
 	if *schema == "" || *message == "" {
 		fs.Usage()
@@ -179,9 +179,7 @@ Flags:`)
 	for name, src := range sources {
 		opts = append(opts, resolver.WithSource(name, src))
 	}
-	if dec != nil {
-		opts = append(opts, resolver.WithDecrypter(dec))
-	}
+	opts = append(opts, decrypterOption(dec))
 	r, err := resolver.New[*dynamicpb.Message](sample, spec, opts...)
 	if err != nil {
 		return err

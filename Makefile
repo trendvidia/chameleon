@@ -52,6 +52,10 @@ help: ## Show this help.
 
 # --- Build / install ----------------------------------------------------------
 
+.PHONY: compile
+compile: ## Type-check + compile every package in every module (no binaries).
+	@for m in $(MODULES); do echo "==> compile $$m"; (cd $$m && $(GO) build ./...); done
+
 .PHONY: build
 build: $(CHAMELEON_BIN) $(PROTOC_GEN_BIN) ## Build chameleon + protoc-gen-chameleon-go into ./bin/.
 
@@ -137,6 +141,17 @@ fmt-check: ## Fail if anything is not gofmt-clean.
 
 # --- Module hygiene -----------------------------------------------------------
 
+.PHONY: modules-check
+modules-check: ## Fail if MODULES and go.work disagree.
+	@work=$$($(GO) work edit -json | grep -o '"DiskPath": *"[^"]*"' | sed 's/.*: *"//; s/"$$//; s|^\./||' | sort | tr '\n' ' '); \
+	mk=$$(printf '%s\n' $(MODULES) | sed 's|^\./||' | sort | tr '\n' ' '); \
+	if [ "$$work" != "$$mk" ]; then \
+		echo "MODULES and go.work disagree — every per-module target would silently skip one."; \
+		echo "  Makefile MODULES : $$mk"; \
+		echo "  go.work use      : $$work"; \
+		exit 1; \
+	fi
+
 .PHONY: tidy
 tidy: ## go mod tidy in every module.
 	@for m in $(MODULES); do echo "==> tidy $$m"; (cd $$m && $(GO) mod tidy); done
@@ -160,7 +175,7 @@ tools: ## Install dev tools: golangci-lint pinned to $(GOLANGCI_LINT_VERSION).
 # --- Meta ---------------------------------------------------------------------
 
 .PHONY: ci
-ci: vet test lint ## Reproduce the CI matrix locally (vet + test -race + lint).
+ci: modules-check vet test lint ## Reproduce the CI matrix locally (modules-check + vet + test -race + lint).
 
 .PHONY: check
 check: fmt-check vet test ## Fast pre-commit suite (fmt, vet, test).

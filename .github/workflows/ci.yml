@@ -9,10 +9,39 @@ on:
 permissions:
   contents: read
 
+# Self-hosted runners execute workflow code on real machines, which is why
+# they are a bad idea on public repos: any fork PR would run there. chameleon
+# is private, so the only code that reaches them is code someone with push
+# access already wrote.
+#
+# Two runners serve this repo: `mac-arm64-mini-chameleon` (the mini) and
+# `chameleon-trader` (the Linux VPS that already hosts runners for voya, fyne
+# and friends). Both `runs-on` lists below name an OS *and* an arch label —
+# `[self-hosted]` alone would let either leg land on either box, silently and
+# only sometimes.
 jobs:
   test:
-    name: test
-    runs-on: [self-hosted, macOS, ARM64]
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.runs-on }}
+    # A wedged self-hosted runner otherwise blocks the queue for every repo on
+    # the same box. Warm runs finish in well under a minute; this is a
+    # circuit breaker, not a budget.
+    timeout-minutes: 20
+    strategy:
+      # Both legs always report. A macOS-only failure is exactly the signal
+      # this matrix exists to surface, and fail-fast would hide it behind
+      # whichever leg happened to finish first.
+      fail-fast: false
+      matrix:
+        # Linux is not decoration for a library that mlocks pages (memguard),
+        # shells out to `go list` in its own tests, and pins its module graph
+        # (#130). It is also what most consumers deploy on, while the only
+        # runner this repo had was a Mac.
+        include:
+          - name: macos-arm64
+            runs-on: [self-hosted, macOS, ARM64]
+          - name: linux-amd64
+            runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - name: Assert go-plus toolchain
@@ -22,26 +51,29 @@ jobs:
           # version string depending on how it was built — match the prefix, not
           # the bare token, so a toolchain bump doesn't red every job in the repo.
           go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
-      # Three modules live in this repo (library, sops backend, CLI) —
-      # see docs/RELEASING.md. `./...` stops at a module boundary, so
-      # every step below iterates instead of relying on the root.
+      # Every step below goes through make so the module walk has exactly
+      # one definition, the Makefile's MODULES. Inlined here, CI and the
+      # Makefile drift while the Makefile header calls `make ci` "what CI
+      # runs" — and a per-module target that silently skips a module is
+      # green for the wrong reason. modules-check is the guard on the
+      # definition itself.
+      - name: modules-check (MODULES vs go.work)
+        run: make modules-check
       - name: build
-        run: for m in . sops cmd/chameleon; do (cd "$m" && go build ./...); done
+        run: make compile
       - name: vet
-        run: for m in . sops cmd/chameleon; do (cd "$m" && go vet ./...); done
+        run: make vet
       - name: test (with race detector)
-        run: for m in . sops cmd/chameleon; do echo "== $m" && (cd "$m" && go test -race -timeout 5m ./...); done
+        run: make test
       - name: integration tests (real sops round-trip)
-        run: |
-          (cd sops && go test -tags=integration -timeout 5m ./...)
-          (cd cmd/chameleon && go test -tags=integration -timeout 10m ./...)
+        run: make test-integration
       - name: modules are tidy
         run: |
           # A stray import that drags the KMS tree back into the library
           # module's go.mod is the regression #130 was about;
           # TestLibraryModuleRequiresNoKeyManagement catches it, but only
           # if go.mod reflects the imports.
-          for m in . sops cmd/chameleon; do (cd "$m" && go mod tidy); done
+          make tidy
           # go.work.sum is tracked and the build/vet/test steps above run
           # in workspace mode, which rewrites it whenever it needs a hash
           # the committed file lacks. Left unchecked, a PR lands with it

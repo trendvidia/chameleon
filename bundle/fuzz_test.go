@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/trendvidia/chameleon/bundle"
-	"github.com/trendvidia/chameleon/internal/bundler"
+	"github.com/trendvidia/chameleon/internal/bundlelayout"
 )
 
 // FuzzOpen pushes arbitrary bytes through bundle.Open. The
@@ -100,7 +100,7 @@ func buildMinimalChainOnlyZip(f *testing.F) []byte {
 	f.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	w, err := zw.Create(bundler.ChainEntryPath)
+	w, err := zw.Create(bundlelayout.ChainEntryPath)
 	if err != nil {
 		f.Fatalf("zip create: %v", err)
 	}
@@ -136,7 +136,7 @@ func buildZipWithGarbageChain(f *testing.F) []byte {
 	f.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	w, err := zw.Create(bundler.ChainEntryPath)
+	w, err := zw.Create(bundlelayout.ChainEntryPath)
 	if err != nil {
 		f.Fatalf("zip create: %v", err)
 	}

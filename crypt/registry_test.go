@@ -132,6 +132,21 @@ func TestSoleDecrypter_EncryptOnlyIsNotADecrypter(t *testing.T) {
 	_, _, err := crypt.SoleDecrypter()
 	assert.ErrorIs(t, err, crypt.ErrNoBackend,
 		"a build with only an encrypt-only backend can't decrypt anything")
+	// ...but it did link something, and saying otherwise sends the
+	// operator off to add an import they already have. The resolver
+	// appends "link one with import _ …/sops" to this; the list is
+	// what tells them the real gap is the decrypt half.
+	assert.Contains(t, err.Error(), "writer",
+		"name what the build does have when it has anything at all")
+}
+
+func TestSoleDecrypter_EmptyRegistryDoesNotSayRegisteredNone(t *testing.T) {
+	require.Empty(t, crypt.Registered())
+
+	_, _, err := crypt.SoleDecrypter()
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "registered,",
+		`"no decryption backend registered (registered: none)" only repeats itself`)
 }
 
 func TestSoleDecrypter_AmbiguousNamesTheCandidates(t *testing.T) {

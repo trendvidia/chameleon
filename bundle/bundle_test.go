@@ -22,6 +22,7 @@ import (
 
 	"github.com/trendvidia/chameleon"
 	"github.com/trendvidia/chameleon/bundle"
+	"github.com/trendvidia/chameleon/internal/bundlelayout"
 	"github.com/trendvidia/chameleon/internal/bundler"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 )
@@ -149,7 +150,7 @@ func TestOpen_AuditOptional(t *testing.T) {
 	chainBytes := chainSpecBytes(t)
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	w, _ := zw.Create(bundler.ChainEntryPath)
+	w, _ := zw.Create(bundlelayout.ChainEntryPath)
 	_, _ = w.Write(chainBytes)
 	_ = zw.Close()
 

@@ -21,9 +21,9 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/chain"
+	"github.com/trendvidia/chameleon/crypt"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/chameleon/resolver"
-	"github.com/trendvidia/chameleon/crypt"
 	chsops "github.com/trendvidia/chameleon/sops"
 	"github.com/trendvidia/chameleon/source"
 )
@@ -81,7 +81,7 @@ Flags:`)
 	if err != nil {
 		return err
 	}
-	applyAppDefaults(app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
+	applyAppDefaults(fs, app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
 
 	if *schema == "" || *message == "" {
 		fs.Usage()
@@ -151,10 +151,7 @@ Flags:`)
 	for name, src := range sources {
 		opts = append(opts, resolver.WithSource(name, src))
 	}
-	opts = append(opts, resolver.WithTrace())
-	if dec != nil {
-		opts = append(opts, resolver.WithDecrypter(dec))
-	}
+	opts = append(opts, resolver.WithTrace(), decrypterOption(dec))
 	r, err := resolver.New[*dynamicpb.Message](sample, spec, opts...)
 	if err != nil {
 		return err
@@ -331,6 +328,12 @@ func format(path, value string, e resolver.TraceEntry) string {
 // so the dev workflow exercises the real path. Unknown values
 // error rather than silently falling back to "none", since a
 // typo'd flag should not silently disable decryption.
+//
+// nil means "the operator asked for no decryption", which is not the
+// same as "nothing configured": this binary links chameleon/sops for
+// bundle/migrate/rotate-key, so the crypt registry would happily
+// auto-select it. Callers pass the nil through to
+// [decrypterOption] rather than omitting the option.
 func selectDecrypter(name string) (crypt.Decrypter, error) {
 	switch name {
 	case "", "none":
@@ -340,6 +343,18 @@ func selectDecrypter(name string) (crypt.Decrypter, error) {
 	default:
 		return nil, fmt.Errorf(`--decrypter: unknown value %q (want "none" or "sops")`, name)
 	}
+}
+
+// decrypterOption turns a [selectDecrypter] result into the resolver
+// option that matches it: the chosen Decrypter, or an explicit opt-out
+// for --decrypter=none so an encrypted layer fails with
+// resolver.ErrNoDecrypter instead of being decrypted with ambient
+// credentials the operator declined to use.
+func decrypterOption(dec crypt.Decrypter) resolver.Option {
+	if dec == nil {
+		return resolver.WithoutDecrypter()
+	}
+	return resolver.WithDecrypter(dec)
 }
 
 // buildSources derives the source.Source map to register with the

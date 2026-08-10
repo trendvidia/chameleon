@@ -121,7 +121,7 @@ Flags:`)
 	// ones the user config carries. --manifest, --module, --out, and
 	// --base64 are bundle-specific and stay CLI-only.
 	envFallback := "" // bundle is env-agnostic; no --env to apply.
-	applyAppDefaults(app, schema, message, chainPath, layersDir, &envFallback, decrypter, &includePaths)
+	applyAppDefaults(fs, app, schema, message, chainPath, layersDir, &envFallback, decrypter, &includePaths)
 
 	if *manifest == "" || *module == "" || *schema == "" || *message == "" || *chainPath == "" {
 		fs.Usage()
