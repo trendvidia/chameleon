@@ -1,1 +1,0 @@
-- **`resolver.Resolve` no longer stutters the pass name in defaults errors.** The failure surfaced as `resolver: defaults: defaults: <path>: …` because both `defaults.Apply` and the resolver prefixed it. The resolver now wraps with a bare `resolver: `, matching how it wraps `validate`, so the error reads `resolver: defaults: <path>: …` as the docs describe.

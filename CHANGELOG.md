@@ -9,6 +9,290 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet — changes live in [changelog.d/](changelog.d/) until release._
 
+## [0.23.0] — 2026-08-10
+
+The module split release. `github.com/trendvidia/chameleon` is now three modules — the library, `chameleon/sops`, and `chameleon/cmd/chameleon` — so a consumer of the library no longer carries the cloud key-management tree in its module graph ([#130](https://github.com/trendvidia/chameleon/issues/130)). Decryption became a link-time opt-in behind the new `chameleon/crypt` contract, which is the one change here that can alter a working program's behaviour: read the **Changed** entries before upgrading.
+
+Alongside it: PXF bind-time violations are now caught at `resolver.New` rather than at the first layer parse ([#134](https://github.com/trendvidia/chameleon/issues/134)), and `chameleon check-schema` answers the same question off a `.proto` alone, for the repo that authors a shared schema and never resolves anything ([#144](https://github.com/trendvidia/chameleon/issues/144), [#153](https://github.com/trendvidia/chameleon/issues/153), [#159](https://github.com/trendvidia/chameleon/issues/159)).
+
+Upgrading the library alone needs no `go.mod` change. Programs with encrypted layers need one import added and possibly one `go get` — the link-time opt-in entry under **Changed** has the specifics, including what happens if you skip it.
+
+### Added
+
+- **`chameleon/crypt` — the decryption contract, split from the implementation** ([#130](https://github.com/trendvidia/chameleon/issues/130)). New leaf package holding `Decrypter`, `Encrypter`, `Format` (+ `FormatForPath`) and `Recipients`, plus a registry of named backends: `Register` / `Get` / `Registered` / `SoleDecrypter` / `Unregister`. Its entire dependency set is the standard library and memguard. The resolver now depends on this and nothing else for decryption, which is what makes the link-time opt-in ([#130](https://github.com/trendvidia/chameleon/issues/130), under **Changed**) possible; `chameleon/sops` became one implementation of it rather than the definition of it.
+
+  The registry is `database/sql`'s driver model: `chameleon/sops` calls `crypt.Register("sops", …)` from `init`, and a consumer selects it with `import _ "github.com/trendvidia/chameleon/sops"`. `crypt.Registered()` reports what a build actually linked — worth calling in a startup log line if you have several.
+
+- **`crypt.ErrEncryptOnlyBackend`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). Wrapped by `resolver.New` when `WithDecrypterNamed` names a backend that registered only an `Encrypter`. Joins `ErrUnknownBackend` / `ErrNoBackend` / `ErrAmbiguousBackend` as an `errors.Is`-matchable outcome, so a caller reading the backend name out of configuration can tell "typo or missing import" from "that one only encrypts" without matching on message text.
+
+- **`resolver.Trace.Decrypter`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). Under `WithTrace`, names the crypt-registry backend that Resolve auto-selected for the call — empty when no encrypted layer was reached, and empty when the caller named the Decrypter itself. Auto-selection is the case worth reporting precisely because nobody wrote it down: registration follows the module graph, so a dependency can put a backend in a build without the build's author choosing it. `crypt.Registered()` says what was available; this says what was used.
+
+- **`resolver.WithDecrypterNamed(name)`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). Selects a registered backend by name, the resolver-side equivalent of naming a driver in `sql.Open`. Needed only in a build that links more than one backend, where auto-selection is deliberately undefined. Fails at `resolver.New` — not at the first encrypted layer — if no backend is registered under that name, and lists the ones that are, so a missing import surfaces in a plaintext dev environment instead of in prod. Mutually exclusive with `WithDecrypter` and `WithoutDecrypter`; passing two is an error rather than a silent last-one-wins. An empty name is an error too — a caller reading the backend name out of config wants the unset case to say so, not to fall through to auto-selection.
+
+- **`resolver.WithoutDecrypter()`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). Disables decryption for a Resolver: an encrypted layer returns `ErrNoDecrypter` even when the build has a backend registered. Needed because "no decrypter configured" and "do not decrypt" stopped being the same thing once the registry landed — registration follows the module graph, so a program links a backend as soon as anything in its dependency tree imports one. This is how a caller says no anyway. `chameleon get/explain/reveal --decrypter=none` is wired to it, so those keep failing on an encrypted layer instead of reaching for ambient KMS/age credentials just because the same binary also ships `chameleon bundle`.
+
+- **`resolver.ErrSchemaViolation`** ([#134](https://github.com/trendvidia/chameleon/issues/134)). Returned by `resolver.New` when the sample message's descriptor closure carries a PXF annotation the format does not admit. `errors.Is`-matchable, so a consumer that loads schemas dynamically can tell "this schema is malformed" from "this wiring is wrong" without matching on message text. See the `### Changed` entry for what moved.
+
+- **`resolver.NoDecrypterError`** ([#141](https://github.com/trendvidia/chameleon/issues/141)). The concrete error behind `ErrNoDecrypter`, carrying the layer that turned out to be encrypted (`LayerID`), which of the two cases happened (`Disabled` — `WithoutDecrypter` was passed, as opposed to nothing being registered), and the crypt registry failure underneath (`Err`). Reach it with `errors.As`:
+
+  ```go
+  var nde *resolver.NoDecrypterError
+  if errors.As(err, &nde) && nde.Disabled {
+      return fmt.Errorf("layer %q is encrypted, and --decrypter=none was passed", nde.LayerID)
+  }
+  ```
+
+  Added because a program that re-words this failure for its own users could not do so without repeating chameleon's Go option names to an audience that never typed them — scraping the layer id back out of the message string is not an interface. The chameleon CLI is the first consumer.
+
+  **Nothing changes for callers that do not use it.** `errors.Is` against `ErrNoDecrypter`, `crypt.ErrNoBackend` and `crypt.ErrAmbiguousBackend` matches exactly as before, and both diagnostics are byte-for-byte what they were — pinned verbatim by `TestNoDecrypterError_CarriesTheLayerAndTheCase`.
+
+- **`chameleon check-schema` — ask whether a `.proto` is PXF-conformant, without resolving anything** ([#144](https://github.com/trendvidia/chameleon/issues/144)). Every other subcommand that takes `--schema` also needs a chain, layers and an environment, because it is on its way to resolving something. The bind-time rules — PXF-reserved names, `(pxf.key)` / `(pxf.default)` / `(pxf.required)` placement — are a property of a file closure, so they can be answered without any of that:
+
+  ```sh
+  chameleon check-schema --schema=config.proto
+  # OK    config.proto    4 file(s) checked
+  ```
+
+  Non-zero exit and one line per violation otherwise. **The violation names the file that declares it, which need not be the one you passed**: since [protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71) the checks cover the transitive import closure, so a misplaced annotation in a shared `common.proto` fails every schema importing it, whether or not the importing message refers to the offending type. Run this in the repo that *owns* a shared schema — a consumer's resolve is the wrong place to find out, and a schema-only repo has nothing else to run.
+
+  `--message` is optional and does **not** narrow the check; it only additionally asserts the named message exists, in the schema or in anything it imports. The file count on the `OK` line is the closure size rather than the number of files named, so it says how much of the closure a green run actually spoke for.
+
+- **`chameleon check-schema --schema` is repeatable and takes a directory** ([#153](https://github.com/trendvidia/chameleon/issues/153)). A repo that owns a shared schema owns many `.proto` files, and its question is "is every file I own conformant?" — not "is this one file's closure conformant?", asked N times:
+
+  ```sh
+  # before: one compile per file, and one report per importing file
+  for f in proto/**/*.proto; do chameleon check-schema --schema="$f" || exit 1; done
+
+  # now
+  chameleon check-schema --schema=./proto --include=./proto
+  # OK    5 root(s)    6 file(s) checked
+  ```
+
+  All roots compile **once, together**, so a shared import is parsed and linked once no matter how many roots reach it, and a violation in it is reported **once** — with the roots whose closure reaches it, so deduplication does not cost you the blast radius:
+
+  ```
+  common/v1/common.proto: field "common.v1.Shared.labels": invalid (pxf.default) = "nope": …    (via svc/a.proto, svc/b.proto, svc/c.proto)
+  ```
+
+  A directory is searched recursively for `*.proto`, symlinks not followed, so a subtree symlinked into place is not searched; `--exclude` prunes the rest of what you do not want walked. The directory is what replaces a glob rather than a shorthand for one: no shell expands `--schema=proto/*.proto`, because the pattern has to match the whole word, flag name included (bash passes it through literally; zsh and fish abort). Repeated flags are for a script that builds them. Glob expansion is not implemented here either, since `**` means different things in bash and fish and nothing in sh, so a glob this command expanded itself would disagree with the same string typed at a prompt.
+
+  With several roots the `OK` line carries **both** counts — roots asked for, and distinct files covered. The file count stayed the cheapest signal that `--include` is wrong ([#144](https://github.com/trendvidia/chameleon/issues/144) made it load-bearing), and on its own it can no longer say how many roots produced it. `--message` is asked once of the union closure rather than once per root: with several roots the message need only exist somewhere in what was checked.
+
+  Files found under a directory are named the way their siblings import them (protoc's `-I` contract), which is what lets one file's violations be recognised as one violation. An `--include` containing the file outranks the directory it was found under, because `--include` is where the operator states that contract: under `--schema=./proto/svc --include=./proto` a file is `svc/a.proto`, so a sibling's `import "svc/base.proto"` resolves to the root itself instead of compiling a second copy of it. Two *different* files that would compile under one name are rejected, naming both and suggesting `--include`, rather than being silently resolved to whichever import path came first.
+
+  **The single-file form is unchanged** — same naming, same violations, same `OK <path> <n> file(s) checked` line. What used to be a hard error is now the feature: a directory passed to `--schema` was rejected with "not a regular file", and is now searched. An *empty* directory is still an error, since "OK, 0 files" is not an answer anyone wanted.
+
+- **`chameleon check-schema --exclude`** ([#159](https://github.com/trendvidia/chameleon/issues/159)). Prunes the `--schema` directory search by name. The case it exists for is a repo that vendors a second copy of a file its own files import: two copies of `pxf/annotations.proto` are two declarations of `pxf.required`, so compiling both as roots fails on duplicate symbols and the directory form added in [#153](https://github.com/trendvidia/chameleon/issues/153) could not be used on that tree at all.
+
+  ```sh
+  chameleon check-schema --schema=./proto --include=./proto
+  # chameleon check-schema: compile 3 schema root(s): pxf/annotations.proto:5:8: symbol "pxf.required" already defined at third_party/pxf/annotations.proto:5:8
+
+  chameleon check-schema --schema=./proto --include=./proto --exclude=third_party
+  # OK    2 root(s)    3 file(s) checked
+  ```
+
+  (Which of the two copies that first line names as the offender, and which as the "already defined at", swaps between runs of the same command.)
+
+  A pattern matches **one path element** at a time — a directory's or a file's own name — with `filepath.Match` syntax. That is what lets `--exclude=third_party` prune the directory at whatever depth it appears without needing a `**`: the walk stops there, rather than the pattern spanning the rest of the path. Within an element the usual syntax works (`--exclude='*_test.proto'`). A pattern containing a path separator cannot match an element, so it is rejected rather than silently matching nothing — as is an empty one. A malformed pattern fails the run as well, naming both the flag and the pattern; it is caught while searching rather than while parsing flags, because `filepath.Match` only reports bad syntax once its scan reaches it, so `--exclude='vendor*[0-9'` looks well-formed against every name that does not start with `vendor`. A pattern that prunes *every* `.proto` under the directory says so, instead of reporting the "no .proto files found" that would send you off to check the path.
+
+  **What it does not do**, all three deliberate:
+
+  - It does not touch `--include`. An excluded file stays importable, which is the point for a vendored tree — the second copy stops being a *root* while the files that legitimately import it still resolve.
+  - It does not apply to a `.proto` named directly by `--schema`, nor to the `--schema` directory itself. Naming something explicitly is the more specific instruction, and reading it otherwise would turn `--schema=./third_party --exclude=third_party` into "no .proto files found".
+  - Nothing is excluded by default. `third_party/`, `vendor/` and dot-directories are walked like any other until you ask for them to be skipped.
+
+  Additive: a run with no `--exclude` behaves exactly as before. Shell completion for the flag ships for bash, zsh and fish.
+
+- **`docs/RELEASING.md`** — the tag order the three modules have to be released in, and what a stale `require` looks like when it goes wrong. Worth reading before cutting v0.23.0.
+
+### Changed
+
+- **A `(pxf.default)` inside a `oneof` no longer overrides the layer's choice.** Setting any oneof member clears its siblings, so a default on member `B` used to silently discard an operator's explicit `A` — `file = "/tmp/x"` came back empty with an unasked-for `timeout` in its place. The defaults pass now skips a member whenever some layer already selected a different member of the same oneof. Pre-existing for scalar members; this release widened the exposure to WKT members and fixes both. Synthetic oneofs (proto3 `optional`) hold a single field, express presence rather than choice, and default as before.
+
+- **A `(pxf.default)` the defaults pass cannot honor is now a resolve-time error instead of a silent no-op** ([#129](https://github.com/trendvidia/chameleon/issues/129)). Read this if you have a `(pxf.default)` on a message-typed field. A default on a message type PXF cannot parse a literal for — `google.protobuf.Any`, `pxf.Secret`, `google.protobuf.Struct`, any user-defined message, and, until the v1.4.0 bump ([#139](https://github.com/trendvidia/chameleon/issues/139)) fixed it, `google.protobuf.BytesValue` — now fails the resolve with `resolver: defaults: <path>: default values not supported for message type <T>` where it was previously ignored. That is the deliberate other half of the WKT fix under **Fixed**: a silently ignored annotation is the worst of the available states, and plain `pxf.Unmarshal` already errors on these. The gate is unchanged otherwise — the annotation is consulted only for a path no layer set, so a field some layer did set is untouched. That made the error data-dependent in the branch that introduced it; the protowire-go v1.4.0 bump ([#139](https://github.com/trendvidia/chameleon/issues/139)) moves the rejection to bind time and removes the data-dependence before this release ships, so there is nothing to re-resolve per environment.
+
+- **Decryption is opt-in at link time: plaintext consumers no longer link the cloud KMS SDKs** ([#130](https://github.com/trendvidia/chameleon/issues/130)). `resolver` imported `chameleon/sops` at package level for the `Decrypter` interface and `FormatForPath`, so every consumer of `chameleon.Load` or `resolver.New` linked the whole sops key-management tree — AWS, Azure, GCP, Vault, Huawei KMS and their transitive weight — whether or not a single layer was encrypted. Measured on a program that resolves two plaintext layers and nothing else:
+
+  | | v0.22.1 | this release |
+  |---|---|---|
+  | binary (darwin/arm64) | 67.5 MB | **11.7 MB** |
+  | `go list -deps` on `./resolver` | 1057 packages | **207** |
+  | …of those, key-management packages | 264 | **0** |
+
+  7.0 MB of what remains is the protobuf runtime any protobuf program pays; chameleon's own share is ~4.7 MB.
+
+  **Nothing you have written stops compiling.** `resolver.WithDecrypter(sops.Default())` still works and still wins over the registry — `sops.Default()` returns a `crypt.Decrypter`, and the old `sops` type names are aliases (see *Deprecated*). What changes is that the wiring is no longer required: with exactly one backend registered, the resolver looks it up the first time an encrypted layer appears, so a consumer can drop the option and keep a blank import instead.
+
+  **It compiles the same; it does not always *behave* the same.** Auto-selection means a resolve that used to fail can now succeed. Passing no decrypter used to be a guarantee that an encrypted layer would be refused; it is now a request for whatever backend the build happens to link, and registration follows the module graph, so a transitive dependency importing `chameleon/sops` for its own reasons turns decryption on in your program with no source change on your side. Two places to look:
+
+  - **`chameleon.Load`** never passes a decrypter, so this applies to every caller of it. It takes no options, which means it has no `WithoutDecrypter` escape hatch — a program that wants encrypted layers to stay refused has to drop down to `resolver.New` + `resolver.WithoutDecrypter()`.
+  - **Any `resolver.New` call site with no decrypter option**, for the same reason.
+
+  If refusing encrypted layers was load-bearing for you (a dev/CI runtime that must not hold decrypt capability, say), say so explicitly with `WithoutDecrypter()` rather than by omission. `crypt.Registered()` tells you what your build actually linked.
+
+  **What to do.** Nothing, if your layers are plaintext — you get the binary back for free. If you have encrypted layers, either keep `WithDecrypter(sops.Default())` as is, or replace it with `import _ "github.com/trendvidia/chameleon/sops"`. If you wrote your own `Decrypter`, switch its import from `chameleon/sops` to `chameleon/crypt`; that is the change that actually sheds the weight for you, since naming the type was enough to link the tree.
+
+  **`resolver.WithDecrypter(nil)` is now an error at `New`** instead of being ignored. It used to be harmless — "nil decrypter" and "no decrypter" both meant an encrypted layer failed — but "not passed" now means auto-select, so a caller whose constructor returned nil would silently get ambient credentials from a line that reads as opt-in. The error names `WithoutDecrypter` as the way to mean no. (A *typed* nil is a non-nil interface and is installed as given, as everywhere else in Go.)
+
+  **The failure mode moved, and says more.** An encrypted layer with no decrypter still returns `resolver.ErrNoDecrypter`, now wrapping the registry's cause and naming the fix:
+
+  ```
+  resolver: encrypted layer without Decrypter: layer="secrets": crypt: no decryption
+  backend registered; link one with `import _ "github.com/trendvidia/chameleon/sops"`,
+  or pass resolver.WithDecrypter
+  ```
+
+  A build that links **several** decrypt-capable backends without naming one is a new failure rather than an arbitrary pick — `… crypt: multiple decryption backends registered (alpha, beta); pick one with resolver.WithDecrypterNamed, or pass resolver.WithDecrypter`. It wraps `ErrNoDecrypter` too, so existing `errors.Is` handling still catches it. Naming one that isn't linked fails at construction: `resolver: WithDecrypterNamed: crypt: unknown backend "gamma" (registered: alpha, beta)`.
+
+  **The scope of "linked in" is the module graph, not configuration** — the same trade `database/sql` makes. A dependency that imports `chameleon/sops` for its own reasons registers the backend in your build too. `crypt.Registered()` tells you what you ended up with.
+
+  This is half of #130 — it fixes what a consumer *links*. What a consumer *requires* is fixed by the module split entry in this same section.
+
+  **`chameleon/bundle` is on the plaintext path too.** Opening a bundle is a read, and its output feeds straight into `chameleon.Load`, but the package imported `internal/bundler` — the *write* side, which links a sops Encrypter because it re-encrypts — for two zip-layout string constants. That was enough to put the whole KMS tree back into a read-only consumer (1031 packages; 114 now). The constants moved to a dependency-free `internal/bundlelayout`, and `bundle` is in the linkage test's pinned set.
+
+  The split is pinned by a test rather than by discipline: `linkage_test.go` shells out to `go list -deps` over the public plaintext path (`chameleon`, `resolver`, `bundle`, `chain`, `crypt`, `merge`, `parse`, `secret`, `source`, `defaults`, `validate`, `interpolate`, `wkt`) and fails if a sops or cloud-SDK package reappears, with a negative control asserting the same check does trip on `chameleon/sops`. A single stray import compiles fine and costs every consumer 56 MB, so the graph itself is the assertion.
+
+- **The sops backend and the CLI are now separate modules; the library's dependency graph no longer carries key management** ([#130](https://github.com/trendvidia/chameleon/issues/130)). The link-time opt-in entry in this same section stopped consumers *linking* the KMS SDKs. This stops them *requiring* them: Go's module graph is per-module, so as long as any package or test in the library module imported `chameleon/sops`, `go mod tidy` kept the whole tree in the library's `go.mod` — and a consumer's `go list -m all`, dependency review and SBOM inherit our requirements whether or not their build reaches the code.
+
+  Measured on the same plaintext two-layer consumer:
+
+  | | v0.22.1 | this release |
+  |---|---|---|
+  | `go list -m all` | 347 modules | **35** |
+  | …key-management modules of those | 164 | **0** |
+  | library `go.mod` require lines | 134 | **22** |
+
+  **Three modules, tagged separately** — `github.com/trendvidia/chameleon` (`vX.Y.Z`), `github.com/trendvidia/chameleon/sops` (`sops/vX.Y.Z`), and `github.com/trendvidia/chameleon/cmd/chameleon` (`cmd/chameleon/vX.Y.Z`). The CLI had to move too: it links the backend by nature, and a binary in the library module put the whole tree back in every consumer's graph — splitting only `sops/` was measured to change nothing at all. `protoc-gen-chameleon-go` has no backend dependency and stays in the library module. Import paths are unchanged for every package; a `go.work` at the repo root wires the three together for local development.
+
+  **What consumers do.** Plaintext consumers: nothing. Encrypted-layer consumers: one extra `require github.com/trendvidia/chameleon/sops`, which `go get` / `go mod tidy` adds the first time the blank import appears. CLI users: `go install github.com/trendvidia/chameleon/cmd/chameleon@latest` is unchanged, and a version-pinned install keeps its spelling — `@v0.23.0`, which Go maps to the `cmd/chameleon/v0.23.0` repo tag by itself, exactly as `gopls@v0.14.2` maps to `gopls/v0.14.2`. From v0.23.0 that pin follows the CLI module's own tags; an existing `@v0.22.1` still resolves through the root module, because that revision predates the split. `protoc-gen-chameleon-go` pins are unaffected.
+
+  **One API change fell out of it.** `bundler.BuildOptions` (internal, reached through the CLI) gained `RecipientsForKeyName func(string) (crypt.Recipients, error)`: the bundler used to call `sops.RecipientsFromKeyName` directly, which is precisely the import that would have kept the KMS tree in the library module. The CLI passes `sops.RecipientsFromKeyName`; a chain spec that declares no `key_name` never needs it. A spec that *does* declare one with the hook unset is now an error rather than a silent drop — dropping it would encrypt the layer to a smaller recipient set than the chain asked for, and surface in production as a layer nobody can open.
+
+  **Test coverage moved with the code, deliberately.** The bundler's end-to-end test now runs against a fake backend in the library module (it enforces the same wipe-on-success contract as sops, and can assert *which recipients* each layer was encrypted to — something the real-age version could not see through sops's envelope), and the real age round-trip through `bundler.Build` lives in the sops module (`sops/bundle_test.go`), along with the first coverage of `RecipientsForKeyName` wired to the real key store. `TestLibraryModuleRequiresNoKeyManagement` pins the go.mod half the same way the linkage test pins the link half, and CI fails if any module's `go.mod` is untidy.
+
+- **`resolver.New` now rejects a schema whose PXF annotations cannot bind, instead of waiting for a layer parse to do it** ([#134](https://github.com/trendvidia/chameleon/issues/134)). The protowire-go v1.4.0 bump ([#139](https://github.com/trendvidia/chameleon/issues/139)) moved the bind-time rules off layer data, so the same schema fails identically for every environment. This moves the *report* the rest of the way: `New` asks `pxf.ValidateDescriptor` about the sample's descriptor closure and fails with `ErrSchemaViolation` before opening a single layer.
+
+  What that catches which the parse-time check did not: **a chain whose every layer is optional and absent binds nothing at all**, so an invalid schema used to resolve completely clean. A `(pxf.default)` on a `repeated` field is the sharp case, because chameleon's own defaults pass skips list and map fields outright — upstream's bind-time check was the only thing standing between that schema and a silent resolve, and a chain that never parsed a layer never reached it.
+
+  This is a deliberate exception to `New`'s documented rule that it does not fully validate until the first `Resolve`. That rule exists because `Expand` surfaces diagnostics that depend on the request (env / ctx); the bind-time rules depend on the descriptor alone, so deferring them buys nothing and costs determinism. Validation is memoized per file closure upstream, so repeated `New` calls on one descriptor cost a map lookup — up to upstream's 4096-descriptor cache bound, past which a program that compiles descriptors dynamically pays the closure walk on every call.
+
+  **What to do.** If `New` starts failing after this upgrade, the schema was already invalid — the error names the file, the fully-qualified field, and the rule. Note the file it names may be an *imported* one: bind-time checks cover the transitive import closure (see the v1.4.0 bump entry in this same section), so a misplaced annotation in a shared `common.proto` fails every schema that imports it, whether or not your config type refers to the offending message.
+
+- **Resolving a plaintext layer no longer links a protobuf compiler: ~3 MB off every consumer's binary** ([#137](https://github.com/trendvidia/chameleon/issues/137)). `internal/header` built the `chameleon.v1.LayerHeader` descriptor by compiling an inline copy of the message with `bufbuild/protocompile` at runtime. That package is on the resolve path (`resolver.loadAndParse` → `header.HandleDirectives`), so every consumer carried a full protobuf compiler in order to parse a five-field message the generated bindings in `proto/chameleon/v1` already describe — and the resolve path links those bindings either way. The descriptor now comes from the generated type. Measured on darwin/arm64, a program that constructs a resolver and nothing else:
+
+  | | before | this release |
+  |---|---|---|
+  | binary | 11,642,370 B | **8,570,002 B** |
+  | `go list -deps` on `./resolver` | 209 packages | **176** |
+  | …of those, `bufbuild/protocompile` packages | 13 | **0** |
+
+  **Nothing changes for you but the size.** No exported API moves, `@header` parsing and its sanity checks behave exactly as before, and the existing `internal/header` tests pass unchanged. The two descriptors were compared field-by-field — name, number, kind, cardinality and presence — before the switch, and that comparison is now a test (`TestDescriptorMatchesGeneratedShape`) that keeps the generated shape pinned to the one the parse path was written against. Alongside it, `TestDescriptorFieldContract` writes the five fields out as a literal: the parse path reaches every value through a string (`IsSet("id")`, `ByName("content_sha256")`), so a rename in `layer.proto` would not fail the build — it would quietly make the check stop firing — and a mirror-versus-mirror comparison can always be repaired by editing the mirror.
+
+  The one real difference between the two sources is that the generated descriptor's file imports `pxf/annotations.proto` and the inline copy did not. That shows up in two places, and both are pinned. It is inert for this message — no `LayerHeader` field carries a pxf extension, so `pxf.UnmarshalFull` sees the same thing either way, and `TestDescriptorCarriesNoFieldExtensions` fails if someone later annotates one. It also widens the file closure `pxf.UnmarshalFull` validates on every call, from one self-contained file to three (`chameleon/v1/layer.proto` → `pxf/annotations.proto` → `google/protobuf/descriptor.proto`); since a bind-time violation anywhere in that closure would fail every header parse, `TestDescriptorClosureHasNoBindTimeViolations` asserts the closure is clean.
+
+  **Why it was inline in the first place, since the code did not say.** The mirror landed on 2026-05-11 with the `@header` preamble, and its comment — "so chameleon doesn't need a codegen step for its own protos; matches the pattern in chain/load.go" — was accurate at the time: `chain/load.go` really did compile `chainProtoSrc` the same way. The next day, the typed-`ChainSpec` change migrated `chain` to protoc-gen-go, which gave the repo a codegen step and generated `proto/chameleon/v1` regardless. `internal/header` was simply not migrated with it. The stated reason had already expired; nothing else was holding the mirror in place.
+
+  **This does not touch `chameleon explain`.** The CLI compiles user-supplied schemas, which is what protocompile is for, and it keeps its dependency. What moved is that the compiler is now only on the path that actually compiles something. Like the link-time decryption opt-in from [#130](https://github.com/trendvidia/chameleon/issues/130), the boundary is pinned by the package graph rather than by discipline: `linkage_test.go` fails if `bufbuild/protocompile` reappears anywhere under the plaintext path, with a negative control asserting the same check does trip on the cmd/chameleon module.
+
+- **Bumped protowire-go to v1.4.0 — every `(pxf.default)` placement one literal cannot denote is now rejected when your schema binds** ([#139](https://github.com/trendvidia/chameleon/issues/139)). The annotation family, settled end to end upstream. Three chameleon gaps are answered by it rather than by code here — two of them tracked as issues, the third only by a test:
+
+  - **A default on a `repeated` or `map` field no longer binds** ([#131](https://github.com/trendvidia/chameleon/issues/131), [protowire-go#68](https://github.com/trendvidia/protowire-go/issues/68)). It used to be dropped in silence — the one silent-ignore case #129 deliberately left alone. One literal cannot denote a list, so the schema is rejected outright and no implementation may invent a semantics for it.
+  - **A default on a message type PXF has no literal for is caught at bind time, identically for every environment** ([#134](https://github.com/trendvidia/chameleon/issues/134), [protowire-go#69](https://github.com/trendvidia/protowire-go/issues/69)). The rejection chameleon added for `google.protobuf.Any` / `pxf.Secret` / `Struct` / user-defined messages was consulted only for a path no layer set, so the same schema resolved cleanly for `dev` and failed for `prod` — CI green, deploy broken. Binding is a property of the descriptor, not of what the layers set, so that data-dependence is gone for every resolve that parses a layer. `resolver.Resolve` surfaces it as `resolver: parse layer "<id>": PXF schema violations: …`, naming the field by fully-qualified name. **Upstream runs the check when a layer is parsed, and only then** — a resolve whose layers are all optional-and-absent binds nothing, so the bump on its own would leave that chain on the old resolve-time path (`resolver: defaults: <path>: …`, and silence for a list placement). The `resolver.New` entry for #134 in this same section closes that hole chameleon-side, and `TestNew_UnboundSchemaIsRejectedRegardlessOfLayers` pins the boundary it removes.
+  - **`google.protobuf.BytesValue` accepts a base64 default** ([protowire-go#67](https://github.com/trendvidia/protowire-go/issues/67)), closing the ninth-wrapper exception the #129 entries describe.
+
+  **Bind-time checks now cover your schema's transitive imports** ([protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71)), not just the file declaring the message. A `config.proto` importing a shared `common.proto` fails to bind if `common.proto` carries a misplaced annotation anywhere, whether or not your config type refers to the offending message. This is the widest blast radius in the bump — budget a repo-wide pass, not a per-file one. Chameleon's own fixtures are single-file, so nothing here moved. The cost is negative: results are memoized per descriptor and upstream measured decode 6–7% faster than the single-file walk it replaced.
+
+  **Three more placements are newly rejected at bind time**, beyond the `(pxf.default)` family above. v1.0.0 checked only PXF-reserved names; v1.4.0 adds `(pxf.key)`, `(pxf.default)` and `(pxf.required)` placement, so a schema that bound before can fail on a rule this entry's migration note does not describe:
+
+  - **`(pxf.required)` on a member of a `oneof`** is rejected outright — read per field it demands that one specific arm always be chosen, which makes every other arm undecodable. Move the requirement to the oneof's container, or drop it.
+  - **More than one `(pxf.default)` across the members of one `oneof`** is rejected: at most one member may carry a default, since applying a second would clear the first.
+  - **A misplaced `(pxf.key)`** — on a field that is not repeated-message-typed, or naming something that is not a singular string field of the element message — is rejected where it was previously ignored.
+
+  **One upstream change alters decoded output**, and chameleon already agreed with it: a oneof member's `(pxf.default)` applies only when no member of that oneof is present ([protowire-go#72](https://github.com/trendvidia/protowire-go/issues/72)). That is the same rule the defaults pass adopted for [#129](https://github.com/trendvidia/chameleon/issues/129) — with one gap this release also closes: a member the operator explicitly cleared (`file = null`) counts as present upstream but did not in chameleon's pass, so a `null` could be replaced by a sibling's default. Fixed in `defaults.Apply`, which now reads the presence union rather than the merged message's oneof case. With that, a chameleon resolve decodes identically either side of the bump.
+
+  **What to do.** Run `chameleon check-schema --schema=<file.proto>` over each schema before upgrading in production — a misplaced annotation that was previously ignored now fails, and the command names the file and the fully-qualified field without needing a chain, layers or an environment. `chameleon verify` does **not** answer this — it compares each layer's `@header.content_sha256` against the file body and never binds your config message, so it reports `OK` for a schema that `resolver.New` will reject. Migration is deleting the annotation or moving it to a field one literal can denote. Nothing else in the resolve path changes: a schema that bound before and still binds decodes to identical bytes.
+
+- **`chameleon get/explain/reveal` say what to do when a layer is encrypted and `--decrypter` is `"none"`** ([#141](https://github.com/trendvidia/chameleon/issues/141)). The refusal is unchanged and still correct — `"none"` is the fail-closed default, and it is what stops the CLI reaching for ambient KMS/age credentials just because the same binary also ships `chameleon bundle`. What you got told about it was the problem:
+
+  ```
+  chameleon get: resolver: encrypted layer without Decrypter: layer="base": decryption disabled (WithoutDecrypter)
+  ```
+
+  `WithoutDecrypter` is a Go option from `chameleon/resolver`. Someone running the binary never called it, disabled nothing knowingly, and finds it in no `--help` output. Now:
+
+  ```
+  chameleon get: layer "base" is encrypted: --decrypter is "none" (the fail-closed default); pass --decrypter=sops to decrypt it, or set decrypter = "sops" on this app in /home/you/.chameleon
+  ```
+
+  and, when the flag was actually typed, the statement without the instruction — being refused is the flag doing its job:
+
+  ```
+  chameleon get: layer "base" is encrypted: --decrypter=none was passed on the command line
+  ```
+
+  That second message **echoes the value you passed** rather than naming `"none"`. `--decrypter=` — what `--decrypter=$DECRYPTER` expands to with the variable unset — disables decryption exactly as `"none"` does, so it reports `--decrypter= was passed on the command line`. Seeing the empty value is also the answer to "why was the `decrypter` in my `~/.chameleon` ignored": a typed flag outranks the config file, empty value included.
+
+  The `~/.chameleon` path in the first message is the one the loader would really read, `CHAMELEON_USER_CONFIG` included.
+
+  **If you match on stderr.** Scripts keying on `decryption disabled` or `WithoutDecrypter` will stop matching; both CLI phrasings share the substring `is encrypted: --decrypter`. The Go-facing wording from `resolver` is untouched for programs using the library directly.
+
+### Deprecated
+
+- **`sops.Decrypter`, `sops.Encrypter`, `sops.Format`, `sops.Recipients`, the `sops.Format*` constants, and `sops.FormatForPath`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). These are now aliases for their `chameleon/crypt` counterparts — identical types, so existing code compiles and interoperates unchanged — but importing `chameleon/sops` to *name* a type is what put 56 MB of cloud SDKs into binaries that never decrypted anything. Change the import to `chameleon/crypt`; the identifiers keep their spelling. `sops.Default()`, `sops.DefaultEncrypter()`, `sops.RecipientsFromKeyName()` and the `sops.Err*` values are not deprecated — they are the implementation, and a build that wants sops should have them.
+
+### Fixed
+
+- **`resolver.Resolve` no longer stutters the pass name in defaults errors.** The failure surfaced as `resolver: defaults: defaults: <path>: …` because both `defaults.Apply` and the resolver prefixed it. The resolver now wraps with a bare `resolver: `, matching how it wraps `validate`, so the error reads `resolver: defaults: <path>: …` as the docs describe.
+
+- **`(pxf.default)` on a well-known-type field is applied instead of silently dropped** ([#129](https://github.com/trendvidia/chameleon/issues/129)). `defaults.Apply` walked message-kind fields and `continue`d on the atomic-WKT check before ever reaching the annotation lookup, so `(pxf.default) = "250ms"` on a `google.protobuf.Duration` resolved to a nil Duration — no error, no warning, just the proto zero. The capability existed one layer down the whole time: protowire-go's `pxf.ApplyDefault` binds WKT message fields directly and pins the behavior in its own tests. The lookup now runs **before** the message dispatch, matching how `validate` already orders its `(pxf.required)` check and how protowire-go's own per-parse pass is ordered.
+
+  Covered types are the ones PXF has a literal form for: `Duration`, `Timestamp`, `pxf.BigInt`, `pxf.Decimal`, `pxf.BigFloat`, and eight of the nine `google.protobuf` wrapper types. The default sets the **whole** WKT value — the atomic boundary governs *merge* semantics (whole-value replacement), and never implied "cannot be defaulted". Default-filled WKT paths join the presence union like any other default, so `(pxf.required)` counts them as satisfied and `Resolution.Trace` marks them `FromDefault`.
+
+  **All nine `google.protobuf` wrappers are covered, `BytesValue` included.** It was the one exception while this work was in flight — protowire-go's wrapper-default path had no bytes branch, so a default on a `BytesValue` field was rejected where the same literal on a plain `bytes` scalar decoded fine. The pin chameleon added to notice a fix did its job: [protowire-go#67](https://github.com/trendvidia/protowire-go/issues/67) added the branch and the v1.4.0 bump ([#139](https://github.com/trendvidia/chameleon/issues/139)) picks it up, so the exception never reaches a release.
+
+  **Two more edges, documented and pinned rather than fixed here.** A default on a WKT is never template-expanded: defaults deliberately run before interpolation so a default may itself be a template (`"api.${base_url}"`), but interpolation stops at the same atomic boundary, so a `${...}` in a default on a `google.protobuf.StringValue` reaches the resolved config verbatim — use a plain `string` field when the default needs interpolation. And protowire-go parses bool literals as `literal == "true"`, so `"True"` / `"1"` / `"yes"` silently yield `false` (and still satisfy `(pxf.required)`) where every other literal kind reports a parse failure.
+
+  `(pxf.default)` on a `repeated` or `map` field was still ignored at the time of writing, tracked in [#131](https://github.com/trendvidia/chameleon/issues/131) — and the panic found on the way (protowire-go's own per-parse pass had no list guard) was filed as [protowire-go#66](https://github.com/trendvidia/protowire-go/issues/66). Both are answered by the v1.4.0 bump ([#139](https://github.com/trendvidia/chameleon/issues/139)): the placement no longer binds, so the silence is gone before this release ships.
+
+- **An explicit `chameleon … --decrypter=none` is no longer overridden by `$HOME/.chameleon`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). The flag's Go default is `"none"`, so `applyAppDefaults` could not tell "the operator typed `--decrypter=none`" from "the flag was omitted" and treated both as unset — adopting the selected app's `decrypter = "sops"` in either case. On any machine whose user config named a decrypter, the one explicit way to decline decryption did nothing, and for `reveal` the result was the secret on stdout under a flag that asked for the opposite. Which flags the user actually typed is now read off the `flag.FlagSet`, so an explicit `--decrypter` always wins; with the flag omitted the config's value is still adopted, unchanged. Pinned end-to-end in `cli_smoke_test.go` against a user config that does name a decrypter.
+
+  Only `--decrypter` is treated this way. `--layers` has the same "non-empty Go default" shape (`"."`) and the same blind spot, but its failure mode is a wrong path rather than an unasked-for decrypt; it is left as is here rather than folded into a security fix.
+
+- **A `(pxf.default)` on a `google.protobuf.StringValue` is now template-expanded, like one on a plain `string`** ([#135](https://github.com/trendvidia/chameleon/issues/135)). The defaults pass runs before interpolation specifically so a default may itself be a template — `"api.${base_url}"` — and since [#129](https://github.com/trendvidia/chameleon/issues/129) a default can land on an atomic WKT. Interpolation stopped at the atomic boundary, so the two features did not compose: the raw `${...}` reached the resolved config verbatim, with no error and no warning.
+
+  ```proto
+  string                      base  = 1 [(pxf.default) = "example.com"];
+  string                      api_s = 2 [(pxf.default) = "api.${base}"];
+  google.protobuf.StringValue api_w = 3 [(pxf.default) = "api.${base}"];
+  ```
+
+  `api_s` resolved to `api.example.com` and `api_w.value` to the literal `api.${base}`. Both now resolve to `api.example.com`.
+
+  **The boundary this crosses is narrower than it looks.** `wkt.Atomic` is unchanged, and merge, defaults and validate still treat every WKT as one whole value. Only interpolate's *write* walk descends, and only into `StringValue` — the new `wkt.TemplatableText` predicate, which is exactly one type wide and pinned that way per type. Interpolate's *lookup* walk is untouched: `${some_wrapper.value}` remains an `ErrInvalidReference`, as it does for a `pxf.Secret`. Writing into a WKT leaks nothing; reading out of one is the vector that boundary exists for, and it stays shut.
+
+  The rewrite is reported to `OnApplied` — and so to `resolver.Trace` and `chameleon explain` — at the WKT field's own path rather than an inner `.value`, matching how every other pass keys a WKT.
+
+- **A `oneof` member cleared with `= null` is no longer replaced by a sibling's `(pxf.default)`.** `defaults.Apply` asked the merged message which oneof arm was set, but `null` records the path as present *and* leaves the field unset — so an operator writing `file = null` to mean "no backend" got the sibling `timeout` default applied over it, the same data-loss shape as the oneof default fixed under **Changed**, reached through an explicit clear instead of an explicit choice. The guard now reads the presence union, which is what `pxf.ApplyDefault`'s contract asks of a `SkipPostDecode` caller and what protowire-go's own post-decode pass reads ([protowire-go#72](https://github.com/trendvidia/protowire-go/issues/72)); the message check is kept for callers who hand `defaults.Apply` a populated message with no presence map. Pinned by `TestApply_NulledOneofMemberSuppressesSiblingDefault`, plus a test that runs the same document through both passes and requires them to agree.
+
+### Internal
+
+- **Formatting is gofumpt now, and CI enforces it.** The repo had drifted: `make fmt-check` existed but was not in `make ci` or the CI matrix, so 24 of 162 tracked `.go` files were not even `gofmt`-clean, and "don't run `make fmt`" had become working folklore because a repo-wide run would have buried any real diff. Normalized in one pass — 25 files, no executable code touched — and the check is now a step in the `lint` job and a prerequisite of `make ci`, so it cannot drift again.
+
+  gofumpt is applied **through the pinned golangci-lint**, not a standalone binary, and that is the load-bearing detail: a separately installed `gofumpt` drifts ahead of the version golangci-lint bundles (v0.10.0 splits `f(a, b,` onto its own line where the bundled build leaves it), and a formatter whose check and fix disagree is worse than no formatter at all. `make tools` already installs the pinned version and CI already runs it, so this adds no tool anywhere.
+
+  Scope follows golangci-lint's own file discovery, which excludes generated code and the analyzer fixtures under `cmd/chameleon/testdata` for free — reformatting the first would be reverted by `make generate`, and the second is skipped because golangci-lint ignores `testdata` directories the way the go tool does. (`lint_test.go` would itself survive a reformat: it pins expectations with same-line `` // want `` markers, not absolute line numbers.)
+
+  One sharp edge worth knowing before the next repo-wide run: gofmt's doc-comment printer rewrites a backtick pair and a single-quote pair into Unicode curly quotes. The normalization pass hit this twice — a backtick pair denoting the empty glob pattern in `internal/bundler/glob.go`, and an empty-string `--passphrase` argument in a `sops` test comment — turning both into punctuation that no longer says anything. Neither is recoverable by retyping, since the printer re-applies the rewrite on every `make fmt`; both comments were reworded to avoid the sequences. Formatting-only diffs are worth grepping for non-ASCII before merge.
+
+- **Changelog entries are now one file per change, in [`changelog.d/`](changelog.d/).** `CHANGELOG.md` is written only at release time, by `make changelog VERSION=x.y.z`, which folds the fragments into a new section and deletes them. Nothing about the published format changes: a fragment's entire content *is* the entry, reproduced verbatim — markdown, tables and code blocks included — under the same Keep a Changelog headings. What did change in the migration is entry *order*, now derived from the fragment IDs, and the wording of the six entries whose cross-references were positional.
+
+  **Why:** two PRs that both touch `CHANGELOG.md` conflict, every time, on a file where the conflict carries no information — you keep both sides and move on. That happened three times in one afternoon across #143, #146 and #148. A fragment per change cannot conflict, because no two PRs write the same file.
+
+  CI requires a PR to add a fragment; label a PR `skip-changelog` when a change genuinely has nothing to tell a consumer. `make changelog-check` validates the filenames and is part of `make ci`.
+
+  **One rule the old format did not need:** a fragment must not say "the entry below" or "described above". Order is derived from the fragment IDs at release time and shifts as other PRs land, so positional references break silently — six of the sixteen migrated entries pointed at the wrong thing after assembly, and were rewritten to name their target instead. `changelog.d/README.md` has the details.
+
 ## [0.22.1] — 2026-06-03
 
 Patch release — dependency-only bump to [trendvidia/sops v4.0.1](https://github.com/trendvidia/sops/releases/tag/v4.0.1), plus a substantial round of test hardening across the chameleon code base (~25 PRs landed in `tests/` branches between #107 and #125). No chameleon API surface change, no operator action required. Drop-in upgrade for every consumer.
