@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/bufbuild/protocompile"
+	"github.com/bufbuild/protocompile/linker"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -180,16 +181,60 @@ Flags:`)
 }
 
 // compileSchema reads schemaPath and uses protocompile to find the
-// named message descriptor. includePaths are additional import roots
-// (protoc -I equivalent) used to resolve the schema's transitive
-// imports. The schema file's own directory is prepended implicitly
-// so the schema is always findable by its basename.
+// named message descriptor. See [compileSchemaFiles] for how
+// includePaths are treated.
 func compileSchema(schemaPath, fullName string, includePaths []string) (protoreflect.MessageDescriptor, error) {
+	files, err := compileSchemaFiles(schemaPath, includePaths)
+	if err != nil {
+		return nil, err
+	}
+	return findMessage(files, fullName)
+}
+
+// findMessage looks fullName up in everything files[0] can see: the
+// schema file itself, its imports, and their public imports — which is
+// exactly the set a message reference inside the schema could name.
+//
+// Not [linker.Files.AsResolver]: that searches only the files named on
+// the command line, and compileSchemaFiles names one. A message
+// declared in an imported common.proto would come back "not found"
+// from a closure that plainly contains it.
+func findMessage(files linker.Files, fullName string) (protoreflect.MessageDescriptor, error) {
+	d, err := linker.ResolverFromFile(files[0]).FindDescriptorByName(protoreflect.FullName(fullName))
+	if err != nil {
+		return nil, fmt.Errorf("find message %q: %w", fullName, err)
+	}
+	md, ok := d.(protoreflect.MessageDescriptor)
+	if !ok {
+		return nil, fmt.Errorf("%q is not a message", fullName)
+	}
+	return md, nil
+}
+
+// compileSchemaFiles compiles schemaPath together with its transitive
+// imports. includePaths are additional import roots (protoc -I
+// equivalent); the schema file's own directory is prepended implicitly
+// so the schema is always findable by its basename.
+//
+// The returned files[0] is schemaPath's own FileDescriptor — which is
+// what a caller validating a schema wants, since the PXF bind-time
+// rules are a property of a file closure rather than of any one
+// message. Callers looking up a specific message use AsResolver.
+func compileSchemaFiles(schemaPath string, includePaths []string) (linker.Files, error) {
 	// Verify the file exists up-front so callers get a clean error
 	// instead of protocompile's "could not resolve path" message
 	// pointing at the same file from inside the import-search loop.
-	if _, err := os.Stat(schemaPath); err != nil {
+	// Regular-file, not merely exists: a directory otherwise reaches
+	// protocompile and comes back as "read <dir>: is a directory",
+	// which is the message this check exists to avoid, and a directory
+	// is the likely wrong argument now that check-schema takes a
+	// --schema a caller may reasonably think means "a proto tree".
+	st, err := os.Stat(schemaPath)
+	if err != nil {
 		return nil, fmt.Errorf("read schema %s: %w", schemaPath, err)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("read schema %s: not a regular file", schemaPath)
 	}
 	// Search the schema's own directory first (so the schema resolves
 	// by basename), then any --include paths the caller passed (so
@@ -222,15 +267,7 @@ func compileSchema(schemaPath, fullName string, includePaths []string) (protoref
 	if err != nil {
 		return nil, fmt.Errorf("compile %s: %w", schemaPath, err)
 	}
-	d, err := files.AsResolver().FindDescriptorByName(protoreflect.FullName(fullName))
-	if err != nil {
-		return nil, fmt.Errorf("find message %q: %w", fullName, err)
-	}
-	md, ok := d.(protoreflect.MessageDescriptor)
-	if !ok {
-		return nil, fmt.Errorf("%q is not a message", fullName)
-	}
-	return md, nil
+	return files, nil
 }
 
 func parseCtx(s string) (map[string]string, error) {
