@@ -26,30 +26,33 @@
 //     on a google.protobuf.Duration field yields 250ms. The literal
 //     is parsed by protowire-go's [pxf.ApplyDefault], which covers
 //     Timestamp, Duration, pxf.BigInt, pxf.Decimal, pxf.BigFloat and
-//     eight of the nine google.protobuf wrapper types. A (pxf.default)
-//     on any other message-typed field — google.protobuf.Any,
-//     pxf.Secret, a google.protobuf.Struct, a user-defined message —
-//     is an error rather than a silent no-op, because pxf has no
-//     literal form to parse it from.
-//   - google.protobuf.BytesValue is the ninth wrapper and the one
-//     exception: protowire-go's wrapper-default path routes through
-//     parseScalarDefault, which has no BytesKind branch, so a default
-//     on a BytesValue field is rejected ("unsupported default kind
-//     bytes") rather than base64-decoded. A default on a plain
-//     `bytes` scalar decodes fine — only the wrapper is affected.
-//     Pinned by TestApply_BytesValueWrapperDefaultRejected.
-//   - Repeated and map fields are skipped — defaulting a list to
-//     non-empty is surprise-prone; users who need it can declare a
-//     scalar default for each element separately. A (pxf.default) on
-//     a repeated or map field is ignored rather than rejected; see
-//     https://github.com/trendvidia/chameleon/issues/131.
+//     all nine google.protobuf wrapper types — BytesValue included,
+//     its literal being base64. (BytesValue was the one exception
+//     until protowire-go v1.4.0 added the missing branch;
+//     trendvidia/protowire-go#67.)
+//   - A (pxf.default) on any other message-typed field —
+//     google.protobuf.Any, pxf.Secret, a google.protobuf.Struct, a
+//     user-defined message — does not bind at all since protowire-go
+//     v1.4.0 (trendvidia/protowire-go#69): the schema is rejected when
+//     the layer is parsed, before this pass runs, and identically for
+//     every environment. Apply keeps its own error for the same
+//     placement because a caller can reach it with a descriptor that
+//     never went through a PXF parse.
+//   - Repeated and map fields are skipped here, and never reach this
+//     pass in the first place: since protowire-go v1.4.0 a
+//     (pxf.default) on a list or map does not bind at all, because one
+//     literal cannot denote a list (trendvidia/protowire-go#68, draft
+//     -01 §annotation-extensions). The skip below is what remains for
+//     a caller who reaches Apply with a descriptor that did not come
+//     through a PXF parse.
 //   - A field in a real (non-synthetic) oneof is not defaulted when
-//     some layer already selected a different member. Setting any
-//     member clears its siblings, so applying the default would
-//     silently discard the operator's choice. Synthetic oneofs — the
-//     wrappers proto3 `optional` generates — hold a single field and
-//     express presence rather than a choice, so they stay
-//     defaultable.
+//     some layer already spoke for a different member — including a
+//     member a layer explicitly cleared with `= null`, which counts as
+//     spoken for. Setting any member clears its siblings, so applying
+//     the default would silently discard the operator's choice.
+//     Synthetic oneofs — the wrappers proto3 `optional` generates —
+//     hold a single field and express presence rather than a choice,
+//     so they stay defaultable.
 //
 // Two rough edges inherited from protowire-go's literal parser, both
 // pinned by tests here so a future upstream change is deliberate:
@@ -135,9 +138,9 @@ func apply(m protoreflect.Message, present map[string]struct{}, onApplied func(p
 		// check, and as protowire-go's own per-parse pass.
 		//
 		// Two gates: the path is untouched by every layer, and — see
-		// [oneofTaken] — filling it would not evict a sibling the
-		// operator did choose.
-		if _, isPresent := present[path]; !isPresent && !oneofTaken(m, fd) {
+		// [oneofTaken] — filling it would not evict a sibling some
+		// layer already spoke for.
+		if _, isPresent := present[path]; !isPresent && !oneofTaken(m, fd, present, prefix) {
 			if def, ok := pxf.Default(fd); ok {
 				if err := pxf.ApplyDefault(m, fd, def); err != nil {
 					return fmt.Errorf("defaults: %s: %w", path, err)
@@ -172,20 +175,42 @@ func apply(m protoreflect.Message, present map[string]struct{}, onApplied func(p
 	return nil
 }
 
-// oneofTaken reports whether fd sits in a real oneof whose case is
-// already held by a different member. Applying a default there would
+// oneofTaken reports whether fd sits in a real oneof some other member
+// of which the layers already spoke for. Applying a default there would
 // not just fill a gap — protoreflect clears the siblings on Set, so
 // the layer-supplied member would silently lose its value and the
 // config would come back with a field nobody asked for.
 //
-// The presence check alone cannot catch this — the default's own path
-// really is absent from the union; it is the *sibling's* path that is
-// present. Synthetic oneofs (proto3 `optional`) wrap exactly one
+// The presence check on fd's own path cannot catch this — the default's
+// path really is absent from the union; it is the *sibling's* path that
+// is present. Synthetic oneofs (proto3 `optional`) wrap exactly one
 // field, so there is no sibling to protect and no choice to override.
-func oneofTaken(m protoreflect.Message, fd protoreflect.FieldDescriptor) bool {
+//
+// "Spoke for" is read from the presence union first and the message
+// state second, and the union is the load-bearing half: a member the
+// operator explicitly cleared (`file = null`) is in the union but is
+// NOT set on the message, so consulting WhichOneof alone would treat
+// the oneof as free and fill a sibling's default — turning an explicit
+// clear into a value nobody asked for. That is the guard
+// [pxf.ApplyDefault]'s godoc assigns to a SkipPostDecode caller, and
+// upstream's own postDecode reads the same set (trendvidia/protowire-go
+// #72, draft -01 §annotation-extensions, "Oneof Members"). The message
+// check is kept for a caller that hands Apply a populated message with
+// a partial or empty presence map.
+func oneofTaken(m protoreflect.Message, fd protoreflect.FieldDescriptor, present map[string]struct{}, prefix string) bool {
 	od := fd.ContainingOneof()
 	if od == nil || od.IsSynthetic() {
 		return false
+	}
+	members := od.Fields()
+	for i, n := 0, members.Len(); i < n; i++ {
+		sibling := members.Get(i)
+		if sibling.Number() == fd.Number() {
+			continue
+		}
+		if _, ok := present[joinPath(prefix, string(sibling.Name()))]; ok {
+			return true
+		}
 	}
 	which := m.WhichOneof(od)
 	return which != nil && which.Number() != fd.Number()

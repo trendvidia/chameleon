@@ -153,6 +153,10 @@ base_url = "mybigproject.com"
 
 What it catches: a `prod.pxf` file accidentally moved to `env/dev.pxf` (env mismatch), a plaintext file dropped into an encrypted slot (encrypted mismatch), the wrong layer file at the wrong path (id mismatch). What it doesn't carry: any resolution semantics. Layer content is still just the schema-typed body; the header is sanity-check metadata only. Files without `@header` parse exactly as before.
 
+> **Your schema is validated across its whole import graph.** Parsing a layer binds your config message, and since protowire-go v1.4.0 the bind-time checks — PXF-reserved names, `(pxf.key)`, `(pxf.default)` and `(pxf.required)` placement — cover the descriptor's **transitive imports**, not just the file declaring the message ([protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71)). A `config.proto` that imports a shared `common.proto` now fails to bind if `common.proto` carries a misplaced annotation *anywhere*, whether or not your config type refers to the offending message. Budget a repo-wide pass rather than a per-file one when upgrading. The cost is negative, not positive: validation is memoized per descriptor, and upstream measured decode 6–7% faster than the single-file walk it replaced.
+>
+> Note what triggers it: *parsing a layer*. `chameleon verify` only checks each layer's `@header.content_sha256` against the file body — it never binds your config message — and a resolve whose layers are all optional-and-absent parses nothing, so neither one reports a misplaced annotation. Resolve each environment against a layer that exists to be sure you have seen them all.
+
 ### Templates and interpolation
 
 chameleon recognizes `${...}` in **two distinct stages**. They share the syntax for ops-readable consistency but run on different code paths and can't cross-reference each other.
@@ -850,15 +854,18 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 - **WKT atomic merge** — `pxf.Secret` / `Timestamp` / `BigInt` / etc. replace whole, never deep-merge. A higher layer's `db_password = "new"` discards a lower layer's `hint`; re-declare metadata explicitly if you want it preserved. The atomic semantic also applies to "empty" Secret blocks: `pw { hint = "h" }` or `pw { }` (no `value`) **drops** any lower-layer secret value, matching "replaces the Secret as a unit." To preserve the value while updating only the hint, the higher layer must re-supply value (`pw { value = "..." hint = "h" }`). To intentionally clear, `pw = null` is the more explicit primitive.
 
-- **`(pxf.default)` type coverage.** The post-merge defaults pass honors an annotation on any scalar field and on the atomic well-known types that PXF has a literal form for: `Duration` (`"250ms"`), `Timestamp` (RFC3339), eight of the nine `google.protobuf` wrappers, `pxf.BigInt`, `pxf.Decimal`, `pxf.BigFloat`. A default on a WKT field sets the **whole** value — atomicity governs merging, not defaulting. A default on any other message-typed field (`google.protobuf.Any`, `pxf.Secret`, `google.protobuf.Struct`, a user-defined message) is a resolve-time **error**, not a silent no-op. The one remaining silent case is `repeated` / `map` fields, where the annotation is ignored ([#131](https://github.com/trendvidia/chameleon/issues/131)).
+- **`(pxf.default)` type coverage.** The post-merge defaults pass honors an annotation on any scalar field and on the atomic well-known types that PXF has a literal form for: `Duration` (`"250ms"`), `Timestamp` (RFC3339), all nine `google.protobuf` wrappers, `pxf.BigInt`, `pxf.Decimal`, `pxf.BigFloat`. A default on a WKT field sets the **whole** value — atomicity governs merging, not defaulting.
 
-  Three edges are worth knowing before you annotate a WKT field:
+  **Every placement one literal cannot denote is now rejected when the schema binds**, not at resolve time and not in silence — a default on `google.protobuf.Any`, `pxf.Secret`, `google.protobuf.Struct`, a user-defined message, or on a `repeated` / `map` field fails the layer parse, naming the field. That is protowire-go v1.4.0 ([#68](https://github.com/trendvidia/protowire-go/issues/68), [#69](https://github.com/trendvidia/protowire-go/issues/69)); before it, the message cases were a resolve-time error only for environments whose layers left the path unset, and the list cases were ignored entirely.
 
-  - **`google.protobuf.BytesValue` is the ninth wrapper and the one that is not covered** — protowire-go's wrapper-default path has no bytes branch, so `[(pxf.default) = "aGVsbG8="]` on a `BytesValue` field is a resolve-time error (`unsupported default kind bytes`). The identical literal on a plain `bytes` scalar decodes fine; only the wrapper is affected.
+  Binding is what runs the check, and a layer parse is what binds. A resolve that parses no layer at all — every entry `required = false` and absent — still takes the pre-v1.4.0 path: the message cases surface as `resolver: defaults: <path>: …`, and a `repeated` / `map` default is skipped in silence. Hoisting the check to `resolver.New` / `chameleon lint` / `chameleon verify` is tracked as the open half of [#134](https://github.com/trendvidia/chameleon/issues/134).
+
+  Two edges are worth knowing before you annotate a WKT field:
+
   - **A default on a WKT is never interpolated.** Defaults run before interpolation so that a default may itself be a template (`"api.${base_url}"`), but interpolation stops at the same atomic boundary the merge does — so a `${...}` inside a default on a `google.protobuf.StringValue` reaches your resolved config verbatim. Use a plain `string` field when the default needs interpolation.
   - **Bool literals must be exactly `"true"`.** protowire-go compares the literal against `"true"`, so `"True"` / `"1"` / `"yes"` yield `false` with no error — and the path still counts as satisfying `(pxf.required)`. Every other literal kind reports a parse failure.
 
-- **`(pxf.default)` inside a `oneof` yields to the layer's choice.** Setting any oneof member clears its siblings, so a default is skipped whenever some layer already selected a different member of the same oneof — otherwise filling `timeout`'s default would silently discard an operator's explicit `file = "/tmp/x"`. Fields from proto3 `optional` (a synthetic single-field oneof) are unaffected and default normally.
+- **`(pxf.default)` inside a `oneof` yields to the layer's choice.** Setting any oneof member clears its siblings, so a default is skipped whenever some layer already selected a different member of the same oneof — otherwise filling `timeout`'s default would silently discard an operator's explicit `file = "/tmp/x"`. An explicit clear counts as a choice: `file = null` also suppresses the sibling default, so "no backend" stays no backend rather than coming back as a `timeout`. Fields from proto3 `optional` (a synthetic single-field oneof) are unaffected and default normally.
 
 - **Sops `context.Context` threading — closed via the `trendvidia/sops/v4` fork.** Chameleon's `Decrypter.Decrypt` threads `ctx` through `decrypt.DataIntoWriterContext`; in-flight KMS round-trips abort on `ctx` deadline / cancellation natively for AWS / GCP / Azure / Vault. HuaweiCloud KMS is approximated via a goroutine shim (see fork [#10](https://github.com/trendvidia/sops/issues/10)). The `chameleon migrate` CLI uses the corresponding `encrypt.UsingSameKeysAsWithContext` so re-encrypts honor ctx the same way. Upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) tracks the merge candidate; the `chameleon/sops` module — the only one of the three that depends on the fork since v0.23.0 — consumes it directly under its `github.com/trendvidia/sops/v4` module path, so no `replace` directive is required.
 
@@ -869,7 +876,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 | Dep | Version |
 |---|---|
 | Go | 1.26+ |
-| `github.com/trendvidia/protowire-go` | `>= v0.77.0` (block-form `OnSecretField` routing; v0.76.0+ covers scalar shorthand) |
+| `github.com/trendvidia/protowire-go` | `>= v1.4.0` (bind-time `(pxf.default)` placement rules over the import closure; block-form `OnSecretField` routing since v0.77.0) |
 | `github.com/trendvidia/sops/v4` | `>= v4.0.0` — **only reached through the `chameleon/sops` module**; the library module has not required it since v0.23.0 (soft-fork of `getsops/sops` consumed directly under its own module path — no `replace` directive needed) |
 | `github.com/awnumar/memguard` | `>= v0.22.5` |
 

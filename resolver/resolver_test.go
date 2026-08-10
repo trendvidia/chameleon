@@ -1051,13 +1051,28 @@ api_key = "k"
 	})
 }
 
-// TestResolve_UnsupportedDefaultErrorIsNotDoubledPrefixed pins the
-// operator-facing shape of the new defaults rejection. defaults.Apply
-// already prefixes "defaults: ", so the resolver wraps with a bare
-// "resolver: " — otherwise the error reads "resolver: defaults:
-// defaults: …" and anyone grepping logs for the documented text
-// misses it.
-func TestResolve_UnsupportedDefaultErrorIsNotDoubledPrefixed(t *testing.T) {
+// TestResolve_UnhonorableDefaultFailsEveryEnvironment pins where an
+// unhonorable (pxf.default) is caught and, more importantly, that the
+// catch does not depend on the data.
+//
+// It used to be caught by defaults.Apply, which consults the
+// annotation only for a path no layer set — so the same schema
+// resolved cleanly for an environment whose layers happened to set the
+// field and failed for one that did not. CI green on dev, prod broken
+// at deploy; that data-dependence is what issue #134 was filed about.
+//
+// protowire-go v1.4.0 rejects the placement at bind time
+// (trendvidia/protowire-go#69), and binding is a property of the
+// descriptor, so both cases below now fail identically. That is #134's
+// substance, answered upstream. What is still chameleon's to decide is
+// whether to hoist the check earlier than the first layer parse — to
+// resolver.New, chameleon lint and chameleon verify — which is the
+// half of #134 left open.
+//
+// The anti-stutter assertion is carried over: the resolver must not
+// double its own prefix, or anyone grepping logs for the documented
+// text misses it.
+func TestResolve_UnhonorableDefaultFailsEveryEnvironment(t *testing.T) {
 	const badAppSrc = `
 syntax = "proto3";
 package badapp.v1;
@@ -1094,6 +1109,92 @@ version = "1.0.0"
 environments = [{ name = "prod" }]
 layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 `)
+	// The two halves of #134's data-dependence: a layer that leaves the
+	// annotated path alone, and one that sets it. Before the bind-time
+	// move the first failed and the second succeeded.
+	for _, c := range []struct {
+		name  string
+		layer string
+	}{
+		{"layer leaves the path unset", `base_url = "x"`},
+		{"layer sets the path", "base_url = \"x\"\ninner {\n  x = \"set\"\n}"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fs := fstest.MapFS{
+				"base.pxf": &fstest.MapFile{Data: []byte(c.layer)},
+			}
+			sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
+			r, err := resolver.New[*dynamicpb.Message](sample, spec,
+				resolver.WithSource("default", source.FS(fs)))
+			require.NoError(t, err)
+
+			_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+			require.Error(t, err, "an unhonorable (pxf.default) must fail whatever the layers set")
+
+			// Names the field and the type no literal denotes, so an
+			// operator can find it in the schema.
+			assert.Contains(t, err.Error(), "badapp.v1.BadApp.inner")
+			assert.Contains(t, err.Error(), "badapp.v1.Inner")
+
+			// One prefix per pass, still. Note this schema now fails at
+			// bind time, so the error never contains "defaults:" at all
+			// — the live anti-stutter coverage is in
+			// TestResolve_DefaultsErrorIsNotDoublePrefixed below, which
+			// reaches defaults.Apply for real.
+			assert.NotContains(t, err.Error(), "defaults: defaults:",
+				"the pass name must appear once, not twice")
+			assert.NotContains(t, err.Error(), "parse layer \"base\": parse layer",
+				"nor may the parse wrapper stutter")
+		})
+	}
+}
+
+// TestResolve_DefaultsErrorIsNotDoublePrefixed keeps the anti-stutter
+// rule covered on a path that still reaches defaults.Apply.
+//
+// The bind-time move took the old carrier away: a bad *placement* now
+// fails the layer parse, so that error never passes through the
+// resolver's defaults wrap. A bad *literal* on a legal placement still
+// does — the placement binds, and the resolve runs with
+// SkipPostDecode, so chameleon's own pass is what rejects it. Without
+// a test here, re-introducing "resolver: defaults: defaults: …" at
+// resolver.go's defaults wrap would pass CI.
+func TestResolve_DefaultsErrorIsNotDoublePrefixed(t *testing.T) {
+	const appSrc = `
+syntax = "proto3";
+package badlit.v1;
+
+import "pxf/annotations.proto";
+import "google/protobuf/duration.proto";
+
+message App {
+  string base_url = 1;
+  google.protobuf.Duration grace = 2 [(pxf.default) = "not-a-duration"];
+}
+`
+	sources := map[string]string{
+		"chain.proto":           chainSpecProtoSrc,
+		"app.proto":             appSrc,
+		"pxf/annotations.proto": annotationsProtoSrcResolver,
+	}
+	comp := protocompile.Compiler{
+		Resolver: protocompile.WithStandardImports(
+			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(sources)},
+		),
+	}
+	files, err := comp.Compile(context.Background(), "chain.proto", "app.proto")
+	require.NoError(t, err)
+	rl := files.AsResolver()
+	cd, err := rl.FindDescriptorByName("chameleon.v1.ChainSpec")
+	require.NoError(t, err)
+	ad, err := rl.FindDescriptorByName("badlit.v1.App")
+	require.NoError(t, err)
+
+	spec := parseSpec(t, cd.(protoreflect.MessageDescriptor), `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`)
 	fs := fstest.MapFS{
 		"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x"`)},
 	}
@@ -1104,10 +1205,100 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 
 	_, err = r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "resolver: defaults: inner:")
-	assert.Contains(t, err.Error(), "badapp.v1.Inner")
+
+	// The placement is legal, so this must NOT be a bind-time rejection.
+	require.Contains(t, err.Error(), "defaults: ",
+		"a bad literal must still be caught by the defaults pass")
+	assert.Contains(t, err.Error(), "resolver: defaults: grace:",
+		"the documented error shape, one prefix per pass")
 	assert.NotContains(t, err.Error(), "defaults: defaults:",
 		"the pass name must appear once, not twice")
+}
+
+// TestResolve_NoLayerParsedSkipsBindTimeCheck pins the boundary of the
+// v1.4.0 bind-time move, which is narrower than "the schema is checked
+// when you resolve": nothing binds the config descriptor except
+// parsing a layer, so a resolve whose layers are all
+// optional-and-absent never runs the check at all.
+//
+// Both halves are the pre-v1.4.0 behaviour, still reachable:
+// a bad message-typed placement falls through to defaults.Apply's own
+// resolve-time error, and a bad list placement is skipped in silence —
+// the #131 shape the CHANGELOG describes as gone.
+//
+// Pinned rather than fixed. Closing it means binding the sample
+// descriptor in resolver.New (and in chameleon lint / verify), which
+// is exactly the half of #134 this PR records as still open and still
+// chameleon's to decide. The docs were corrected to describe the
+// boundary this test draws; when the hoist lands, this test inverts.
+func TestResolve_NoLayerParsedSkipsBindTimeCheck(t *testing.T) {
+	const appSrc = `
+syntax = "proto3";
+package unbound.v1;
+
+import "pxf/annotations.proto";
+
+message App {
+  string base_url = 1;
+  Inner inner = 2 [(pxf.default) = "nope"];
+  repeated string tags = 3 [(pxf.default) = "ignored"];
+}
+
+message Inner { string x = 1; }
+`
+	sources := map[string]string{
+		"chain.proto":           chainSpecProtoSrc,
+		"app.proto":             appSrc,
+		"pxf/annotations.proto": annotationsProtoSrcResolver,
+	}
+	comp := protocompile.Compiler{
+		Resolver: protocompile.WithStandardImports(
+			&protocompile.SourceResolver{Accessor: protocompile.SourceAccessorFromMap(sources)},
+		),
+	}
+	files, err := comp.Compile(context.Background(), "chain.proto", "app.proto")
+	require.NoError(t, err)
+	rl := files.AsResolver()
+	cd, err := rl.FindDescriptorByName("chameleon.v1.ChainSpec")
+	require.NoError(t, err)
+	ad, err := rl.FindDescriptorByName("unbound.v1.App")
+	require.NoError(t, err)
+
+	spec := parseSpec(t, cd.(protoreflect.MessageDescriptor), `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = false }]
+`)
+
+	newResolver := func(t *testing.T, fs fstest.MapFS) *resolver.Resolver[*dynamicpb.Message] {
+		t.Helper()
+		sample := dynamicpb.NewMessage(ad.(protoreflect.MessageDescriptor))
+		r, err := resolver.New[*dynamicpb.Message](sample, spec,
+			resolver.WithSource("default", source.FS(fs)))
+		require.NoError(t, err)
+		return r
+	}
+
+	t.Run("a parsed layer binds and rejects both placements", func(t *testing.T) {
+		r := newResolver(t, fstest.MapFS{
+			"base.pxf": &fstest.MapFile{Data: []byte(`base_url = "x"`)},
+		})
+		_, err := r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `parse layer "base"`)
+		assert.Contains(t, err.Error(), "unbound.v1.App.inner")
+		assert.Contains(t, err.Error(), "unbound.v1.App.tags")
+	})
+
+	t.Run("no layer parsed falls back to the resolve-time path", func(t *testing.T) {
+		r := newResolver(t, fstest.MapFS{}) // optional layer absent
+		_, err := r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "resolver: defaults: inner:",
+			"the pre-v1.4.0 resolve-time rejection, not the bind-time one")
+		assert.NotContains(t, err.Error(), `parse layer "base"`,
+			"nothing was parsed, so nothing bound")
+	})
 }
 
 func TestResolve_RequiredFieldMissingFails(t *testing.T) {
