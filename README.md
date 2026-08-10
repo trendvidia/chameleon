@@ -200,6 +200,8 @@ domain     = "dev.mybigproject.com"
 - **Unknown references** error with `interpolate.ErrUnknownReference`.
 - **WKT exclusion.** `pxf.Secret`, `google.protobuf.Timestamp`, `google.protobuf.Duration`, and other well-known type subtrees are deliberately not traversed. Their inner fields don't participate in interpolation, and they cannot be referenced from inside a `${...}` lookup. This keeps secret plaintext out of the template namespace and decouples interpolation from value-type internals.
 
+  **`google.protobuf.StringValue` is the one exception, and only for writing.** Its payload is ordinary config text, so a `${...}` in it is expanded like any other string — which is what makes a `(pxf.default)` on a wrapper field behave the same as one on a plain `string` ([#135](https://github.com/trendvidia/chameleon/issues/135)). It is still not *readable*: `${some_wrapper.value}` is an `invalid reference`, exactly as for a `pxf.Secret`. Writing into a WKT leaks nothing; reading out of one is what the exclusion exists to prevent.
+
 #### The two stages don't cross-reference
 
 You cannot use `${env}` inside a config string value — `interpolate.Apply` would look up `env` as a field path in the merged message and error with `ErrUnknownReference`. You cannot use `${field.path}` inside a chain spec layer path — `chain.Expand` only recognizes `${env}` and `${ctx.*}` and would treat anything else as a literal path component.
@@ -862,7 +864,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
   Two edges are worth knowing before you annotate a WKT field:
 
-  - **A default on a WKT is never interpolated.** Defaults run before interpolation so that a default may itself be a template (`"api.${base_url}"`), but interpolation stops at the same atomic boundary the merge does — so a `${...}` inside a default on a `google.protobuf.StringValue` reaches your resolved config verbatim. Use a plain `string` field when the default needs interpolation.
+  - **A default on a `StringValue` is interpolated, like one on a plain `string`.** Defaults run before interpolation precisely so a default may itself be a template (`"api.${base_url}"`), and that now holds for the wrapper too ([#135](https://github.com/trendvidia/chameleon/issues/135)) — it previously reached your resolved config verbatim, with no error and no warning. Defaults on the other atomic WKTs are still not interpolated, which costs nothing: a template does not belong in a `Timestamp`, a `Duration` or a number, and a `pxf.Secret` must never be run through the template engine at all.
   - **Bool literals must be exactly `"true"`.** protowire-go compares the literal against `"true"`, so `"True"` / `"1"` / `"yes"` yield `false` with no error — and the path still counts as satisfying `(pxf.required)`. Every other literal kind reports a parse failure.
 
 - **`(pxf.default)` inside a `oneof` yields to the layer's choice.** Setting any oneof member clears its siblings, so a default is skipped whenever some layer already selected a different member of the same oneof — otherwise filling `timeout`'s default would silently discard an operator's explicit `file = "/tmp/x"`. An explicit clear counts as a choice: `file = null` also suppresses the sibling default, so "no backend" stays no backend rather than coming back as a `timeout`. Fields from proto3 `optional` (a synthetic single-field oneof) are unaffected and default normally.

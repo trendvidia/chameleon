@@ -114,6 +114,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A `oneof` member cleared with `= null` is no longer replaced by a sibling's `(pxf.default)`.** `defaults.Apply` asked the merged message which oneof arm was set, but `null` records the path as present *and* leaves the field unset — so an operator writing `file = null` to mean "no backend" got the sibling `timeout` default applied over it, the same data-loss shape as the oneof bug fixed above, reached through an explicit clear instead of an explicit choice. The guard now reads the presence union, which is what `pxf.ApplyDefault`'s contract asks of a `SkipPostDecode` caller and what protowire-go's own post-decode pass reads ([protowire-go#72](https://github.com/trendvidia/protowire-go/issues/72)); the message check is kept for callers who hand `defaults.Apply` a populated message with no presence map. Pinned by `TestApply_NulledOneofMemberSuppressesSiblingDefault`, plus a test that runs the same document through both passes and requires them to agree.
 
+- **A `(pxf.default)` on a `google.protobuf.StringValue` is now template-expanded, like one on a plain `string`** ([#135](https://github.com/trendvidia/chameleon/issues/135)). The defaults pass runs before interpolation specifically so a default may itself be a template — `"api.${base_url}"` — and since [#129](https://github.com/trendvidia/chameleon/issues/129) a default can land on an atomic WKT. Interpolation stopped at the atomic boundary, so the two features did not compose: the raw `${...}` reached the resolved config verbatim, with no error and no warning.
+
+  ```proto
+  string                      base  = 1 [(pxf.default) = "example.com"];
+  string                      api_s = 2 [(pxf.default) = "api.${base}"];
+  google.protobuf.StringValue api_w = 3 [(pxf.default) = "api.${base}"];
+  ```
+
+  `api_s` resolved to `api.example.com` and `api_w.value` to the literal `api.${base}`. Both now resolve to `api.example.com`.
+
+  **The boundary this crosses is narrower than it looks.** `wkt.Atomic` is unchanged, and merge, defaults and validate still treat every WKT as one whole value. Only interpolate's *write* walk descends, and only into `StringValue` — the new `wkt.TemplatableText` predicate, which is exactly one type wide and pinned that way per type. Interpolate's *lookup* walk is untouched: `${some_wrapper.value}` remains an `ErrInvalidReference`, as it does for a `pxf.Secret`. Writing into a WKT leaks nothing; reading out of one is the vector that boundary exists for, and it stays shut.
+
+  The rewrite is reported to `OnApplied` — and so to `resolver.Trace` and `chameleon explain` — at the WKT field's own path rather than an inner `.value`, matching how every other pass keys a WKT.
+
 - **An explicit `chameleon … --decrypter=none` is no longer overridden by `$HOME/.chameleon`** ([#130](https://github.com/trendvidia/chameleon/issues/130)). The flag's Go default is `"none"`, so `applyAppDefaults` could not tell "the operator typed `--decrypter=none`" from "the flag was omitted" and treated both as unset — adopting the selected app's `decrypter = "sops"` in either case. On any machine whose user config named a decrypter, the one explicit way to decline decryption did nothing, and for `reveal` the result was the secret on stdout under a flag that asked for the opposite. Which flags the user actually typed is now read off the `flag.FlagSet`, so an explicit `--decrypter` always wins; with the flag omitted the config's value is still adopted, unchanged. Pinned end-to-end in `cli_smoke_test.go` against a user config that does name a decrypter.
 
   Only `--decrypter` is treated this way. `--layers` has the same "non-empty Go default" shape (`"."`) and the same blind spot, but its failure mode is a wrong path rather than an unasked-for decrypt; it is left as is here rather than folded into a security fix.
