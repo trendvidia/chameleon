@@ -81,7 +81,7 @@ Flags:`)
 	if err != nil {
 		return err
 	}
-	applyAppDefaults(app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
+	applyAppDefaults(fs, app, schema, message, chainPath, layersDir, env, decrypter, &includePaths)
 
 	if *schema == "" || *message == "" {
 		fs.Usage()

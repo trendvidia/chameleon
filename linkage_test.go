@@ -25,27 +25,51 @@ import (
 // see, and fail if a key-management dependency reappears on the
 // plaintext path.
 
-// plaintextPath is every package a consumer can reach without opting
-// into decryption: the chameleon.Load shortcut, the resolver, the
-// passes it runs, and the bundle reader (opening a bundle is a read,
-// and its output feeds straight into chameleon.Load). Deliberately
-// excludes internal/bundler (the *write* side — bundling re-encrypts,
-// so it links a backend on purpose) and cmd (binaries, not consumer
-// surface).
-var plaintextPath = []string{
-	"github.com/trendvidia/chameleon",
-	"github.com/trendvidia/chameleon/bundle",
-	"github.com/trendvidia/chameleon/chain",
-	"github.com/trendvidia/chameleon/crypt",
-	"github.com/trendvidia/chameleon/defaults",
-	"github.com/trendvidia/chameleon/interpolate",
-	"github.com/trendvidia/chameleon/merge",
-	"github.com/trendvidia/chameleon/parse",
-	"github.com/trendvidia/chameleon/resolver",
-	"github.com/trendvidia/chameleon/secret",
-	"github.com/trendvidia/chameleon/source",
-	"github.com/trendvidia/chameleon/validate",
-	"github.com/trendvidia/chameleon/wkt",
+// modulePath is this module, and the prefix every package below is
+// filtered against.
+const modulePath = "github.com/trendvidia/chameleon"
+
+// plaintextPath returns every package a consumer can reach without
+// opting into decryption: the chameleon.Load shortcut, the resolver,
+// the passes it runs, the generated protos, and the bundle reader
+// (opening a bundle is a read, and its output feeds straight into
+// chameleon.Load).
+//
+// Derived from `go list ./...` rather than written out, because a
+// hand-kept list is guarded only by remembering to edit it: a public
+// package added next month that imports chameleon/sops for one type is
+// the exact mistake this file exists to catch, and it would sail past
+// a literal that never mentions it. Only three things are subtracted,
+// each for a reason that will not change:
+//
+//   - internal/* — not consumer surface, and internal/bundler is the
+//     *write* side, which links a backend on purpose (bundling
+//     re-encrypts).
+//   - cmd/* — binaries. `chameleon bundle` decrypts by design.
+//   - chameleon/sops — the backend itself. It is what the negative
+//     control below points the same check at.
+func plaintextPath(t *testing.T) []string {
+	t.Helper()
+
+	var out []string
+	for _, pkg := range list(t, "./...") {
+		switch {
+		case pkg == selfPrefix,
+			strings.HasPrefix(pkg, modulePath+"/internal/"),
+			strings.HasPrefix(pkg, modulePath+"/cmd/"):
+			continue
+		}
+		out = append(out, pkg)
+	}
+
+	// Derivation means the list can go wrong quietly — a filter that
+	// over-matches leaves a shorter set that still passes. Assert the
+	// two endpoints of the plaintext path are in it: the entry point
+	// consumers call and the package that regressed in #130.
+	for _, must := range []string{modulePath, modulePath + "/resolver", modulePath + "/bundle"} {
+		require.Contains(t, out, must, "derived plaintext set lost a package it must cover")
+	}
+	return out
 }
 
 // selfPrefix is chameleon's own bridge package — the one entry in
@@ -69,6 +93,13 @@ var keyManagement = []struct{ prefix, what string }{
 // it.
 func deps(t *testing.T, pkgs ...string) []string {
 	t.Helper()
+	return list(t, append([]string{"-deps"}, pkgs...)...)
+}
+
+// list runs `go list` with args and returns the package names it
+// printed.
+func list(t *testing.T, args ...string) []string {
+	t.Helper()
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no go toolchain on PATH; cannot inspect the package graph")
 	}
@@ -77,15 +108,14 @@ func deps(t *testing.T, pkgs ...string) []string {
 	// downloading github.com/aws/aws-sdk-go-v2 v1.30.0") to stderr on
 	// a cold cache, and folding that in would feed the checks below
 	// package names that are not in the graph at all.
-	args := append([]string{"list", "-deps"}, pkgs...)
-	cmd := exec.CommandContext(t.Context(), "go", args...)
+	cmd := exec.CommandContext(t.Context(), "go", append([]string{"list"}, args...)...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
-	require.NoError(t, err, "go list -deps failed: %s", stderr.String())
+	require.NoError(t, err, "go list failed: %s", stderr.String())
 
 	lines := strings.Fields(string(out))
-	require.NotEmpty(t, lines, "go list -deps returned nothing — the check below would pass vacuously")
+	require.NotEmpty(t, lines, "go list returned nothing — the check below would pass vacuously")
 	return lines
 }
 
@@ -94,7 +124,7 @@ func TestPlaintextPathLinksNoKeyManagement(t *testing.T) {
 		t.Skip("shells out to go list")
 	}
 
-	for _, pkg := range deps(t, plaintextPath...) {
+	for _, pkg := range deps(t, plaintextPath(t)...) {
 		for _, km := range keyManagement {
 			if strings.HasPrefix(pkg, km.prefix) {
 				t.Errorf("plaintext path links %s (%s).\n"+

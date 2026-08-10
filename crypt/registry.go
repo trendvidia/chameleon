@@ -6,7 +6,8 @@ package crypt
 import (
 	"errors"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -53,6 +54,15 @@ var ErrAmbiguousBackend = errors.New("crypt: multiple decryption backends regist
 // ErrUnknownBackend is returned by [Get] when no backend is
 // registered under the requested name.
 var ErrUnknownBackend = errors.New("crypt: unknown backend")
+
+// ErrEncryptOnlyBackend reports a backend that exists under the
+// requested name but carries no Decrypter. Declared here, alongside
+// the other selection failures, so a caller naming a backend from
+// configuration can tell "typo or missing import"
+// ([ErrUnknownBackend]) from "that one only encrypts" with errors.Is
+// rather than by matching on message text. Returned by the resolver's
+// WithDecrypterNamed handling.
+var ErrEncryptOnlyBackend = errors.New("crypt: backend cannot decrypt")
 
 var (
 	mu       sync.RWMutex
@@ -129,8 +139,10 @@ func Get(name string) (Backend, error) {
 // WithDecrypterNamed.
 //
 // Returns [ErrNoBackend] when nothing decrypt-capable is linked in and
-// [ErrAmbiguousBackend] when several are. Both errors name the
-// registered backends so the caller can see what the build has.
+// [ErrAmbiguousBackend] when several are. Both name the backends the
+// build does have, so the caller can tell "you linked nothing" from
+// "you linked the wrong half" — an encrypt-only build would otherwise
+// be told to link a backend it already has.
 func SoleDecrypter() (Decrypter, string, error) {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -144,23 +156,26 @@ func SoleDecrypter() (Decrypter, string, error) {
 
 	switch len(capable) {
 	case 0:
+		// Bare sentinel for the empty registry: "(registered: none)"
+		// would only repeat what the message already says. With
+		// encrypt-only backends linked in, naming them is the whole
+		// point — the fix is a decrypt half, not a first import.
+		if all := names(backends); len(all) > 0 {
+			return nil, "", fmt.Errorf("%w (registered, none decrypt-capable: %s)",
+				ErrNoBackend, strings.Join(all, ", "))
+		}
 		return nil, "", ErrNoBackend
 	case 1:
 		return backends[capable[0]].Decrypter, capable[0], nil
 	default:
-		sort.Strings(capable)
+		slices.Sort(capable)
 		return nil, "", fmt.Errorf("%w (%s)", ErrAmbiguousBackend, strings.Join(capable, ", "))
 	}
 }
 
-// names returns the keys of m. Callers hold mu.
+// names returns the keys of m, sorted. Callers hold mu.
 func names(m map[string]Backend) []string {
-	out := make([]string, 0, len(m))
-	for n := range m {
-		out = append(out, n)
-	}
-	sort.Strings(out)
-	return out
+	return slices.Sorted(maps.Keys(m))
 }
 
 // listOrNone renders a backend-name list for an error message,

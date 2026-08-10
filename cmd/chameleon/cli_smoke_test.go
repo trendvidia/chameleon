@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -624,12 +625,15 @@ func TestUsage(t *testing.T) {
 // Nothing here can be decrypted; the point is which error comes out.
 func encryptedFixture(t *testing.T) string {
 	t.Helper()
-	// $HOME/.chameleon can set `decrypter = "sops"` for the default
-	// app, and applyAppDefaults adopts it whenever --decrypter is
-	// absent or "none" — which would decide this test on the
-	// developer's machine config rather than on the code. Point HOME
-	// at an empty dir so there is no user config to adopt.
-	t.Setenv("HOME", t.TempDir())
+	// The user config can set `decrypter = "sops"` for the default
+	// app, and applyAppDefaults adopts it when --decrypter is absent —
+	// which would decide this test on the developer's machine config
+	// rather than on the code. Point the loader at a path that does
+	// not exist. CHAMELEON_USER_CONFIG rather than HOME because
+	// userConfigPath() checks the env var *first*: overriding HOME
+	// alone leaves an exported CHAMELEON_USER_CONFIG in charge, which
+	// is the same environment dependency one level down.
+	t.Setenv("CHAMELEON_USER_CONFIG", filepath.Join(t.TempDir(), "nonexistent"))
 	dir := t.TempDir()
 	writeFixture(t, dir, map[string]string{
 		// A pxf.Secret field so `reveal` gets past its is-this-a-secret
@@ -728,4 +732,63 @@ func TestDecrypterNone_IsTheDefault(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, resolver.ErrNoDecrypter)
+}
+
+// TestDecrypterNone_SurvivesUserConfig is the same opt-out with a user
+// config that says otherwise.
+//
+// applyAppDefaults used to read "none" as "unset" — the flag's Go
+// default is "none", so the value alone cannot say whether the
+// operator typed it — and adopt `decrypter = "sops"` from
+// $HOME/.chameleon. That turned the one explicit way to decline
+// decryption into a no-op on any machine whose config named a
+// decrypter, and for `reveal` the result was plaintext on stdout. The
+// flag is now looked up on the FlagSet, so typing it wins.
+//
+// The `reveal` leg is the one with teeth: it is the subcommand whose
+// success path prints the secret.
+func TestDecrypterNone_SurvivesUserConfig(t *testing.T) {
+	dir := encryptedFixture(t)
+
+	cfgPath := filepath.Join(t.TempDir(), ".chameleon")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`@type chameleon.v1.UserConfig
+
+default_app = "smoke"
+
+apps = {
+  "smoke": {
+    root      = "`+dir+`"
+    decrypter = "sops"
+  }
+}
+`), 0o644))
+	// Overrides the fixture's own isolation, on purpose: this test is
+	// about a config that *does* name a decrypter.
+	t.Setenv("CHAMELEON_USER_CONFIG", cfgPath)
+
+	base := []string{
+		"--schema=" + filepath.Join(dir, "app.proto"),
+		"--include=" + dir,
+		"--message=smoke.v1.Cfg",
+		"--chain=" + filepath.Join(dir, "chain.pxf"),
+		"--layers=" + dir,
+		"--env=prod",
+		"--field=api_key",
+	}
+
+	var out bytes.Buffer
+	err := revealCmd(nil, &out, append(slices.Clone(base), "--decrypter=none"))
+	require.Error(t, err, "an explicit --decrypter=none must outrank the user config")
+	assert.ErrorIs(t, err, resolver.ErrNoDecrypter,
+		"want the layer refused; got %v", err)
+	assert.Empty(t, out.String(), "and nothing may reach the writer")
+
+	// The other half of the contract: with the flag absent, the
+	// config's decrypter is still adopted. sops then fails on the
+	// garbage ciphertext, which is what proves it was reached.
+	out.Reset()
+	err = revealCmd(nil, &out, slices.Clone(base))
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, resolver.ErrNoDecrypter,
+		"the config's decrypter should have been adopted; got %v", err)
 }

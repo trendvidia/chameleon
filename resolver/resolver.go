@@ -131,6 +131,7 @@ type Option func(*config)
 type config struct {
 	sources        map[string]source.Source
 	dec            crypt.Decrypter
+	decSet         bool // WithDecrypter was passed, even with a nil Decrypter
 	decName        string
 	decNamed       bool // WithDecrypterNamed was passed, even with an empty name
 	noDec          bool
@@ -160,9 +161,20 @@ func WithSource(name string, src source.Source) Option {
 // It is not needed for the common case: with exactly one backend
 // registered (say, a blank import of chameleon/sops), the resolver
 // selects it on its own the first time an encrypted layer appears.
-// Passing nil is the same as not passing the option.
+//
+// A nil Decrypter fails [New] rather than being ignored: before the
+// registry, "no decrypter" and "do not decrypt" were the same thing,
+// so WithDecrypter(nil) reading as "not passed" was harmless. It is
+// not any more — not passing the option now means auto-select — so a
+// caller whose constructor returned nil would silently get ambient
+// credentials instead of the refusal they used to get. Use
+// [WithoutDecrypter] to say no. (This catches a nil interface; a typed
+// nil — WithDecrypter((*myDecrypter)(nil)) — is a non-nil interface
+// value and is installed as given, as everywhere else in Go.)
+//
+// Mutually exclusive with [WithDecrypterNamed] and [WithoutDecrypter].
 func WithDecrypter(d crypt.Decrypter) Option {
-	return func(c *config) { c.dec = d }
+	return func(c *config) { c.dec, c.decSet = d, true }
 }
 
 // WithDecrypterNamed selects a registered backend by name — the
@@ -298,8 +310,11 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 	// The three decrypter options are three different answers to the
 	// same question, so any two of them together is a wiring mistake
 	// rather than a precedence puzzle.
-	if picked := btoi(cfg.dec != nil) + btoi(cfg.decNamed) + btoi(cfg.noDec); picked > 1 {
+	if picked := btoi(cfg.decSet) + btoi(cfg.decNamed) + btoi(cfg.noDec); picked > 1 {
 		return nil, errors.New("resolver: WithDecrypter, WithDecrypterNamed and WithoutDecrypter are mutually exclusive")
+	}
+	if cfg.decSet && cfg.dec == nil {
+		return nil, errors.New(`resolver: WithDecrypter: nil Decrypter (use WithoutDecrypter to disable decryption)`)
 	}
 	if cfg.decNamed {
 		if cfg.decName == "" {
@@ -310,7 +325,8 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 			return nil, fmt.Errorf("resolver: WithDecrypterNamed: %w", err)
 		}
 		if b.Decrypter == nil {
-			return nil, fmt.Errorf("resolver: WithDecrypterNamed: backend %q is encrypt-only", cfg.decName)
+			return nil, fmt.Errorf("resolver: WithDecrypterNamed: %w: backend %q is encrypt-only",
+				crypt.ErrEncryptOnlyBackend, cfg.decName)
 		}
 		cfg.dec = b.Decrypter
 	}
@@ -403,6 +419,20 @@ type Trace struct {
 	// occurred. Surfaced by `chameleon explain` as a separate
 	// section.
 	ClobberedMetadata []ClobberRecord
+
+	// Decrypter names the crypt-registry backend this Resolve
+	// auto-selected, and is set only in that case: empty when no
+	// encrypted layer was reached, and empty when the caller named
+	// the Decrypter itself via WithDecrypter / WithDecrypterNamed
+	// (they already know which one it is).
+	//
+	// Auto-selection is the case worth reporting because it is the
+	// one nobody wrote down — registration follows the module graph,
+	// so a dependency can put a backend in a build without the build's
+	// author choosing it. This is the per-call answer to "who
+	// decrypted my layers"; [crypt.Registered] only says what was
+	// available.
+	Decrypter string
 }
 
 // ClobberRecord describes a single WKT-metadata clobber detected at
@@ -562,12 +592,15 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 			return nil, fmt.Errorf("%w: layer=%q: decryption disabled (WithoutDecrypter)", ErrNoDecrypter, ref.EntryID)
 		}
 		if ref.Encrypted && dec == nil {
-			d, _, lookupErr := crypt.SoleDecrypter()
+			d, name, lookupErr := crypt.SoleDecrypter()
 			if lookupErr != nil {
 				return nil, fmt.Errorf("%w: layer=%q: %w%s",
 					ErrNoDecrypter, ref.EntryID, lookupErr, decrypterHint(lookupErr))
 			}
 			dec = d
+			if trace != nil {
+				trace.Decrypter = name
+			}
 		}
 
 		layer := r.fresh()

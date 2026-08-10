@@ -269,6 +269,8 @@ Without `WithMeterProvider`, instruments use the noop provider — every record 
 
 `Resolution.Trace.ClobberedMetadata` also lists any WKT-metadata losses detected during merge — e.g., a higher layer's `db_password = "y"` silently drops a lower layer's `hint`. See [WKT metadata clobber](#wkt-metadata-clobber-warning) below.
 
+`Resolution.Trace.Decrypter` names the backend the resolver picked out of the crypt registry for this call, and is set only when it picked one — empty if no encrypted layer was reached, empty if you named the `Decrypter` yourself. That is the "who decrypted my layers" answer for the auto-selection path, which is the one nobody wrote down: see [Runtime decryption](#runtime-decryption).
+
 ### Debugging: pairing resolve-time provenance with runtime state
 
 Two production-debugging questions, two distinct answers:
@@ -482,7 +484,7 @@ or pass resolver.WithDecrypter
 
 Three escape hatches. `resolver.WithDecrypter(sops.Default())` passes an implementation explicitly — use it for a `Decrypter` you constructed yourself (see [Custom decryption](#custom-decryption-programmatic-key-injection)), or to pin one in a build that links several. `resolver.WithDecrypterNamed("sops")` picks a registered backend by name, which is what a build with more than one needs: auto-selection is only defined for the single-backend case, and several linked in without a choice is an error, not a coin flip. `resolver.WithoutDecrypter()` says no: an encrypted layer returns `ErrNoDecrypter` even when the build has a backend registered. The three are mutually exclusive.
 
-> **When you need `WithoutDecrypter`.** Registration follows the *module graph*, not your configuration — the same trade `database/sql` makes. A dependency that imports `chameleon/sops` for its own reasons registers the backend in your build too, so "I passed no decrypter" stopped being a reliable way to mean "do not decrypt". `crypt.Registered()` reports what a build ended up with. This is why `chameleon get/explain/reveal --decrypter=none` is wired to `WithoutDecrypter` rather than to a nil `Decrypter`.
+> **When you need `WithoutDecrypter`.** Registration follows the *module graph*, not your configuration — the same trade `database/sql` makes. A dependency that imports `chameleon/sops` for its own reasons registers the backend in your build too, so "I passed no decrypter" stopped being a reliable way to mean "do not decrypt". `crypt.Registered()` reports what a build ended up with. This is why `chameleon get/explain/reveal --decrypter=none` is wired to `WithoutDecrypter` rather than to a nil `Decrypter` — and why `resolver.WithDecrypter(nil)` is an error rather than a silent fall-through to auto-selection. Note that [`chameleon.Load`](#quick-start) takes no options and so cannot opt out: a program that needs encrypted layers refused must use `resolver.New` directly.
 
 > **Why link-time.** Until v0.22.1 the resolver imported `chameleon/sops` directly, so every consumer linked the whole sops key-management tree — AWS, Azure, GCP, Vault, Huawei KMS and their transitive weight — whether or not a single layer was encrypted. A program resolving two plaintext layers measured **68 MB**; the same program on v0.23.0 measures **11.7 MB**, of which 7.0 MB is the protobuf runtime any protobuf program pays ([#130](https://github.com/trendvidia/chameleon/issues/130)).
 

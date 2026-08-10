@@ -5,6 +5,7 @@ package resolver_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -239,7 +240,12 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE }]
 		resolver.WithDecrypterNamed("writeonly"),
 	)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "encrypt-only")
+	assert.ErrorIs(t, err, crypt.ErrEncryptOnlyBackend,
+		"matchable: a caller reading the backend name from config has to tell "+
+			"this apart from a typo (ErrUnknownBackend) without grepping the message")
+	assert.False(t, errors.Is(err, crypt.ErrUnknownBackend),
+		"the backend exists; it just cannot decrypt")
+	assert.Contains(t, err.Error(), "writeonly", "and the message still names it")
 }
 
 func TestWithDecrypterNamed_ConflictsWithWithDecrypter(t *testing.T) {
@@ -362,6 +368,80 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE }]
 			assert.Contains(t, err.Error(), "mutually exclusive", "got %q", err.Error())
 		})
 	}
+}
+
+func TestWithDecrypter_NilIsAnErrorNotAFallThrough(t *testing.T) {
+	// Before the registry, WithDecrypter(nil) and "no option" were the
+	// same harmless thing: both meant an encrypted layer failed. Now
+	// "no option" means auto-select, so silently treating nil as unset
+	// would hand ambient credentials to a caller whose constructor
+	// returned nil — fail-open, from a line that reads as opt-in.
+	chainDesc, appDesc := compileAll(t)
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE }]
+`)
+	registerBackend(t, "ambient", crypt.Backend{Decrypter: &recordingDecrypter{}})
+
+	_, err := resolver.New[*dynamicpb.Message](dynamicpb.NewMessage(appDesc), spec,
+		resolver.WithSource("default", source.FS(fstest.MapFS{})),
+		resolver.WithDecrypter(nil),
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "WithoutDecrypter",
+		"and the message must point at the option that does mean no: %v", err)
+}
+
+func TestTrace_RecordsTheAutoSelectedBackend(t *testing.T) {
+	// Auto-selection is the case nobody wrote down — registration
+	// follows the module graph — so it is the one Resolve has to
+	// report. crypt.Registered() says what was available; this says
+	// what was used.
+	chainDesc, appDesc := compileAll(t)
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "secret" path = "secret.pxf" for_each = ONCE encrypted = true required = true }]
+`)
+	registerBackend(t, "solo", crypt.Backend{Decrypter: &recordingDecrypter{plaintextTo: []byte(`base_url = "x"`)}})
+
+	r, err := resolver.New[*dynamicpb.Message](dynamicpb.NewMessage(appDesc), spec,
+		resolver.WithSource("default", source.FS(ciphertextFS())),
+		resolver.WithTrace(),
+	)
+	require.NoError(t, err)
+
+	res, err := r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+	require.NoError(t, err)
+	defer res.Destroy()
+
+	assert.Equal(t, "solo", res.Trace.Decrypter,
+		"the per-call answer to which backend decrypted these layers")
+}
+
+func TestTrace_DecrypterEmptyWhenTheCallerChose(t *testing.T) {
+	// A caller who passed the Decrypter already knows which one it is;
+	// reporting a registry name there would be a guess.
+	chainDesc, appDesc := compileAll(t)
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "secret" path = "secret.pxf" for_each = ONCE encrypted = true required = true }]
+`)
+
+	r, err := resolver.New[*dynamicpb.Message](dynamicpb.NewMessage(appDesc), spec,
+		resolver.WithSource("default", source.FS(ciphertextFS())),
+		resolver.WithDecrypter(&recordingDecrypter{plaintextTo: []byte(`base_url = "x"`)}),
+		resolver.WithTrace(),
+	)
+	require.NoError(t, err)
+
+	res, err := r.Resolve(context.Background(), resolver.Request{Environment: "prod"})
+	require.NoError(t, err)
+	defer res.Destroy()
+
+	assert.Empty(t, res.Trace.Decrypter)
 }
 
 // stubEncrypter is a crypt.Encrypter that is never called — it exists
