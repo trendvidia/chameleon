@@ -9,10 +9,39 @@ on:
 permissions:
   contents: read
 
+# Self-hosted runners execute workflow code on real machines, which is why
+# they are a bad idea on public repos: any fork PR would run there. chameleon
+# is private, so the only code that reaches them is code someone with push
+# access already wrote.
+#
+# Two runners serve this repo: `mac-arm64-mini-chameleon` (the mini) and
+# `chameleon-trader` (the Linux VPS that already hosts runners for voya, fyne
+# and friends). Both `runs-on` lists below name an OS *and* an arch label —
+# `[self-hosted]` alone would let either leg land on either box, silently and
+# only sometimes.
 jobs:
   test:
-    name: test
-    runs-on: [self-hosted, macOS, ARM64]
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.runs-on }}
+    # A wedged self-hosted runner otherwise blocks the queue for every repo on
+    # the same box. Warm runs finish in well under a minute; this is a
+    # circuit breaker, not a budget.
+    timeout-minutes: 20
+    strategy:
+      # Both legs always report. A macOS-only failure is exactly the signal
+      # this matrix exists to surface, and fail-fast would hide it behind
+      # whichever leg happened to finish first.
+      fail-fast: false
+      matrix:
+        # Linux is not decoration for a library that mlocks pages (memguard),
+        # shells out to `go list` in its own tests, and pins its module graph
+        # (#130). It is also what most consumers deploy on, while the only
+        # runner this repo had was a Mac.
+        include:
+          - name: macos-arm64
+            runs-on: [self-hosted, macOS, ARM64]
+          - name: linux-amd64
+            runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - name: Assert go-plus toolchain
