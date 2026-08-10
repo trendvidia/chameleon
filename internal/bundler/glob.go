@@ -64,7 +64,12 @@ func matchSegments(pat, path []string) bool {
 
 // validGlob reports whether pattern is syntactically well-formed.
 // Catches the two common authoring mistakes — `pre**fix` (`**` not
-// a whole segment) and “ (empty pattern). Returns nil on success.
+// a whole segment) and the empty pattern. Returns nil on success.
+//
+// Note for editors: do not write the empty pattern as a pair of
+// backticks here. gofmt's doc-comment printer rewrites a backtick
+// pair (and a pair of single quotes) into Unicode curly quotes, so
+// the example silently turns into punctuation on the next `make fmt`.
 func validGlob(pattern string) error {
 	if pattern == "" {
 		return errEmptyPattern

@@ -132,11 +132,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
-- **Formatting is gofumpt now, and CI enforces it.** The repo had drifted: `make fmt-check` existed but was not in `make ci` or the CI matrix, so 24 of 162 tracked `.go` files were not even `gofmt`-clean, and "don't run `make fmt`" had become working folklore because a repo-wide run would have buried any real diff. Normalized in one pass — 25 files, formatting only — and the check is now a step in the `lint` job and a prerequisite of `make ci`, so it cannot drift again.
+- **Formatting is gofumpt now, and CI enforces it.** The repo had drifted: `make fmt-check` existed but was not in `make ci` or the CI matrix, so 24 of 162 tracked `.go` files were not even `gofmt`-clean, and "don't run `make fmt`" had become working folklore because a repo-wide run would have buried any real diff. Normalized in one pass — 25 files, no executable code touched — and the check is now a step in the `lint` job and a prerequisite of `make ci`, so it cannot drift again.
 
   gofumpt is applied **through the pinned golangci-lint**, not a standalone binary, and that is the load-bearing detail: a separately installed `gofumpt` drifts ahead of the version golangci-lint bundles (v0.10.0 splits `f(a, b,` onto its own line where the bundled build leaves it), and a formatter whose check and fix disagree is worse than no formatter at all. `make tools` already installs the pinned version and CI already runs it, so this adds no tool anywhere.
 
-  Scope follows golangci-lint's own file discovery, which excludes generated code and the analyzer fixtures under `cmd/chameleon/testdata` for free — reformatting the first would be reverted by `make generate`, and the second would shift the line numbers `lint_test.go` asserts on.
+  Scope follows golangci-lint's own file discovery, which excludes generated code and the analyzer fixtures under `cmd/chameleon/testdata` for free — reformatting the first would be reverted by `make generate`, and the second is skipped because golangci-lint ignores `testdata` directories the way the go tool does. (`lint_test.go` would itself survive a reformat: it pins expectations with same-line `` // want `` markers, not absolute line numbers.)
+
+  One sharp edge worth knowing before the next repo-wide run: gofmt's doc-comment printer rewrites a backtick pair and a single-quote pair into Unicode curly quotes. The normalization pass hit this twice — a backtick pair denoting the empty glob pattern in `internal/bundler/glob.go`, and an empty-string `--passphrase` argument in a `sops` test comment — turning both into punctuation that no longer says anything. Neither is recoverable by retyping, since the printer re-applies the rewrite on every `make fmt`; both comments were reworded to avoid the sequences. Formatting-only diffs are worth grepping for non-ASCII before merge.
 
 ## [0.22.1] — 2026-06-03
 

@@ -95,9 +95,14 @@ formatters:
 
   settings:
     gofumpt:
-      # The opt-in extras (octal literals, interface{} -> any beyond what
-      # base gofumpt does, ...) churn generated-adjacent code for no
-      # readability gain. Base rules only.
+      # Base rules only. Measured against v2.12.2 rather than assumed:
+      # the one extra rule that actually fires in this tree is same-type
+      # parameter grouping (`func f(a int, b int)` -> `func f(a, b int)`),
+      # which rewrites hand-written signatures for no readability gain.
+      # Two things the extras are commonly believed to cover but do not:
+      # octal normalization (0777 -> 0o777) is a *base* rule and applies
+      # either way, and golangci-lint's bundled gofumpt never performs
+      # interface{} -> any at all.
       extra-rules: false
 
   exclusions:
