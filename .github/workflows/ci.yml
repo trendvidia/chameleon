@@ -78,6 +78,29 @@ jobs:
       # runs" — and a per-module target that silently skips a module is
       # green for the wrong reason. modules-check is the guard on the
       # definition itself.
+      # macOS runners ship GNU Make 3.81, which predates .SHELLFLAGS and so
+      # runs every recipe without -e: a `for m in $(MODULES)` loop reports
+      # only its LAST module, and a failure in the library or sops is
+      # discarded (#171). Every make call below therefore has to be GNU
+      # Make >= 3.82.
+      #
+      # Homebrew installs it as `gmake` and deliberately leaves
+      # /usr/bin/make alone, so this puts a `make` pointing at gmake ahead
+      # of it on PATH. Done here rather than by renaming the calls: `gmake`
+      # does not exist on most Linux, so the matrix legs would need
+      # different commands for the same step, and `make ci-check` reads
+      # this file for `make <target>` lines to keep the workflow and the
+      # `ci` target in step.
+      - name: Use Homebrew GNU Make (macOS ships 3.81)
+        if: runner.os == 'macOS'
+        run: |
+          command -v gmake >/dev/null || {
+            echo "::error::gmake not found on this runner — brew install make"
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/gnumake"
+          ln -sf "$(command -v gmake)" "$RUNNER_TEMP/gnumake/make"
+          echo "$RUNNER_TEMP/gnumake" >> "$GITHUB_PATH"
       # Printed as well as asserted: nothing in a CI log said which make a
       # runner had, so #171 — .SHELLFLAGS being inert under 3.81, and every
       # per-module loop reporting only its last module — could not be ruled
@@ -189,6 +212,29 @@ jobs:
           # version string depending on how it was built — match the prefix, not
           # the bare token, so a toolchain bump doesn't red every job in the repo.
           go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
+      # macOS runners ship GNU Make 3.81, which predates .SHELLFLAGS and so
+      # runs every recipe without -e: a `for m in $(MODULES)` loop reports
+      # only its LAST module, and a failure in the library or sops is
+      # discarded (#171). Every make call below therefore has to be GNU
+      # Make >= 3.82.
+      #
+      # Homebrew installs it as `gmake` and deliberately leaves
+      # /usr/bin/make alone, so this puts a `make` pointing at gmake ahead
+      # of it on PATH. Done here rather than by renaming the calls: `gmake`
+      # does not exist on most Linux, so the matrix legs would need
+      # different commands for the same step, and `make ci-check` reads
+      # this file for `make <target>` lines to keep the workflow and the
+      # `ci` target in step.
+      - name: Use Homebrew GNU Make (macOS ships 3.81)
+        if: runner.os == 'macOS'
+        run: |
+          command -v gmake >/dev/null || {
+            echo "::error::gmake not found on this runner — brew install make"
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/gnumake"
+          ln -sf "$(command -v gmake)" "$RUNNER_TEMP/gnumake/make"
+          echo "$RUNNER_TEMP/gnumake" >> "$GITHUB_PATH"
       - name: golangci-lint (library)
         uses: golangci/golangci-lint-action@v7
         with:

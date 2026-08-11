@@ -12,4 +12,6 @@
 
   A `$(error)` guard on `$(MAKE_VERSION)` now refuses to run rather than run wrong, naming the fix. With the requirement enforced, `.SHELLFLAGS` finally takes effect and a failure in *any* module fails the target: injecting a `go vet` error into the library module takes `vet` from `exit=0` after all three modules to `exit=2` after one.
 
-  **On macOS: `brew install make` and use `gmake`** — Homebrew deliberately does not displace `/usr/bin/make`. Linux and the CI Linux runner already ship ≥ 4.x. CI gained a step that prints and asserts the runner's version, because nothing in a log said what it was.
+  **On macOS: `brew install make` and use `gmake`** — Homebrew deliberately does not displace `/usr/bin/make`. Linux already ships ≥ 4.x.
+
+  The macOS CI runner turned out to be affected too, which the guard is how we found out: nothing in a log had ever said which `make` a runner had. So **every macOS CI run to date was discarding non-final module failures** — `compile`, `vet` and `test` are all per-module loops, and the library module is first. The workflow now puts Homebrew's `gmake` on PATH as `make` for its macOS jobs, and asserts the version it ends up with. The calls themselves are unchanged: `gmake` does not exist on most Linux, so renaming them would need different commands per matrix leg, and `make ci-check` reads this workflow for `make <target>` lines.
