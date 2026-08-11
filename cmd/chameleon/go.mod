@@ -22,7 +22,7 @@ require (
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/stretchr/testify v1.11.1
 	github.com/trendvidia/chameleon v0.24.0
-	github.com/trendvidia/chameleon/sops v0.23.0
+	github.com/trendvidia/chameleon/sops v0.24.0
 	github.com/trendvidia/protowire-go v1.4.0
 	github.com/trendvidia/sops/v4 v4.0.1
 	golang.org/x/tools v0.45.0
@@ -158,11 +158,3 @@ require (
 	gopkg.in/ini.v1 v1.67.2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-// Local development and CI resolve the sibling modules from the
-// working tree; consumers ignore these. DROP BOTH BEFORE TAGGING THIS
-// MODULE — `go install pkg@version` refuses a go.mod carrying a
-// replace. See docs/RELEASING.md step 5.
-replace github.com/trendvidia/chameleon => ../../
-
-replace github.com/trendvidia/chameleon/sops => ../../sops
