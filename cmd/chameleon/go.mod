@@ -21,7 +21,7 @@ require (
 	filippo.io/age v1.3.1
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/stretchr/testify v1.11.1
-	github.com/trendvidia/chameleon v0.23.0
+	github.com/trendvidia/chameleon v0.24.0
 	github.com/trendvidia/chameleon/sops v0.23.0
 	github.com/trendvidia/protowire-go v1.4.0
 	github.com/trendvidia/sops/v4 v4.0.1
