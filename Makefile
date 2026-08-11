@@ -5,6 +5,9 @@
 # (`test-integration`, which needs live KMS credentials); `ci-check` is
 # the guard that keeps that sentence true as the workflow changes.
 #
+# Requires GNU Make >= 3.82 — enforced below, see the note on
+# .SHELLFLAGS. macOS ships 3.81; `brew install make` and run `gmake`.
+#
 # Three modules live in this repo (see docs/RELEASING.md): the library
 # at the root, the sops backend, and the CLI. Per-module targets loop
 # over $(MODULES) because `./...` stops at a module boundary — a target
@@ -16,6 +19,27 @@
 SHELL          := /usr/bin/env bash
 .SHELLFLAGS    := -eu -o pipefail -c
 .DEFAULT_GOAL  := help
+
+# .SHELLFLAGS arrived in GNU Make 3.82. Under 3.81 — which is what macOS
+# still ships as /usr/bin/make — the line above is silently ignored,
+# recipes run without -e, and every `for m in $(MODULES)` loop below
+# returns only its LAST module's status. A failure in the library or in
+# sops is discarded and the target goes green (chameleon#171). That is
+# not a formatting nicety: it is a green `make test` over a broken
+# module, on the machine where most of this repo is written.
+#
+# So the requirement is enforced rather than documented. On macOS:
+# `brew install make`, then use `gmake` (Homebrew does not displace
+# /usr/bin/make).
+#
+# $(sort) is lexical, which is exactly right across 3.x and 4.x — "3.82"
+# sorts before "4.4" — and wrong only if GNU Make ever reaches 10.x.
+MAKE_VERSION_MIN := 3.82
+ifneq ($(firstword $(sort $(MAKE_VERSION) $(MAKE_VERSION_MIN))),$(MAKE_VERSION_MIN))
+$(error This Makefile needs GNU Make >= $(MAKE_VERSION_MIN); you have $(MAKE_VERSION). \
+Older make ignores .SHELLFLAGS, so a failure in any but the last module of a \
+per-module loop is silently discarded (chameleon#171). On macOS: brew install make, then use gmake)
+endif
 
 # `tidy-check` rewrites go.mod/go.sum/go.work.sum, and it is a prerequisite
 # of `ci` alongside compile, vet, test and lint — which all read those same
