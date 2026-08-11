@@ -9,6 +9,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet — changes live in [changelog.d/](changelog.d/) until release._
 
+## [0.24.0] — 2026-08-10
+
+A CLI and tooling release. **The library, `chameleon/crypt`, `chameleon/sops` and the generator are untouched** — every change here is in `chameleon check-schema` or in how this repo builds itself, so upgrading the library is a version bump and nothing else. The three modules carry the same tag because they are released together, not because all three changed.
+
+What moved: `check-schema --schema=<dir>` now follows symlinks, and its `OK` line reports what `--exclude` pruned and no longer changes shape when a pattern narrows the search. Both were cases of a green run quietly answering a narrower question than the one asked — read the **Changed** entries if you match on its output or run it over a tree with symlinks in it.
+
+The **Internal** entries are for contributors rather than consumers, and one of them has teeth: this Makefile needs GNU Make ≥ 3.82 now, which macOS does not ship. `brew install make` and use `gmake`.
+
+### Changed
+
+- **`chameleon check-schema` reports what `--exclude` skipped, and stops letting a pattern change the `OK` line's shape** ([#166](https://github.com/trendvidia/chameleon/issues/166)). Two ways a well-formed pattern could quietly narrow a green run:
+
+  ```sh
+  # before
+  chameleon check-schema --schema=./proto --exclude=vendor
+  # OK    2 root(s)    2 file(s) checked
+  chameleon check-schema --schema=./proto --exclude='v*'      # also takes v1/
+  # OK    ./proto    1 file(s) checked
+
+  # now
+  # OK    2 root(s)    2 file(s) checked    1 skipped
+  # OK    1 root(s)    1 file(s) checked    2 skipped
+  ```
+
+  **The skipped count** is new. It is of *roots the patterns took away*, not of files the patterns matched, and not of files left unread: one pruned from the walk and then named directly by another `--schema` is a root anyway and is not counted, while one a surviving root imports is still compiled and checked and *is* counted — it appears in both numbers, because the file count says it was checked and this one says it lost its own line in the report. The field is absent when nothing was skipped, so no run without `--exclude` grows one.
+
+  **The `OK` line's shape now follows what `--schema` named**, not how many roots came out of it. A directory search that exclusion narrowed to a single root used to flip to the single-file form — so a CI job matching `N root(s)` stopped matching at exactly the moment a pattern over-pruned, which is the failure it was watching for. One `--schema` naming one file keeps the single-file form; a directory, or more than one `--schema`, keeps the `N root(s)` form however many roots survive.
+
+  **If you match on stdout.** The `N root(s)` form is now reachable with `N` = 1 — by over-pruning, by a directory that holds a single `.proto`, or by naming the same file twice — so a run that passes no `--exclude` at all can change shape, even though it grows no field. A `\t<n> skipped` field can follow the file count. Anchoring on the whole line is what breaks; matching the fields you care about is not. Pruning *every* `.proto` under a directory remains an error rather than a count, unchanged.
+
+- **`chameleon check-schema --schema=<dir>` follows symlinks** ([#167](https://github.com/trendvidia/chameleon/issues/167)). A subtree symlinked into place — a normal monorepo layout, and this command exists for the shared-schema repo most likely to have one — was silently not searched, so the run reported `OK` over a narrower set than you named:
+
+  ```sh
+  $ find -L proto -name '*.proto' | wc -l
+  4
+  $ chameleon check-schema --schema=./proto
+  # before
+  OK    3 root(s)    3 file(s) checked
+  # now
+  OK    4 root(s)    4 file(s) checked    1 linked
+  ```
+
+  Linked **files** are resolved too, not only directories: the old walk collected a linked `.proto` by name without ever asking what it pointed at, so a *dangling* one went to the compiler and failed there, and one whose target the walk also reached directly was compiled twice. It is linked **directories** whose contents are new.
+
+  The new `linked` field counts the files no path through the real tree reaches. It does not move with whether a link's name happens to sort before its target's, or with how many arguments cross a link to the same file, so it can never exceed the file count beside it.
+
+  Three things following symlinks obliges, all handled rather than left to protocompile:
+
+  - **A file reachable both directly and through a link is checked once**, under the path that crosses no link. Two paths to one file would otherwise compile it twice under two names, which is the duplicate-symbol failure the `--schema` naming rules exist to prevent — and preferring the real path matters as much as the deduplication does, because a root named through a link leaves a sibling's import of the real name compiling a second copy.
+  - **A link pointing at an ancestor terminates.** Each directory is entered once, keyed by its resolved path. Terminating is all that guarantees: the ancestor's other subtrees still enter the search, because leaving the directory you named is what following a link means.
+  - **A dangling link is skipped**, not fatal. It names nothing, and the rest of the tree is still worth checking.
+
+  `--exclude` matches a link by its **own** name — `--exclude=linked` prunes it — because that is the name you see in the tree rather than the one it points at.
+
+  **If you match on stdout:** a `\t<n> linked` field can now follow the file count (and the `skipped` field from [#166](https://github.com/trendvidia/chameleon/issues/166)), and a tree with symlinks will report higher counts than it did. That second part is the fix, not a side effect: the old numbers were answering a narrower question than the one asked.
+
+### Internal
+
+- **`make ci` runs what CI runs again, and the tidy check is a target rather than workflow YAML** ([#165](https://github.com/trendvidia/chameleon/issues/165)). The target's help said "Reproduce the CI matrix locally" while skipping three gates the workflow applies: `make compile`, `make fmt-check`, and `go mod tidy` + `git diff --exit-code`. A green `make ci` could and did push a red PR — the tidy leg caught [#164](https://github.com/trendvidia/chameleon/pull/164) after a clean local run.
+
+  `fmt-check` was a regression rather than an oversight. [#149](https://github.com/trendvidia/chameleon/issues/149) added it to `ci` and its changelog entry says so; `202ae0e`, the merge of `main` into the [#150](https://github.com/trendvidia/chameleon/issues/150) branch, resolved a same-line conflict on that target by keeping its own side, and `fmt-check` went with it. Both sides had edited the one line, so nothing was silently lost in the diff sense — it was lost in the resolution.
+
+  New `make tidy-check` runs `make tidy` and fails if any `go.mod` / `go.sum` / `go.work` / `go.work.sum` changed. `.github/workflows/ci.yml`'s "modules are tidy" step now calls it instead of carrying its own copy, which is the argument that workflow already makes for the module walk: one definition, or the two drift. **It rewrites those files in place** — `go mod tidy` is the only way to learn whether they were already right — so a failure leaves the fix in your working tree, unstaged, for you to `git add`.
+
+  It reports three states rather than one, because the fix each wants is different: `make tidy` rewrote something (commit it), `make tidy` rewrote nothing but a module file still differs from `HEAD` (your own in-progress edit, or a `go.work.sum` an earlier target rewrote), and git itself failed (the check did not run, and says so instead of blaming the module graph). The old one-message form told a developer with an uncommitted `go.mod` edit that their tree was untidy and that `make tidy` had just fixed it — neither true, and the diff it pointed at was their own text.
+
+  New `make ci-check` closes the mechanism rather than the instance: it fails if `ci.yml` runs a `make` target that `make ci` does not, and CI runs it next to `modules-check`. #165 was two hand-maintained lists drifting, and a comment asking for them to be kept in step is exactly what did not stop it the first time. `test-integration` is the one entry on the exemption list, with its reason beside it: it needs live KMS credentials, and a target that fails on a clean checkout is one people learn to ignore.
+
+  `ci` is now `modules-check ci-check changelog-check fmt-check compile vet test tidy-check lint`, and the Makefile is `.NOTPARALLEL` — `tidy-check` writes the module files that `compile`, `vet`, `test` and `lint` read, so `make -j ci` could otherwise observe the graph mid-rewrite. Four gates still sit outside `make ci` because they do not run through make at all, and the `ci` comment names them: `test-integration`, the workflow's "did this PR add a fragment?" step, the `bench` job, and the go-plus toolchain assertion.
+
+- **The Makefile now requires GNU Make ≥ 3.82, and says so instead of misbehaving** ([#171](https://github.com/trendvidia/chameleon/issues/171)). `.SHELLFLAGS := -eu -o pipefail -c` has been in this Makefile for a while and did nothing on macOS: the variable arrived in GNU Make **3.82**, and macOS still ships **3.81** as `/usr/bin/make`. Recipes ran with flags `hBc` — no `-e` — so every `for m in $(MODULES)` loop returned only its **last** module's status:
+
+  ```
+  ==> vet .
+  <failure in the library module>
+  ==> vet sops        ok
+  ==> vet cmd/chameleon   ok
+  exit=0
+  ```
+
+  `MODULES := . sops cmd/chameleon` puts the library first, so the largest module was the most likely to be silently skipped, and nine targets had that shape (`compile`, `test`, `test-short`, `vet`, `lint`, `fmt`, `tidy`, `verify`, and `fmt-check`'s inner loop — `fmt-check` survived only because it accumulates failures by hand). A green `make test` on a Mac could be hiding a broken library module, which is where most of this repo is written.
+
+  A `$(error)` guard on `$(MAKE_VERSION)` now refuses to run rather than run wrong, naming the fix. With the requirement enforced, `.SHELLFLAGS` finally takes effect and a failure in *any* module fails the target: injecting a `go vet` error into the library module takes `vet` from `exit=0` after all three modules to `exit=2` after one.
+
+  **On macOS: `brew install make` and use `gmake`** — Homebrew deliberately does not displace `/usr/bin/make`. Linux already ships ≥ 4.x.
+
+  The macOS CI runner turned out to be affected too, which the guard is how we found out: nothing in a log had ever said which `make` a runner had. So **every macOS CI run to date was discarding non-final module failures** — `compile`, `vet` and `test` are all per-module loops, and the library module is first. The workflow now prepends Homebrew's `gnubin` directory — which holds GNU Make under its normal name — to `PATH`, and asserts the version it ends up with. The calls themselves are unchanged: `gmake` does not exist on most Linux, so renaming them would need different commands per matrix leg, and `make ci-check` reads this workflow for `make <target>` lines.
+
 ## [0.23.0] — 2026-08-10
 
 The module split release. `github.com/trendvidia/chameleon` is now three modules — the library, `chameleon/sops`, and `chameleon/cmd/chameleon` — so a consumer of the library no longer carries the cloud key-management tree in its module graph ([#130](https://github.com/trendvidia/chameleon/issues/130)). Decryption became a link-time opt-in behind the new `chameleon/crypt` contract, which is the one change here that can alter a working program's behaviour: read the **Changed** entries before upgrading.
