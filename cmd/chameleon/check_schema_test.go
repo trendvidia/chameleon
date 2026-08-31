@@ -27,9 +27,9 @@ syntax = "proto3";
 package pxf;
 import "google/protobuf/descriptor.proto";
 extend google.protobuf.FieldOptions {
-  bool required = 50000;
-  string default = 50001;
-  string key = 50002;
+  bool required = 1314;
+  string default = 1315;
+  string key = 1316;
 }
 `
 
