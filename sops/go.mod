@@ -28,7 +28,7 @@ require (
 	github.com/awnumar/memguard v0.22.5
 	github.com/stretchr/testify v1.11.1
 	github.com/trendvidia/chameleon v0.24.0
-	github.com/trendvidia/protowire-go v1.4.0
+	github.com/trendvidia/protowire-go v1.5.0
 	github.com/trendvidia/sops/v4 v4.0.1
 	google.golang.org/protobuf v1.36.11
 )
