@@ -54,12 +54,9 @@
 //     hold a single field and express presence rather than a choice,
 //     so they stay defaultable.
 //
-// Two rough edges inherited from protowire-go's literal parser, both
-// pinned by tests here so a future upstream change is deliberate:
+// One rough edge inherited from protowire-go's literal parser, pinned
+// by a test here so a future upstream change is deliberate:
 //
-//   - Bool literals are compared against the exact string "true", so
-//     `(pxf.default) = "True"` (or "1", or "yes") yields false with
-//     no error. Every other literal kind reports a parse failure.
 //   - A WKT default is never template-expanded. Defaults run before
 //     interpolation precisely so a default may itself be a template
 //     ("api.${base_url}"), but interpolate stops at the same atomic
@@ -67,6 +64,14 @@
 //     google.protobuf.StringValue reaches the resolved config
 //     verbatim. Use a plain `string` field if the default needs
 //     interpolation.
+//
+// A bool default is exactly "true" or "false", case-sensitive, as the
+// PXF grammar spells the literal; any other spelling ("True", "1",
+// "yes") is a bind-time error naming the field, and the field is left
+// absent. protowire-go < v1.6.0 compared against "true" and silently
+// bound every other spelling to false (protowire-go#90); that was
+// pinned here as a rough edge until the fix arrived, and the pin now
+// asserts the error.
 //
 // Apply mutates `present` to mark default-applied paths as present.
 // This lets the validation pass treat "had a default" as satisfying

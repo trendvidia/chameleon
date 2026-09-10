@@ -841,20 +841,13 @@ message Cfg { string base_url = 1 [(pxf.default) = "x"]; }
 	return dir
 }
 
-// The motivating case. Without --exclude the directory form cannot be
-// used at all on this tree; with it, the vendored copy stops being a
+// The motivating case. With --exclude the vendored copy stops being a
 // root and the run answers the question that was asked.
 func TestCheckSchema_ExcludePrunesAVendoredDuplicate(t *testing.T) {
 	dir := vendoredRepo(t)
 	args := []string{"--schema=" + dir, "--include=" + dir}
 
 	var out bytes.Buffer
-	err := checkSchemaCmd(&out, args)
-	if err == nil || !strings.Contains(err.Error(), "already defined") {
-		t.Fatalf("got %v, want the duplicate-symbol failure #159 describes", err)
-	}
-
-	out.Reset()
 	if err := checkSchemaCmd(&out, append(slices.Clone(args), "--exclude=third_party")); err != nil {
 		t.Fatalf("--exclude=third_party should make this tree checkable: %v", err)
 	}
@@ -862,6 +855,30 @@ func TestCheckSchema_ExcludePrunesAVendoredDuplicate(t *testing.T) {
 	// descriptor.proto. The vendored copy is neither a root nor
 	// imported by one.
 	if want := "OK\t2 root(s)\t3 file(s) checked\t1 skipped\n"; out.String() != want {
+		t.Errorf("output = %q, want %q", out.String(), want)
+	}
+}
+
+// TestCheckSchema_VendoredDuplicateIsNotDiagnosedByTheFork pins why
+// #159's motivating failure no longer happens. Upstream protocompile
+// refused this tree — `symbol "pxf.required" already defined` — because
+// the vendored copy is a second root declaring the same symbols, and
+// that is what made --exclude necessary. The trendvidia fork checks
+// duplicates across an import closure but not across the roots of one
+// compile (trendvidia/protocompile#224), so the directory form now
+// compiles the tree and checks both copies. That is a compiler gap, not
+// a check-schema feature: this pin fails the day the fork closes it,
+// which is the cue to restore the "already defined" assertion above.
+func TestCheckSchema_VendoredDuplicateIsNotDiagnosedByTheFork(t *testing.T) {
+	dir := vendoredRepo(t)
+	var out bytes.Buffer
+	err := checkSchemaCmd(&out, []string{"--schema=" + dir, "--include=" + dir})
+	if err != nil {
+		t.Fatalf("the fork accepted a duplicate root symbol until trendvidia/protocompile#224; "+
+			"if this now fails with \"already defined\", the fork closed it — restore the "+
+			"assertion in TestCheckSchema_ExcludePrunesAVendoredDuplicate: %v", err)
+	}
+	if want := "OK\t3 root(s)\t4 file(s) checked\n"; out.String() != want {
 		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }

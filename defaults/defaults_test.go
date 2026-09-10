@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bufbuild/protocompile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trendvidia/protocompile"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -787,34 +787,56 @@ message M { bytes raw = 1 [(pxf.default) = "aGVsbG8="]; }`,
 	}
 }
 
-// TestApply_NonCanonicalBoolDefaultCoercesToFalse pins a sharp edge
-// this PR newly exposes to WKT wrappers: protowire-go parses bool
-// defaults as `def == "true"`, so "True" silently becomes false
-// instead of erroring the way every other literal kind does — and the
-// path still joins the presence union, so a (pxf.required) on it
-// validates as satisfied with the wrong value. Documented in the
-// package godoc; pinned here so an upstream fix is noticed.
-func TestApply_NonCanonicalBoolDefaultCoercesToFalse(t *testing.T) {
-	const src = `
+// TestApply_NonCanonicalBoolDefaultIsAnError pins protowire-go's bool
+// literal contract on both bool shapes: a plain `bool` and the
+// google.protobuf.BoolValue wrapper. Until protowire-go v1.6.0 the
+// parser compared against "true" and bound every other spelling to
+// false with no diagnostic, and the path still joined the presence
+// union, so a (pxf.required) on it validated as satisfied with the
+// wrong value; this test pinned that edge so the upstream fix would be
+// noticed (protowire-go#90). It was, and the pin now asserts the fix:
+// the spelling is an error that names the field, and nothing is
+// applied or marked present.
+func TestApply_NonCanonicalBoolDefaultIsAnError(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, literal string
+	}{
+		{"wrapper", "wrapped", "True"},
+		{"plain", "plain", "yes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `
 syntax = "proto3";
 package def_test.v1;
 import "pxf/annotations.proto";
 import "google/protobuf/wrappers.proto";
 message M {
-  google.protobuf.BoolValue wrapped = 1 [(pxf.default) = "True"];
-  bool plain = 2 [(pxf.default) = "yes"];
+  google.protobuf.BoolValue wrapped = 1 [(pxf.default) = "` + map[bool]string{true: tc.literal, false: "true"}[tc.field == "wrapped"] + `"];
+  bool plain = 2 [(pxf.default) = "` + map[bool]string{true: tc.literal, false: "true"}[tc.field == "plain"] + `"];
 }`
-	desc := compileMessage(t, src, "def_test.v1.M")
-	msg := dynamicpb.NewMessage(desc)
-	present := map[string]struct{}{}
-	require.NoError(t, defaults.Apply(msg, present),
-		"a non-canonical bool literal is coerced, not rejected")
-
-	assert.False(t, inner(t, sub(t, msg, "wrapped"), "value").Bool(),
-		`"True" != "true", so the wrapper lands on false`)
-	assert.False(t, get(t, msg, "plain").Bool())
-	_, marked := present["wrapped"]
-	assert.True(t, marked, "the coerced value still counts as satisfying (pxf.required)")
+			desc := compileMessage(t, src, "def_test.v1.M")
+			msg := dynamicpb.NewMessage(desc)
+			present := map[string]struct{}{}
+			err := defaults.Apply(msg, present)
+			require.Error(t, err, "a non-canonical bool literal is rejected, not coerced")
+			assert.Contains(t, err.Error(), tc.field, "the error names the field")
+			assert.Contains(t, err.Error(), `"`+tc.literal+`"`, "the error quotes the spelling")
+			assert.Contains(t, err.Error(), `exactly "true" or "false"`, "the error states the contract")
+			// Nothing lands as a value. A plain bool stays absent. The
+			// wrapper's shell may already be materialised — pxf.ApplyDefault
+			// allocates the BoolValue before it parses the literal — but its
+			// value is never set, and that shell is not a default applied.
+			fd := desc.Fields().ByName(protoreflect.Name(tc.field))
+			if tc.field == "plain" {
+				assert.False(t, msg.Has(fd), "a plain bool is left absent, not set to false")
+			} else if msg.Has(fd) {
+				assert.False(t, msg.Get(fd).Message().Has(msg.Get(fd).Message().Descriptor().Fields().ByName("value")),
+					"a rejected wrapper literal sets no value")
+			}
+			_, marked := present[tc.field]
+			assert.False(t, marked, "a rejected default does not satisfy (pxf.required)")
+		})
+	}
 }
 
 // TestApply_WKTDefaultIsNotInterpolated pins the gap between "defaults
