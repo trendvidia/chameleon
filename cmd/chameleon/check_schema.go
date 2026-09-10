@@ -1116,7 +1116,7 @@ func collectClosure(fd protoreflect.FileDescriptor, seen map[string]struct{}) {
 func findMessageAcross(files linker.Files, fullName string) (protoreflect.MessageDescriptor, error) {
 	var firstErr error
 	for _, f := range files {
-		d, err := findVisibleDescriptor(f, protoreflect.FullName(fullName))
+		d, err := linker.ResolverFromFile(f).FindDescriptorByName(protoreflect.FullName(fullName))
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err

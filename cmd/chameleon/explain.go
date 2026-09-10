@@ -194,14 +194,13 @@ func compileSchema(schemaPath, fullName string, includePaths []string) (protoref
 // findMessage looks fullName up in everything files[0] can see: the
 // schema file itself, its imports, and their public imports — which is
 // exactly the set a message reference inside the schema could name.
-// That walk is [findVisibleDescriptor].
 //
 // Not [linker.Files.AsResolver]: that searches only the files named on
 // the command line, and compileSchemaFiles names one. A message
 // declared in an imported common.proto would come back "not found"
 // from a closure that plainly contains it.
 func findMessage(files linker.Files, fullName string) (protoreflect.MessageDescriptor, error) {
-	d, err := findVisibleDescriptor(files[0], protoreflect.FullName(fullName))
+	d, err := linker.ResolverFromFile(files[0]).FindDescriptorByName(protoreflect.FullName(fullName))
 	if err != nil {
 		return nil, fmt.Errorf("find message %q: %w", fullName, err)
 	}

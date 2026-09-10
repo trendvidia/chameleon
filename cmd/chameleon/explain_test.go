@@ -76,15 +76,12 @@ message Config {
 `)
 
 	// Without --include: compile must fail with a path-resolution error
-	// that points at the import statement. The trendvidia fork's message
-	// does not name the missing path (trendvidia/protocompile#223), so
-	// the location is what an operator has to go on; once the fork names
-	// it, widen this to assert "widget/v1/widget.proto" as upstream's did.
+	// that names the missing import (protocompile v0.34.0 puts the path in
+	// the message; v0.33.1 gave only the location — protocompile#223).
 	if _, err := compileSchema(schemaPath, "app.v1.Config", nil); err == nil {
 		t.Fatal("compile unexpectedly succeeded without --include")
-	} else if !strings.Contains(err.Error(), "imported file does not exist") ||
-		!strings.Contains(err.Error(), "config.proto:3:") {
-		t.Errorf("error doesn't point at the missing import: %v", err)
+	} else if !strings.Contains(err.Error(), "widget/v1/widget.proto") {
+		t.Errorf("error doesn't mention missing import: %v", err)
 	}
 
 	// With --include pointing at lib/: compile succeeds.
