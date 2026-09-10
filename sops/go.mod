@@ -27,7 +27,7 @@ require (
 	filippo.io/age v1.3.1
 	github.com/awnumar/memguard v0.22.5
 	github.com/stretchr/testify v1.12.1
-	github.com/trendvidia/chameleon v0.24.0
+	github.com/trendvidia/chameleon v0.25.0
 	github.com/trendvidia/protowire-go v1.8.1
 	github.com/trendvidia/sops/v4 v4.0.1
 	google.golang.org/protobuf v1.36.12
