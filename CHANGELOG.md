@@ -9,6 +9,171 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet — changes live in [changelog.d/](changelog.d/) until release._
 
+## [0.25.0] — 2026-09-10
+
+A dependency release with one descriptor-contract break. **The PXF
+annotation numbers move to protowire's registered block** — a `.proto`
+compiled against the old `pxf/annotations.proto` must be recompiled, or
+`(pxf.required)`, `(pxf.default)` and `(pxf.key)` stop applying, and the
+reader now says so rather than staying quiet. Read the first **Changed**
+entry before upgrading anything that owns a schema.
+
+The rest is what the toolchain underneath moved to. Chameleon depends on
+one protocompile now, the trendvidia fork, in every module; upstream
+`bufbuild/protocompile` is out of every consumer's graph. protowire-go
+goes v1.5.0 → v1.8.1, and two of its changes reach documents: a bool
+default spelled other than `true` / `false` is an error instead of a silent
+`false`, and the canonical spelling of map keys settled, so `chameleon get`
+output and bundle bodies can differ byte-for-byte from v0.24.0's for a
+document with a dotted or quoted key. Nothing in this release changes what
+a document binds to.
+
+The **Internal** entries are for contributors: the bindings #177 left on
+the retired numbers are regenerated and guarded, the repository builds and
+lints on Go 1.27, and the pins that tracked the fork's gaps are gone
+because the gaps are.
+
+### Changed
+
+- **PXF annotation extension numbers move to protowire's registered block**
+  ([#177](https://github.com/trendvidia/chameleon/pull/177),
+  [protowire#244](https://github.com/trendvidia/protowire/issues/244)).
+  `(pxf.required)`, `(pxf.default)` and `(pxf.key)` move from the
+  unregistered `50000`-series to `1314`, `1315` and `1316` — the block the
+  Protocol Buffers global extension registry granted protowire in
+  [protocolbuffers/protobuf#28919](https://github.com/protocolbuffers/protobuf/pull/28919).
+  The old range was a squat: nothing prevented another project from
+  claiming the same integers.
+
+  **This is a descriptor-contract break.** A `.proto` compiled against the
+  old `pxf/annotations.proto` carries `50000`-series numbers, and chameleon
+  no longer reads them: `(pxf.required)` stops being enforced,
+  `(pxf.default)` stops substituting, and a keyed repeated field stops
+  being keyed. There is no dual-read and no fallback — the two surfaces are
+  disjoint by design.
+
+  **What to do.** Recompile schemas against the matching
+  `pxf/annotations.proto`, and upgrade any tool that reads these
+  annotations in the same step. Chameleon's own vendored copy, its
+  generated bindings and its `protowire-go` dependency (v1.4.0 → v1.5.0,
+  across all three modules) move together here.
+
+  PXF document syntax, `pb` and SBE wire output are unchanged — these
+  numbers live in descriptors, not in encoded payloads.
+
+- **Chameleon depends on one protocompile, the trendvidia fork; upstream
+  `github.com/bufbuild/protocompile` is out of every module**
+  ([#178](https://github.com/trendvidia/chameleon/issues/178)). All three
+  modules move `github.com/trendvidia/protowire-go` v1.5.0 → v1.8.1, and the
+  root and `cmd/chameleon` modules swap `bufbuild/protocompile` v0.14.1 for
+  `github.com/trendvidia/protocompile` v0.34.0 — the compiler protowire-go
+  itself compiles with since its v1.6.0. A consumer's `go list -m all`,
+  dependency review and SBOM now name one protocompile; the library's
+  plaintext path still links none (`TestPlaintextPathLinksNoProtoCompiler`),
+  and `TestNoUpstreamProtoCompilerAnywhere` keeps upstream out of each
+  module's build list.
+
+  `chameleon explain` and `chameleon check-schema` compile user schemas with
+  the fork now. Their behaviour is unchanged: the message lookup through a
+  schema's imports and their public imports, the missing-import error that
+  names the file, and the refusal of a tree whose vendored duplicate
+  declares the same symbols twice (the compiler's wording is now
+  `` `required` declared multiple times `` rather than upstream's "already
+  defined"; `--exclude` remains the answer for that tree). Three gaps the
+  fork had at v0.33.1 were filed from this work and closed in v0.34.0
+  ([trendvidia/protocompile#222](https://github.com/trendvidia/protocompile/issues/222),
+  [#223](https://github.com/trendvidia/protocompile/issues/223),
+  [#224](https://github.com/trendvidia/protocompile/issues/224)).
+
+  **One default that used to bind now errors.** protowire-go v1.6.0 made a
+  bool default that is not exactly `true` or `false` a bind-time error
+  ([protowire-go#90](https://github.com/trendvidia/protowire-go/issues/90)):
+  `[(pxf.default) = "True"]`, `"1"` or `"yes"` used to bind silently to
+  `false` — the opposite of what the schema author wrote — and now fail
+  `defaults.Apply` with an error naming the field and the spelling. The
+  `defaults` package documented the old behaviour as a rough edge and pinned
+  it so the upstream fix would be noticed; the pin now asserts the error.
+
+  **What to do.** Nothing, unless a schema carries a bool default spelled
+  other than `true`/`false`: fix the spelling. Consumers that vendor or
+  replace `bufbuild/protocompile` for chameleon's sake can drop that.
+
+- **What the protowire-go v1.5.0 → v1.8.1 move changes for PXF documents
+  chameleon reads and writes.** Chameleon's reader and writer are
+  protowire-go's `encoding/pxf`, so its releases
+  ([v1.6.0](https://github.com/trendvidia/protowire-go/releases/tag/v1.6.0),
+  [v1.7.0](https://github.com/trendvidia/protowire-go/releases/tag/v1.7.0),
+  [v1.8.0](https://github.com/trendvidia/protowire-go/releases/tag/v1.8.0))
+  reach every `chameleon.Load`, `chameleon get`, `chameleon bundle` and
+  keystore file. None of it changes what a document binds to; the moves are
+  in what is accepted and how canonical text is spelled.
+
+  **Reading.** A bare `true` / `false` map key is a bool key, matching a
+  `map<bool, V>` field (protowire-go#109); write `"true"` for the string.
+  Input over 64 MiB is refused before a byte is read, and the other two
+  mandatory limits from the spec's HARDENING.md are enforced
+  (protowire-go#112). The nesting counter starts at the root, so a
+  document exactly at the depth limit decodes (protowire-go#111). A
+  descriptor compiled against a pre-registered-block `pxf/annotations.proto`
+  is now diagnosed as stale — `option number 50000 … was (pxf.required)
+  before protowire v1.12.0 and is 1314 now` — rather than silently losing
+  its annotations (protowire-go#98); see the registered-block entry for
+  what to recompile.
+
+  **Writing.** The canonical spelling of map keys settled: a dotted string
+  key is written bare (`"a.b":` → `a.b:`), a bare integer key stays bare, and
+  a quoted `"true"` / `"123"` on a string-keyed map keeps its quotes
+  (protowire-go#125, #123). `chameleon get` output, bundle bodies written by
+  `chameleon bundle`, and keystores may therefore differ byte-for-byte from
+  v0.24.0's for a document with such a key; existing bundles and keystores
+  read unchanged, and re-reading the new text yields the same message.
+
+  **What to do.** Nothing for most trees. If a tool of yours diffs
+  `chameleon get` output or bundle bodies against stored copies, expect the
+  key-spelling changes above once; if a document keys a `map<string, V>`
+  with a bare `true` or `false`, quote it.
+
+### Internal
+
+- **The generated bindings are regenerated against the renumbered
+  `pxf/annotations.proto`, and a test keeps them there**
+  ([#179](https://github.com/trendvidia/chameleon/issues/179)). The
+  renumbering in [#177](https://github.com/trendvidia/chameleon/pull/177)
+  regenerated `annotations.pb.go` but not the bindings that use the
+  annotations, so on `main` — never in a tagged release — `chain.pb.go`,
+  `bundle_manifest.pb.go` and `user_config.pb.go` kept the retired
+  `50000`-series option numbers, and with protowire-go v1.5.0 every
+  `(pxf.required)` on `ChainSpec`, `Environment`, `LayerEntry`, `SourceRef`
+  and `ContextKey` was silently unenforced. protowire-go v1.8.0 diagnoses a
+  retired number rather than ignoring it, which is how this surfaced on the
+  bump (`option number 50000 on FieldOptions was (pxf.required) before
+  protowire v1.12.0 and is 1314 now`). `make generate` fixes it;
+  `TestBindingsCarryRegisteredAnnotationNumbers` fails if the bindings fall
+  behind the vendored proto again. #177 and this land in the same release,
+  so no released chameleon ever had the lapse and there is nothing for an
+  operator to do.
+
+- **The repository builds and lints on Go 1.27: `golang.org/x/net` v0.55.0
+  in the `sops` and `cmd/chameleon` modules, and golangci-lint v2.13.2 in
+  CI and `make tools`.** The self-hosted runners moved to Go 1.27.1 on
+  2026-09-10. Two things broke on `main` with no diff involved: x/net
+  v0.54.0's `http2` no longer provides `TrailerPrefix` under 1.27, which
+  grpc v1.81.0 (reached through the sops fork) needs, so the `sops` module
+  failed to build; and the golangci-lint v2.12.2 binary, built with Go 1.26,
+  cannot typecheck the 1.27 standard library (`math/rand/v2/rand.go: method
+  must have no type parameters`), so lint failed on every PR. v0.55.0 and
+  v2.13.0 are the first releases of each with Go 1.27 support. `make
+  fmt-check` and `make lint` are clean on all three modules at v2.13.2, so
+  gofumpt output did not move.
+
+- **protowire-go v1.8.1 and protocompile v0.34.0; the pins written against
+  the fork's v0.33.1 gaps flipped and are gone.** The three CLI pins for
+  trendvidia/protocompile#222/#223/#224 and the `defaults` pin for
+  protowire-go#135 each failed on the bump exactly as their comments said
+  they would; the upstream-style assertions are restored, and the local
+  `findVisibleDescriptor` walk is deleted in favour of the restored
+  `linker.ResolverFromFile`.
+
 ## [0.24.0] — 2026-08-10
 
 A CLI and tooling release. **The library, `chameleon/crypt`, `chameleon/sops` and the generator are untouched** — every change here is in `chameleon check-schema` or in how this repo builds itself, so upgrading the library is a version bump and nothing else. The three modules carry the same tag because they are released together, not because all three changed.
