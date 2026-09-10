@@ -20,13 +20,19 @@ in the library module, so it keeps the root module's tags.
 
 `go.work` at the repo root wires the three together, so `go build`, `go test`
 and your editor resolve every cross-module import against the working tree.
-The `replace` directives in `sops/go.mod` and `cmd/chameleon/go.mod` do the
-same for anyone working in a single module without the workspace, and while the
-tags a `require` names do not exist yet they are what keeps `go mod tidy`
-working at all. Consumers ignore both — what they get is the `require` line,
-which is why the tag order below matters. `cmd/chameleon`'s pair must come off
-before that module is tagged (step 5, the CLI tag); leaving them on breaks
-`go install`.
+`sops/go.mod` also carries a `replace` to the library for anyone working in
+that module without the workspace. `cmd/chameleon/go.mod` carries none, on
+purpose: `go install pkg@version` refuses a module whose `go.mod` has a
+`replace`, so the CLI module names the library and sops by their released
+tags at all times, and a `cmd/chameleon` tag can be cut from any commit.
+Outside the workspace the CLI therefore builds against the *last released*
+library and sops, not the worktree — acceptable because those two are stable
+and a CLI change rarely needs an unreleased change beneath it; when one does,
+work in the workspace, which is how `make` and CI build anyway. Until v0.25.0
+the CLI carried a pair of `replace`s that had to be dropped for every tag and
+restored afterwards (#175/#176, #186/#188); that back-and-forth is gone.
+Consumers ignore replaces either way — what they get is the `require` line,
+which is why the tag order below matters.
 
 `make test`, `make vet`, `make lint` and `make tidy` all iterate over the three
 modules; `./...` alone stops at a module boundary and would quietly cover a
@@ -79,40 +85,33 @@ third of the repo.
    git tag sops/v0.23.0 && git push origin sops/v0.23.0
    ```
 
-5. **Point the CLI at both, drop its `replace`s, then tag the CLI.** Edit
-   `cmd/chameleon/go.mod` so its two `require` lines name the library and sops
-   tags from steps 3 and 4, **and delete its two `replace` directives**:
-
-   ```
-   go mod edit -dropreplace=github.com/trendvidia/chameleon \
-               -dropreplace=github.com/trendvidia/chameleon/sops cmd/chameleon/go.mod
-   ```
-
-   This one is not cosmetic. `go install pkg@version` refuses a module whose
-   `go.mod` carries a `replace` — "*it must not contain directives that would
-   cause it to be interpreted differently than if it were the main module*" —
-   so a `cmd/chameleon` tag cut with them still in place makes **every**
-   `go install github.com/trendvidia/chameleon/cmd/chameleon@...` fail, and a
-   pushed tag cannot be taken back. `sops/go.mod`'s `replace` is harmless by
-   contrast: it provides no `main` package, and consumers ignore a dependency's
-   replaces either way.
-
-   Assert it before you tag, not after:
-
-   ```
-   test "$(go mod edit -json cmd/chameleon/go.mod | jq -r '.Replace')" = null \
-     || { echo "cmd/chameleon/go.mod still has replace directives"; exit 1; }
-   ```
-
-   Commit, then:
+5. **Point the CLI at both, then tag the CLI.** Edit `cmd/chameleon/go.mod`
+   so its two `require` lines name the library and sops tags from steps 3
+   and 4, run `go mod tidy` there, commit, then:
 
    ```
    git tag cmd/chameleon/v0.23.0 && git push origin cmd/chameleon/v0.23.0
    ```
 
-   The `replace`s go back on the next development commit — until the library
-   and sops tags (steps 3 and 4) exist, nothing outside the workspace can
-   resolve `chameleon/sops` at all.
+   The module carries no `replace` directives, and must not gain any: `go
+   install pkg@version` refuses a module whose `go.mod` has one — "*it must
+   not contain directives that would cause it to be interpreted differently
+   than if it were the main module*" — so a `cmd/chameleon` tag cut with one
+   in place makes **every** `go install github.com/trendvidia/chameleon/cmd/chameleon@...`
+   fail, and a pushed tag cannot be taken back. Assert it before you tag, not
+   after:
+
+   ```
+   test "$(go mod edit -json cmd/chameleon/go.mod | jq -r '.Replace')" = null \
+     || { echo "cmd/chameleon/go.mod has replace directives"; exit 1; }
+   ```
+
+   Steps 4 and 5 may be one PR: both tags are pushed after the merge, so
+   `cmd/chameleon`'s `require` naming a sops tag that does not exist yet is
+   fine as long as `sops/vX.Y.Z` is pushed before `cmd/chameleon/vX.Y.Z`.
+   Doing them together also keeps `main` green between them — with the CLI
+   naming released tags only, its build list is consistent at every step
+   (#187).
 
 6. **Verify from outside the workspace** — the requires are the one thing the
    workspace hides, so check them against the proxy rather than the worktree:
