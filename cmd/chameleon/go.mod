@@ -161,3 +161,7 @@ require (
 	google.golang.org/grpc v1.81.0 // indirect
 	gopkg.in/ini.v1 v1.67.2 // indirect
 )
+
+replace github.com/trendvidia/chameleon => ../../
+
+replace github.com/trendvidia/chameleon/sops => ../../sops
