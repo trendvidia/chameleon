@@ -20,8 +20,8 @@ go 1.26.1
 require (
 	filippo.io/age v1.3.1
 	github.com/stretchr/testify v1.12.1
-	github.com/trendvidia/chameleon v0.24.0
-	github.com/trendvidia/chameleon/sops v0.24.0
+	github.com/trendvidia/chameleon v0.25.0
+	github.com/trendvidia/chameleon/sops v0.25.0
 	github.com/trendvidia/protocompile v0.34.0
 	github.com/trendvidia/protowire-go v1.8.1
 	github.com/trendvidia/sops/v4 v4.0.1
@@ -161,11 +161,3 @@ require (
 	google.golang.org/grpc v1.81.0 // indirect
 	gopkg.in/ini.v1 v1.67.2 // indirect
 )
-
-// Local development and CI resolve the sibling modules from the
-// working tree; consumers ignore these. DROP BOTH BEFORE TAGGING THIS
-// MODULE — `go install pkg@version` refuses a go.mod carrying a
-// replace. See docs/RELEASING.md step 5.
-replace github.com/trendvidia/chameleon => ../../
-
-replace github.com/trendvidia/chameleon/sops => ../../sops
