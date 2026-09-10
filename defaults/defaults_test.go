@@ -822,17 +822,12 @@ message M {
 			assert.Contains(t, err.Error(), tc.field, "the error names the field")
 			assert.Contains(t, err.Error(), `"`+tc.literal+`"`, "the error quotes the spelling")
 			assert.Contains(t, err.Error(), `exactly "true" or "false"`, "the error states the contract")
-			// Nothing lands as a value. A plain bool stays absent. The
-			// wrapper's shell may already be materialised — pxf.ApplyDefault
-			// allocates the BoolValue before it parses the literal — but its
-			// value is never set, and that shell is not a default applied.
-			fd := desc.Fields().ByName(protoreflect.Name(tc.field))
-			if tc.field == "plain" {
-				assert.False(t, msg.Has(fd), "a plain bool is left absent, not set to false")
-			} else if msg.Has(fd) {
-				assert.False(t, msg.Get(fd).Message().Has(msg.Get(fd).Message().Descriptor().Fields().ByName("value")),
-					"a rejected wrapper literal sets no value")
-			}
+			// Nothing lands: the field is left absent on both shapes. Until
+			// protowire-go v1.8.1 the wrapper's shell was allocated before the
+			// literal was parsed, so Has(field) was true for a default that
+			// never applied (protowire-go#135); the literal is parsed first now.
+			assert.False(t, msg.Has(desc.Fields().ByName(protoreflect.Name(tc.field))),
+				"a rejected default leaves the field absent, not set to false")
 			_, marked := present[tc.field]
 			assert.False(t, marked, "a rejected default does not satisfy (pxf.required)")
 		})

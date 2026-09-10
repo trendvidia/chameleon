@@ -22,8 +22,8 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/trendvidia/chameleon v0.24.0
 	github.com/trendvidia/chameleon/sops v0.24.0
-	github.com/trendvidia/protocompile v0.33.1
-	github.com/trendvidia/protowire-go v1.8.0
+	github.com/trendvidia/protocompile v0.34.0
+	github.com/trendvidia/protowire-go v1.8.1
 	github.com/trendvidia/sops/v4 v4.0.1
 	golang.org/x/tools v0.45.0
 	google.golang.org/protobuf v1.36.12

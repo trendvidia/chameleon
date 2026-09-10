@@ -5,8 +5,8 @@ go 1.26.1
 require (
 	github.com/awnumar/memguard v0.22.5
 	github.com/stretchr/testify v1.12.1
-	github.com/trendvidia/protocompile v0.33.1
-	github.com/trendvidia/protowire-go v1.8.0
+	github.com/trendvidia/protocompile v0.34.0
+	github.com/trendvidia/protowire-go v1.8.1
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
