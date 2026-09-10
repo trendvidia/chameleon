@@ -57,7 +57,7 @@ import (
 //
 // The caller still owns the parsed ChainSpec — chameleon doesn't
 // prescribe how to load it (file, embed, dynamic compile via
-// bufbuild/protocompile, etc.).
+// trendvidia/protocompile, etc.).
 //
 // For multiple logical sources, request-context values, trace, an
 // explicitly constructed Decrypter, or no decrypter at all, use

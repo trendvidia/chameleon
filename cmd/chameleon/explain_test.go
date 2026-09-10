@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bufbuild/protocompile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trendvidia/protocompile"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
@@ -75,11 +75,16 @@ message Config {
 }
 `)
 
-	// Without --include: compile must fail with a path-resolution error.
+	// Without --include: compile must fail with a path-resolution error
+	// that points at the import statement. The trendvidia fork's message
+	// does not name the missing path (trendvidia/protocompile#223), so
+	// the location is what an operator has to go on; once the fork names
+	// it, widen this to assert "widget/v1/widget.proto" as upstream's did.
 	if _, err := compileSchema(schemaPath, "app.v1.Config", nil); err == nil {
 		t.Fatal("compile unexpectedly succeeded without --include")
-	} else if !strings.Contains(err.Error(), "widget/v1/widget.proto") {
-		t.Errorf("error doesn't mention missing import: %v", err)
+	} else if !strings.Contains(err.Error(), "imported file does not exist") ||
+		!strings.Contains(err.Error(), "config.proto:3:") {
+		t.Errorf("error doesn't point at the missing import: %v", err)
 	}
 
 	// With --include pointing at lib/: compile succeeds.

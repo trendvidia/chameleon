@@ -16,8 +16,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/bufbuild/protocompile"
-	"github.com/bufbuild/protocompile/linker"
+	"github.com/trendvidia/protocompile"
+	"github.com/trendvidia/protocompile/linker"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/trendvidia/protowire-go/encoding/pxf"
@@ -1116,7 +1116,7 @@ func collectClosure(fd protoreflect.FileDescriptor, seen map[string]struct{}) {
 func findMessageAcross(files linker.Files, fullName string) (protoreflect.MessageDescriptor, error) {
 	var firstErr error
 	for _, f := range files {
-		d, err := linker.ResolverFromFile(f).FindDescriptorByName(protoreflect.FullName(fullName))
+		d, err := findVisibleDescriptor(f, protoreflect.FullName(fullName))
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err

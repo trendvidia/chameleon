@@ -5,6 +5,7 @@ package chameleon_test
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -301,7 +302,12 @@ func TestKeyManagementCheckCatchesTheSopsPackage(t *testing.T) {
 // internal/header's own descriptor_test.go) build schemas from source.
 // The package graph is what separates a test-only compiler from one a
 // consumer links, so the package graph is the only assertion available.
-const protoCompiler = "github.com/bufbuild/protocompile"
+//
+// The compiler is the trendvidia fork of protocompile, which is also
+// what protowire-go compiles its fixtures with; upstream
+// bufbuild/protocompile left this repository's graphs entirely, and
+// TestNoUpstreamProtoCompilerAnywhere below keeps it out.
+const protoCompiler = "github.com/trendvidia/protocompile"
 
 func TestPlaintextPathLinksNoProtoCompiler(t *testing.T) {
 	if testing.Short() {
@@ -341,4 +347,65 @@ func TestProtoCompilerCheckCatchesTheCLI(t *testing.T) {
 		"cmd/chameleon links no package under %q, so that prefix matches nothing and "+
 			"TestPlaintextPathLinksNoProtoCompiler is not actually checking for it — "+
 			"the module path probably moved", protoCompiler)
+}
+
+// TestNoUpstreamProtoCompilerAnywhere pins the other half of the compiler
+// story (#178). TestPlaintextPathLinksNoProtoCompiler says a consumer's
+// build reaches no compiler; this says that the one compiler this
+// repository does carry is the trendvidia fork, in every module, and
+// that upstream bufbuild/protocompile appears in no module's build list
+// — so a consumer's `go list -m all`, dependency review and SBOM name one
+// protocompile, not two.
+//
+// `go list -m all` is read per module with the workspace off, because
+// that is the graph a consumer of that module resolves; under go.work the
+// three directories would all answer with the workspace's union.
+func TestNoUpstreamProtoCompilerAnywhere(t *testing.T) {
+	if testing.Short() {
+		t.Skip("shells out to go list")
+	}
+	const upstream = "github.com/bufbuild/protocompile"
+
+	// Every module's build list names the fork: the library requires it
+	// for its tests, and sops and cmd/chameleon require the library. That
+	// is the positive control — a prefix that matched nothing real would
+	// otherwise pass the upstream check vacuously.
+	for _, dir := range []string{".", "sops", "cmd/chameleon"} {
+		t.Run(dir, func(t *testing.T) {
+			mods := modulesIn(t, dir)
+			require.NotEmpty(t, mods, "go list -m all listed nothing — check would pass vacuously")
+
+			var fork bool
+			for _, mod := range mods {
+				path := strings.Fields(mod)[0]
+				if path == upstream || strings.HasPrefix(path, upstream+"/") {
+					t.Errorf("%s: build list names %s.\n"+
+						"protowire-go compiles with the trendvidia fork of protocompile and so does\n"+
+						"this repository; upstream must not come back through a require or a\n"+
+						"transitive dependency — trendvidia/chameleon#178.", dir, mod)
+				}
+				if path == protoCompiler {
+					fork = true
+				}
+			}
+			assert.True(t, fork, "%s: build list does not name %s — the check above matched nothing real", dir, protoCompiler)
+		})
+	}
+}
+
+// modulesIn returns `go list -m all` for the module rooted at dir, with
+// the workspace disabled so each module answers for itself.
+func modulesIn(t *testing.T, dir string) []string {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("no go toolchain on PATH; cannot inspect the build list")
+	}
+	cmd := exec.CommandContext(t.Context(), "go", "list", "-m", "all")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	require.NoError(t, err, "go list -m all in %s failed: %s", dir, stderr.String())
+	return strings.Split(strings.TrimSpace(string(out)), "\n")
 }
