@@ -218,16 +218,16 @@ jobs:
       - name: golangci-lint (library)
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.12.2
+          version: v2.13.2
       - name: golangci-lint (sops)
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.12.2
+          version: v2.13.2
           working-directory: sops
       - name: golangci-lint (cli)
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.12.2
+          version: v2.13.2
           working-directory: cmd/chameleon
       # Runs after the actions above because they are what put the pinned
       # golangci-lint on PATH; `make fmt-check` shells out to it rather than

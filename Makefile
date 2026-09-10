@@ -84,7 +84,7 @@ BENCHTIME      ?= 500ms
 COVER_PROFILE  ?= coverage.out
 
 # Pin to the CI version so local + CI lint behavior cannot diverge.
-GOLANGCI_LINT_VERSION ?= v2.12.2
+GOLANGCI_LINT_VERSION ?= v2.13.2
 
 # --- Help (default) -----------------------------------------------------------
 
