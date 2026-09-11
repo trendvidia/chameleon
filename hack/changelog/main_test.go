@@ -30,7 +30,8 @@ const skeleton = `# Changelog
 
 - **An older entry** that must survive untouched.
 
-[0.22.1]: https://example.invalid/0.22.1
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.22.1...HEAD
+[0.22.1]: https://github.com/trendvidia/chameleon/releases/tag/v0.22.1
 `
 
 // fixture writes fragments into a fresh dir and returns (dir, file).
@@ -246,7 +247,11 @@ func TestRunFoldsAndConsumes(t *testing.T) {
 		"- **A new thing** with a\n\n  second paragraph.",
 		"## [0.22.1] — 2026-06-03",
 		"- **An older entry** that must survive untouched.",
-		"[0.22.1]: https://example.invalid/0.22.1",
+		// The link block is regenerated from the headings on every
+		// assembly (#184): the new release compares against the previous
+		// one, and the first release keeps its tag-page link.
+		"[0.23.0]: " + repoURL + "/compare/v0.22.1...v0.23.0",
+		"[0.22.1]: " + repoURL + "/releases/tag/v0.22.1",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("assembled CHANGELOG.md is missing %q:\n%s", want, got)

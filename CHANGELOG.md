@@ -2202,7 +2202,25 @@ Documented in `README.md`:
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
 
-[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/trendvidia/chameleon/compare/v0.24.0...v0.25.0
+[0.24.0]: https://github.com/trendvidia/chameleon/compare/v0.23.0...v0.24.0
+[0.23.0]: https://github.com/trendvidia/chameleon/compare/v0.22.1...v0.23.0
+[0.22.1]: https://github.com/trendvidia/chameleon/compare/v0.22.0...v0.22.1
+[0.22.0]: https://github.com/trendvidia/chameleon/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/trendvidia/chameleon/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/trendvidia/chameleon/compare/v0.19.1...v0.20.0
+[0.19.1]: https://github.com/trendvidia/chameleon/compare/v0.19.0...v0.19.1
+[0.19.0]: https://github.com/trendvidia/chameleon/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/trendvidia/chameleon/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/trendvidia/chameleon/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/trendvidia/chameleon/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/trendvidia/chameleon/compare/v0.14.4...v0.15.0
+[0.14.4]: https://github.com/trendvidia/chameleon/compare/v0.14.3...v0.14.4
+[0.14.3]: https://github.com/trendvidia/chameleon/compare/v0.14.2...v0.14.3
+[0.14.2]: https://github.com/trendvidia/chameleon/compare/v0.14.1...v0.14.2
+[0.14.1]: https://github.com/trendvidia/chameleon/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/trendvidia/chameleon/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/trendvidia/chameleon/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/trendvidia/chameleon/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/trendvidia/chameleon/compare/v0.10.0...v0.11.0

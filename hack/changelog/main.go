@@ -22,7 +22,12 @@
 //
 //	go run ./hack/changelog -version 0.23.0        # fold into CHANGELOG.md
 //	go run ./hack/changelog -version 0.23.0 -preview   # print, change nothing
-//	go run ./hack/changelog -check                 # validate names + Unreleased, CI gate
+//	go run ./hack/changelog -check                 # validate names + Unreleased + links, CI gate
+//	go run ./hack/changelog -relink                # rebuild the link block from the headings
+//
+// The link-reference block at the foot of CHANGELOG.md is derived from
+// the release headings: assembly rewrites it, -check refuses drift, and
+// -relink repairs a file that predates that.
 package main
 
 import (
@@ -97,9 +102,17 @@ func main() {
 		dir     = flag.String("dir", defaultDir, "fragment directory")
 		file    = flag.String("file", defaultFile, "changelog file to fold into")
 		preview = flag.Bool("preview", false, "print the assembled section; change nothing")
-		check   = flag.Bool("check", false, "validate fragment names and exit")
+		check   = flag.Bool("check", false, "validate fragment names, the Unreleased section and the link block; exit")
+		relinkF = flag.Bool("relink", false, "rewrite the link-reference block from the release headings; change nothing else")
 	)
 	flag.Parse()
+	if *relinkF {
+		if err := relink(*file); err != nil {
+			fmt.Fprintln(os.Stderr, "changelog:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := run(*version, *date, *dir, *file, *preview, *check); err != nil {
 		fmt.Fprintln(os.Stderr, "changelog:", err)
@@ -122,7 +135,17 @@ func run(version, date, dir, file string, preview, check bool) error {
 		if err := checkUnreleased(file, dir); err != nil {
 			return err
 		}
-		fmt.Printf("changelog.d: %d fragment(s), all well-formed; %s [Unreleased] is empty\n", len(frags), file)
+		// The link block is derived from the headings; a stale one is a
+		// reader clicking through to the wrong diff (#184).
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", file, err)
+		}
+		if err := checkLinks(file, string(raw)); err != nil {
+			return err
+		}
+		fmt.Printf("changelog.d: %d fragment(s), all well-formed; %s [Unreleased] is empty, link block matches %d release heading(s)\n",
+			len(frags), file, len(releasedVersions(string(raw))))
 		return nil
 	}
 	if err := checkVersion(version); err != nil {
@@ -415,5 +438,7 @@ func insert(file, dir, version, section string) error {
 	b.WriteString(section)
 	b.WriteString(tail)
 
-	return os.WriteFile(file, []byte(b.String()), 0o644)
+	// The new heading is now the latest release, so [Unreleased]
+	// compares against it and it compares against the previous latest.
+	return os.WriteFile(file, []byte(withLinkBlock(b.String())), 0o644)
 }
