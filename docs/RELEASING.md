@@ -111,12 +111,14 @@ third of the repo.
      || { echo "cmd/chameleon/go.mod has replace directives"; exit 1; }
    ```
 
-   Steps 4 and 5 may be one PR: both tags are pushed after the merge, so
-   `cmd/chameleon`'s `require` naming a sops tag that does not exist yet is
-   fine as long as `sops/vX.Y.Z` is pushed before `cmd/chameleon/vX.Y.Z`.
-   Doing them together also keeps `main` green between them — with the CLI
-   naming released tags only, its build list is consistent at every step
-   (#187).
+   Steps 4 and 5 cannot be one PR, and the reason is `go.sum`: the CLI
+   module's `go.sum` must carry the module hash of `sops/vX.Y.Z`, and `go
+   mod tidy` in `cmd/chameleon` cannot resolve that version until the tag
+   is pushed (`unknown revision sops/vX.Y.Z`). So: merge step 4, push the
+   sops tag, then run step 5's tidy. `main` stays green in between — with
+   the CLI naming released tags only, its build list is consistent after
+   step 4 as much as after step 5 (#187). The v0.25.1 cut tried the fold
+   and was stopped by exactly that tidy error.
 
 6. **Verify from outside the workspace** — the requires are the one thing the
    workspace hides, so check them against the proxy rather than the worktree:
