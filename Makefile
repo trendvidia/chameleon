@@ -324,8 +324,11 @@ changelog-preview: ## Print the section VERSION would produce; change nothing.
 	@$(GO) run ./hack/changelog -version $(VERSION) -preview
 
 .PHONY: changelog-check
-changelog-check: ## Fail if any changelog.d/ fragment is misnamed or empty.
+changelog-check: ## Fail if any changelog.d/ fragment is misnamed or empty, or the link block is stale.
 	@$(GO) run ./hack/changelog -check
+
+changelog-relink: ## Rebuild CHANGELOG.md's link-reference block from its release headings.
+	$(GO) run ./hack/changelog -relink
 
 # --- Codegen ------------------------------------------------------------------
 

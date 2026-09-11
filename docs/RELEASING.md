@@ -60,7 +60,12 @@ third of the repo.
 
    `VERSION` is bare — no leading `v`, which is the tag's alone. This folds
    the fragments into a new `## [0.23.0]` section, resets `## [Unreleased]`
-   to its empty marker, and deletes the fragments it consumed. Do it
+   to its empty marker, deletes the fragments it consumed, and rewrites the
+   link-reference block at the foot of the file from the release headings
+   (`[Unreleased]` compares the new tag with `HEAD`, the new version
+   compares with the previous one). The block is derived — never edit it by
+   hand; `make changelog-check` refuses drift and `make changelog-relink`
+   regenerates it. Do it
    **before** tagging — the tag must contain the changelog the release
    ships with. Assembling is refused if the version already has a section
    or if anything was written into `## [Unreleased]` by hand, so a second
