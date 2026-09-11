@@ -168,18 +168,23 @@ jobs:
       - name: Require a fragment (or the skip-changelog label)
         if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
         env:
-          BASE: ${{ github.base_ref }}
+          # The base branch tip as recorded on the event, not origin/main
+          # at run time. Once the PR is merged, origin/main contains it,
+          # the merge-base becomes the PR head, and the diff shows nothing
+          # added — a false "no fragment" on a PR merged before this job
+          # ran (#190). fetch-depth 0 already has this commit.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # Resolve the merge-base explicitly. Folding this into the diff
-          # and absorbing failures with `|| true` reports "no fragment"
-          # for a broken ref just as loudly as for a real omission, and
-          # sends the contributor looking in the wrong place.
-          base=$(git merge-base "origin/$BASE" HEAD) || {
-            echo "::error::cannot resolve the merge-base of origin/$BASE and HEAD"
+          # Check the base explicitly. Folding this into the diff and
+          # absorbing failures with `|| true` reports "no fragment" for a
+          # broken ref just as loudly as for a real omission, and sends
+          # the contributor looking in the wrong place.
+          git cat-file -e "$BASE_SHA^{commit}" || {
+            echo "::error::base commit $BASE_SHA is not in the checkout"
             exit 1
           }
-          changed=$(git diff --name-only --diff-filter=A "$base" HEAD -- changelog.d) || {
-            echo "::error::git diff against $base failed"
+          changed=$(git diff --name-only --diff-filter=A "$BASE_SHA" HEAD -- changelog.d) || {
+            echo "::error::git diff against $BASE_SHA failed"
             exit 1
           }
           # grep exits 1 when it filters everything out, which is a
