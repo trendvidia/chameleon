@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet — changes live in [changelog.d/](changelog.d/) until release._
 
+## [0.25.1] — 2026-09-10
+
+A maintenance release with nothing to tell a consumer. **The library,
+`chameleon/sops` and the CLI behave exactly as in v0.25.0** — no Go code
+under any published package changed; the three modules carry the tag
+because they are released together. Everything below is about how this
+repository releases and records itself: the CLI module keeps no `replace`
+directives, so a release cut no longer drops and restores them; the
+changelog-fragment CI gate no longer goes red on a PR merged before its
+checks finish; and `CHANGELOG.md`'s link-reference block is derived from
+the release headings and was repaired for every release back to 0.1.0.
+
+### Internal
+
+- **`CHANGELOG.md`'s link-reference block is derived from its release
+  headings and kept that way**
+  ([#184](https://github.com/trendvidia/chameleon/issues/184)). The block
+  had not been touched since 0.13.0: `[Unreleased]` compared against
+  `v0.13.0`, and 0.14.0 through 0.25.0 had no compare link at all. The
+  assembler now rewrites the block on every `make changelog`,
+  `make changelog-check` (run on every PR) refuses a block that does not
+  match the headings, and `make changelog-relink` regenerates it — which
+  is what repaired the file here, for all 31 releases. Two of the
+  regenerated links point at a tag that was never pushed: `v0.6.0` has a
+  changelog section but no tag, so `[0.6.0]` and the `v0.6.0...v0.7.0`
+  compare are dead links until someone tags the 0.6.0 commit.
+
+- **`cmd/chameleon/go.mod` carries no `replace` directives any more, and the
+  release procedure stops dropping and restoring them**
+  ([#187](https://github.com/trendvidia/chameleon/issues/187)). Every CLI tag
+  used to need a commit removing the two `replace`s (because `go install`
+  refuses a module that has them) and a follow-up putting them back; the
+  library and sops are stable enough that the CLI can name their released
+  tags at all times, and inside the workspace nothing changes. Outside the
+  workspace the CLI now builds against the last released library and sops
+  rather than the worktree. RELEASING.md step 5 is shorter, and steps 4 and
+  5 may be one PR, which removes the commit on `main` where
+  `TestNoUpstreamProtoCompilerAnywhere` failed during the v0.25.0 cut.
+
+- **The changelog-fragment gate diffs against the PR's recorded base
+  commit** ([#190](https://github.com/trendvidia/chameleon/issues/190)).
+  It resolved `origin/main` at run time, so a PR merged before the job
+  started had its own change on `main` already, the merge-base became the
+  PR head, and the gate reported "adds no fragment" for a PR that added one
+  (#189). It now uses `github.event.pull_request.base.sha`, the base tip at
+  event time, and a fast merge no longer produces a false red.
+
 ## [0.25.0] — 2026-09-10
 
 A dependency release with one descriptor-contract break. **The PXF
@@ -2202,7 +2249,8 @@ Documented in `README.md`:
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
 
-[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.25.1...HEAD
+[0.25.1]: https://github.com/trendvidia/chameleon/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/trendvidia/chameleon/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/trendvidia/chameleon/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/trendvidia/chameleon/compare/v0.22.1...v0.23.0
