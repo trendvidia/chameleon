@@ -73,6 +73,18 @@ jobs:
             go.sum
             sops/go.sum
             cmd/chameleon/go.sum
+      # The CLI module requires chameleon/sops at its last tag, and the
+      # module graph reads that tag's go.mod even under go.work. While this
+      # repo is private the module proxy cannot serve it, so read it with
+      # the job's own token. The `if:` retires this step by itself once the
+      # repo is public (#199).
+      - name: Module access to this repo while it is private
+        if: github.event.repository.private
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/trendvidia/chameleon".insteadOf "https://github.com/trendvidia/chameleon"
+          echo "GOPRIVATE=github.com/trendvidia/chameleon" >> "$GITHUB_ENV"
       # Every step below goes through make so the module walk has exactly
       # one definition, the Makefile's MODULES. Inlined here, CI and the
       # Makefile drift while the Makefile header calls `make ci` "what CI
@@ -228,6 +240,18 @@ jobs:
             go.sum
             sops/go.sum
             cmd/chameleon/go.sum
+      # The CLI module requires chameleon/sops at its last tag, and the
+      # module graph reads that tag's go.mod even under go.work. While this
+      # repo is private the module proxy cannot serve it, so read it with
+      # the job's own token. The `if:` retires this step by itself once the
+      # repo is public (#199).
+      - name: Module access to this repo while it is private
+        if: github.event.repository.private
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/trendvidia/chameleon".insteadOf "https://github.com/trendvidia/chameleon"
+          echo "GOPRIVATE=github.com/trendvidia/chameleon" >> "$GITHUB_ENV"
       # See the test job for why this is here and why it is unconditional.
       - name: Prefer Homebrew GNU Make on PATH
         run: echo "/opt/homebrew/opt/make/libexec/gnubin" >> "$GITHUB_PATH"
