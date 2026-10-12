@@ -838,7 +838,7 @@ declares a default) instead of repeating the full
 
   apps = {
     "steward": {
-      root      = "/Users/bene/projects/src/github.com/trendvidia/website"
+      root      = "/srv/website"
       schema    = "proto/steward/config/v1/config.proto"
       include   = ["proto"]
       message   = "steward.config.v1.AppConfig"
