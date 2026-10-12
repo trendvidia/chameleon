@@ -34,8 +34,11 @@ permissions:
 #
 # A newer push to the same PR or branch makes the run in flight moot;
 # macOS minutes are the expensive ones, so cancel it rather than finish it.
+# Label events get a group of their own: they run only the changelog job,
+# and sharing the group let adding `skip-changelog` cancel the PR's real
+# test run, leaving it with no result at all.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}-${{ (github.event.action == 'labeled' || github.event.action == 'unlabeled') && 'label' || 'code' }}
   cancel-in-progress: true
 
 jobs:
