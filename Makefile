@@ -354,8 +354,8 @@ tools: ## Install dev tools: golangci-lint pinned to $(GOLANGCI_LINT_VERSION).
 # What `make ci` still cannot tell you, because none of it runs through
 # make: test-integration (CI_EXEMPT below), the workflow's "did this PR
 # add a changelog fragment?" step — `changelog-check` validates the
-# fragments that exist, it does not require one — the `bench` job's
-# benchmark run, and the go-plus toolchain assertion. Those four are the
+# fragments that exist, it does not require one. Those two, plus CI's
+# runners being Linux and macOS while yours is one of them, are the
 # whole gap between a green `make ci` and a green PR.
 #
 # fmt-check was in this list from #149 and was lost in #150's merge of

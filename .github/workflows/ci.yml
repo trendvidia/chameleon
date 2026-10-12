@@ -12,8 +12,8 @@ on:
     # that needs the new API targets the bump, which is exactly the change
     # that most wants a Linux leg. An allowlist of base prefixes was the
     # alternative and would be wrong again, silently, for the next prefix
-    # nobody predicted. The cost is bounded — private repo, self-hosted
-    # runners, small PR volume.
+    # nobody predicted. The cost is bounded — small PR volume, and the
+    # concurrency block below cancels a run its own branch superseded.
     #
     # `labeled`/`unlabeled` are on top of the default three
     # (opened/synchronize/reopened) solely so the changelog gate
@@ -21,22 +21,23 @@ on:
     # on a label otherwise, and "Re-run failed jobs" replays the original
     # payload, in which the label is still absent. Every other job skips
     # a label event — see the `if:` they carry — so this costs one cheap
-    # run on the Linux box, not a full matrix.
+    # Linux run, not a full matrix.
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
 
-# Self-hosted runners execute workflow code on real machines, which is why
-# they are a bad idea on public repos: any fork PR would run there. chameleon
-# is private, so the only code that reaches them is code someone with push
-# access already wrote.
+# Every job runs on GitHub-hosted runners. On a public repo a self-hosted
+# runner would execute any fork PR's code on a real machine (#198). Go comes from actions/setup-go at the version go.mod declares —
+# the oldest this module promises to build with, so CI tests the promise
+# rather than whatever is newest.
 #
-# Two runners serve this repo: `mac-arm64-mini-chameleon` (the mini) and
-# `chameleon-trader` (the Linux VPS that already hosts runners for voya, fyne
-# and friends). Both `runs-on` lists below name an OS *and* an arch label —
-# `[self-hosted]` alone would let either leg land on either box, silently and
-# only sometimes.
+# A newer push to the same PR or branch makes the run in flight moot;
+# macOS minutes are the expensive ones, so cancel it rather than finish it.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: test (${{ matrix.name }})
@@ -44,9 +45,8 @@ jobs:
     # changelog job cares about the label events in the trigger above.
     if: github.event.action != 'labeled' && github.event.action != 'unlabeled'
     runs-on: ${{ matrix.runs-on }}
-    # A wedged self-hosted runner otherwise blocks the queue for every repo on
-    # the same box. Warm runs finish in well under a minute; this is a
-    # circuit breaker, not a budget.
+    # A hung test otherwise holds the runner for GitHub's default six
+    # hours. This is a circuit breaker, not a budget.
     timeout-minutes: 20
     strategy:
       # Both legs always report. A macOS-only failure is exactly the signal
@@ -56,22 +56,35 @@ jobs:
       matrix:
         # Linux is not decoration for a library that mlocks pages (memguard),
         # shells out to `go list` in its own tests, and pins its module graph
-        # (#130). It is also what most consumers deploy on, while the only
-        # runner this repo had was a Mac.
+        # (#130). It is also what most consumers deploy on. macOS stays:
+        # memguard's page locking is OS-specific code, and macOS is where
+        # most of this repo is developed.
         include:
           - name: macos-arm64
-            runs-on: [self-hosted, macOS, ARM64]
+            runs-on: macos-15
           - name: linux-amd64
-            runs-on: [self-hosted, Linux, X64]
+            runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Assert go-plus toolchain
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            sops/go.sum
+            cmd/chameleon/go.sum
+      # The CLI module requires chameleon/sops at its last tag, and the
+      # module graph reads that tag's go.mod even under go.work. While this
+      # repo is private the module proxy cannot serve it, so read it with
+      # the job's own token. The `if:` retires this step by itself once the
+      # repo is public (#199).
+      - name: Module access to this repo while it is private
+        if: github.event.repository.private
+        env:
+          TOKEN: ${{ github.token }}
         run: |
-          go version
-          # The fork stamps either "(plus)" or "(plus <fork-version>)" onto the
-          # version string depending on how it was built — match the prefix, not
-          # the bare token, so a toolchain bump doesn't red every job in the repo.
-          go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
+          git config --global url."https://x-access-token:${TOKEN}@github.com/trendvidia/chameleon".insteadOf "https://github.com/trendvidia/chameleon"
+          echo "GOPRIVATE=github.com/trendvidia/chameleon" >> "$GITHUB_ENV"
       # Every step below goes through make so the module walk has exactly
       # one definition, the Makefile's MODULES. Inlined here, CI and the
       # Makefile drift while the Makefile header calls `make ci` "what CI
@@ -88,13 +101,16 @@ jobs:
       # which is what that directory is for. Prepending it gives `make` =
       # GNU Make without renaming a single call, so the matrix legs keep one
       # command and `make ci-check` keeps matching the `make <target>` lines
-      # it reads this file for.
+      # it reads this file for. The hosted macOS image has Homebrew but not
+      # necessarily its make formula, hence the install.
       #
-      # Unconditional on purpose: the directory does not exist on the Linux
-      # runner, and a PATH entry that does not exist is skipped, so one step
-      # serves every job. The prefix is Apple Silicon's, matching this
-      # repo's ARM64 runner label; if it is ever missing on a Mac, the
+      # The PATH line is unconditional on purpose: the directory does not
+      # exist on Linux, and a PATH entry that does not exist is skipped, so
+      # one step serves every job. If it is ever missing on a Mac, the
       # version assert is what says so.
+      - name: Install GNU Make (macOS)
+        if: runner.os == 'macOS'
+        run: brew list make >/dev/null 2>&1 || brew install make
       - name: Prefer Homebrew GNU Make on PATH
         run: echo "/opt/homebrew/opt/make/libexec/gnubin" >> "$GITHUB_PATH"
       # Printed as well as asserted: nothing in a CI log said which make a
@@ -145,10 +161,8 @@ jobs:
   changelog:
     name: changelog fragment
     if: github.event_name == 'pull_request'
-    runs-on: [self-hosted, Linux, X64]
-    # Same circuit breaker as `test`, and for the same reason: this box
-    # is shared, and a job with no timeout holds a runner for GitHub's
-    # default six hours.
+    runs-on: ubuntu-24.04
+    # Same circuit breaker as `test`, and for the same reason.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -159,6 +173,14 @@ jobs:
           # that would graft origin/<base> back to a single commit and
           # take the merge-base away again.
           fetch-depth: 0
+      # changelog-check runs hack/changelog with `go run`.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            sops/go.sum
+            cmd/chameleon/go.sum
       # Same one-liner as the other jobs; a no-op here, kept so every job
       # that calls make gets its PATH the same way. See the test job.
       - name: Prefer Homebrew GNU Make on PATH
@@ -207,16 +229,29 @@ jobs:
   lint:
     name: lint
     if: github.event.action != 'labeled' && github.event.action != 'unlabeled'
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Assert go-plus toolchain
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            sops/go.sum
+            cmd/chameleon/go.sum
+      # The CLI module requires chameleon/sops at its last tag, and the
+      # module graph reads that tag's go.mod even under go.work. While this
+      # repo is private the module proxy cannot serve it, so read it with
+      # the job's own token. The `if:` retires this step by itself once the
+      # repo is public (#199).
+      - name: Module access to this repo while it is private
+        if: github.event.repository.private
+        env:
+          TOKEN: ${{ github.token }}
         run: |
-          go version
-          # The fork stamps either "(plus)" or "(plus <fork-version>)" onto the
-          # version string depending on how it was built — match the prefix, not
-          # the bare token, so a toolchain bump doesn't red every job in the repo.
-          go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
+          git config --global url."https://x-access-token:${TOKEN}@github.com/trendvidia/chameleon".insteadOf "https://github.com/trendvidia/chameleon"
+          echo "GOPRIVATE=github.com/trendvidia/chameleon" >> "$GITHUB_ENV"
       # See the test job for why this is here and why it is unconditional.
       - name: Prefer Homebrew GNU Make on PATH
         run: echo "/opt/homebrew/opt/make/libexec/gnubin" >> "$GITHUB_PATH"
@@ -248,44 +283,3 @@ jobs:
       # the lint findings — both land in one job.
       - name: gofumpt (all modules)
         run: make fmt-check
-
-  bench:
-    name: bench (vs main)
-    if: >-
-      github.event_name == 'pull_request'
-      && github.event.action != 'labeled'
-      && github.event.action != 'unlabeled'
-    runs-on: [self-hosted, macOS, ARM64]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Assert go-plus toolchain
-        run: |
-          go version
-          # The fork stamps either "(plus)" or "(plus <fork-version>)" onto the
-          # version string depending on how it was built — match the prefix, not
-          # the bare token, so a toolchain bump doesn't red every job in the repo.
-          go version | grep -q '(plus' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
-      - name: install benchstat
-        run: go install golang.org/x/perf/cmd/benchstat@latest
-      # Benchmarks live in the library module; the sops and CLI modules
-      # have none. Add them here if that changes.
-      - name: benchmark PR head
-        run: go test -bench=. -benchmem -count=5 -run='^$' -benchtime=500ms ./... | tee /tmp/bench-new.txt
-      - name: benchmark main baseline
-        continue-on-error: true
-        run: |
-          git fetch origin main --depth=1
-          git switch --detach origin/main
-          go test -bench=. -benchmem -count=5 -run='^$' -benchtime=500ms ./... | tee /tmp/bench-old.txt
-          git switch -
-      - name: compare with benchstat
-        continue-on-error: true
-        run: |
-          if [ -s /tmp/bench-old.txt ]; then
-            benchstat /tmp/bench-old.txt /tmp/bench-new.txt
-          else
-            echo "No baseline available (main has no benchmarks yet); PR-head results:"
-            cat /tmp/bench-new.txt
-          fi
