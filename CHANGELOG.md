@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet — changes live in [changelog.d/](changelog.d/) until release._
 
+## [0.25.2] — 2026-10-12
+
+Patch release — the first since the repository went public. No API change, no operator action required: a drop-in upgrade for every consumer. It ships the `LICENSE` file, which v0.25.1 lacked, so pkg.go.dev can show the documentation, along with a corrected README whose quick start compiles.
+
+### Added
+
+- **License, security policy and contributor docs**
+  ([#196](https://github.com/trendvidia/chameleon/issues/196)). The repo
+  now ships a `LICENSE` file (MIT, matching the SPDX header every source
+  file already carried), a `SECURITY.md` saying how to report a
+  vulnerability privately and what counts as one, and `CONTRIBUTING.md` /
+  `CODE_OF_CONDUCT.md`. Nothing changes for code that imports chameleon.
+
+### Fixed
+
+- **The README no longer tells you to `replace` `google.golang.org/protobuf` with a fork**
+  ([#197](https://github.com/trendvidia/chameleon/issues/197)). chameleon
+  builds against upstream protobuf; the "Replace directives — required in
+  your `go.mod`" section was stale. If you copied that `replace` line into
+  your own `go.mod` for chameleon's sake, you can drop it.
+
+  The README's quick start, which did not compile, is now the body of
+  `examples/buf/main.go`: a runnable program with its schema, generated code,
+  chain spec and layers, and a test that fails if the README and the program
+  drift apart.
+
+### Internal
+
+- **CI runs on GitHub-hosted runners with stock Go**
+  ([#198](https://github.com/trendvidia/chameleon/issues/198)). Linux and
+  macOS legs now use `ubuntu-24.04` and `macos-15` with Go from
+  `actions/setup-go` at the `go.mod` version, instead of self-hosted
+  machines with a forked toolchain. The PR benchmark job is gone; run
+  `make bench` locally when a change touches a hot path.
+
 ## [0.25.1] — 2026-09-10
 
 A maintenance release with nothing to tell a consumer. **The library,
@@ -2249,7 +2284,8 @@ Documented in `README.md`:
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
 
-[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.25.1...HEAD
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.25.2...HEAD
+[0.25.2]: https://github.com/trendvidia/chameleon/compare/v0.25.1...v0.25.2
 [0.25.1]: https://github.com/trendvidia/chameleon/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/trendvidia/chameleon/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/trendvidia/chameleon/compare/v0.23.0...v0.24.0
