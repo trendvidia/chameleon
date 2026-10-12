@@ -15,36 +15,44 @@ You have a config schema that's mostly the same across `prod` / `sandbox` / `uat
 
 ## Quick start
 
+Given a schema compiled with `protoc-gen-go` and `protoc-gen-chameleon-go`, a chain spec, and a directory of layer files, one call resolves the typed config. This is the body of [`examples/buf/main.go`](examples/buf/main.go), which runs as-is (`cd examples/buf && go run .`) — the directory holds the schema, the generated code, `chain.pxf` and `layers/`:
+
+<!-- quickstart: examples/buf/main.go -->
 ```go
-import (
-    "context"
-    "os"
+spec, err := chain.LoadSpec("chain.pxf")
+if err != nil {
+    return err
+}
 
-    "github.com/trendvidia/chameleon"
-    "github.com/trendvidia/chameleon/resolver"
-    "github.com/trendvidia/chameleon/source"
-
-    myappv1 "example.com/myapp/proto/myapp/v1"
-)
-
-// 1) Load + parse your ChainSpec however you prefer (file, embed.FS, etc).
-spec, err := loadChainSpec("chain.pxf")
-
-// 2) One-call simple case (no encryption, single layer dir):
 res, err := chameleon.Load[*myappv1.AppConfig](
     &myappv1.AppConfig{},
     spec,
-    os.DirFS("./layers"),
+    os.DirFS("layers"),
     "dev",
 )
-if err != nil { /* handle */ }
+if err != nil {
+    return err
+}
 defer res.Destroy()
 
-cfg := res.Config           // typed *AppConfig
-pw  := mypb.AppConfigSecret_DbPassword(res.Secrets) // typo-safe accessor (codegen)
-buf, _ := pw.Open(); defer buf.Destroy()
-useDBPassword(buf.Bytes())
+cfg := res.Config // typed *myappv1.AppConfig
+fmt.Fprintln(w, "base_url:", cfg.GetBaseUrl())
+
+// Secrets never sit on cfg as plain strings. The generated accessor
+// reaches the memguard-backed value; a renamed field fails to compile.
+pw := myappv1.AppConfigSecret_DbPassword(res.Secrets)
+if pw == nil {
+    return fmt.Errorf("db_password is not set")
+}
+buf, err := pw.Open()
+if err != nil {
+    return err
+}
+defer buf.Destroy()
+fmt.Fprintf(w, "db_password: %d bytes\n", len(buf.Bytes()))
 ```
+
+A test in that directory fails if this block and the program drift apart.
 
 ### Loading the chain spec
 
@@ -222,7 +230,7 @@ After `Resolve`, the plaintext lives only in `Resolution.Secrets` (a `*secret.Ma
 Access via the codegen-emitted accessor (typo-safe):
 
 ```go
-pw := mypb.AppConfigSecret_DbPassword(res.Secrets)
+pw := myappv1.AppConfigSecret_DbPassword(res.Secrets)
 buf, _ := pw.Open()
 defer buf.Destroy()
 useSecret(buf.Bytes())
@@ -614,7 +622,7 @@ Three escape hatches. `resolver.WithDecrypter(sops.Default())` passes an impleme
 3. **Never round-trip a secret through `string`, `log`, or template rendering.** `buf.Bytes()` lives in mlocked memory; passing it to `fmt.Printf`, `log.Print`, or any `%s` formatter copies plaintext to the regular heap where the GC may not zero it for arbitrarily long. Pass `buf.Bytes()` straight to the consumer (DB driver, HTTP client, file write) without intermediate string conversion.
 
 ```go
-pw := mypb.AppConfigSecret_DbPassword(res.Secrets)
+pw := myappv1.AppConfigSecret_DbPassword(res.Secrets)
 buf, err := pw.Open()
 if err != nil { return err }
 defer buf.Destroy()
@@ -972,7 +980,6 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
 
 - **Sops `context.Context` threading — closed via the `trendvidia/sops/v4` fork.** Chameleon's `Decrypter.Decrypt` threads `ctx` through `decrypt.DataIntoWriterContext`; in-flight KMS round-trips abort on `ctx` deadline / cancellation natively for AWS / GCP / Azure / Vault. HuaweiCloud KMS is approximated via a goroutine shim (see fork [#10](https://github.com/trendvidia/sops/issues/10)). The `chameleon migrate` CLI uses the corresponding `encrypt.UsingSameKeysAsWithContext` so re-encrypts honor ctx the same way. Upstream [getsops/sops#2179](https://github.com/getsops/sops/issues/2179) tracks the merge candidate; the `chameleon/sops` module — the only one of the three that depends on the fork since v0.23.0 — consumes it directly under its `github.com/trendvidia/sops/v4` module path, so no `replace` directive is required.
 
-- **Forked dependencies require an explicit `replace` directive in consumer `go.mod`.** Chameleon depends on `trendvidia/protobuf-go` (a soft fork of `google.golang.org/protobuf`); Go's `replace` directive is non-transitive so the chameleon repo's `replace` does NOT propagate to consumers. The other fork — `trendvidia/sops/v4`, reached only if you pull in the `chameleon/sops` module — is consumed directly under its own module path and does NOT need a `replace`. See **Compatibility → Replace directives** above for the exact line to copy into your own `go.mod`.
 
 ## Compatibility
 
@@ -1000,30 +1007,13 @@ Each is tagged separately (`v0.23.0`, `sops/v0.23.0`, `cmd/chameleon/v0.23.0`); 
 
 Reachability-based scanners (`govulncheck`) never saw the KMS tree for a plaintext consumer even before the split; what the split fixes is everything that reads `go.mod` — dependency review, SBOMs, `go list -m all`.
 
-### Replace directives — required in your `go.mod`
+### No `replace` directives needed
 
-Go module `replace` directives **only apply to the main module's build** — they do **NOT** propagate from a dependency's `go.mod` to your binary's resolution. Chameleon depends on one fork whose `replace` directive you must copy into your own `go.mod` for the build to succeed against the function set chameleon calls:
-
-```go
-// In your project's go.mod:
-replace google.golang.org/protobuf => github.com/trendvidia/protobuf-go v1.36.12
-```
-
-If you omit it, `go build` fails — chameleon (via protowire-go) calls into functions that don't exist on the upstream package.
-
-| Replace | Required by | Why the fork | Tracking upstream |
-|---|---|---|---|
-| **`github.com/trendvidia/protobuf-go v1.36.12`** | protowire-go's `dynamicpb` fast path | unexported `SetUnsafe` / `AppendUnsafe` / map `SetUnsafe` on `*dynamicpb.Message`. Saves the per-call typecheck box-alloc on the PXF unmarshal hot path. | upstream protobuf-go has not yet accepted; the fork tracks the upstream `v1.36` line. |
-
-The fork keeps the upstream module path (`google.golang.org/protobuf`), so any code that imports the upstream namespace compiles against the fork unchanged. The fork repo publishes its CHANGELOG against the upstream tag it rides on.
-
-When upstream eventually merges the relevant parts, drop the `replace` from your `go.mod` and bump the chameleon minimum to the merged upstream tag.
-
-The other fork — `github.com/trendvidia/sops/v4` — is consumed directly under its own module path (it doesn't override `getsops/sops`), so no consumer-side `replace` is needed. Since v0.23.0 it enters your module graph only via the `chameleon/sops` module, i.e. only if some layer of yours is encrypted.
+chameleon builds against upstream `google.golang.org/protobuf`; your `go.mod` needs no `replace` line for it. The one fork in the graph, `github.com/trendvidia/sops/v4`, is consumed under its own module path (it doesn't override `getsops/sops`), and since v0.23.0 it enters your module graph only via the `chameleon/sops` module, i.e. only if some layer of yours is encrypted.
 
 ## Test status
 
-15 packages, ~150 tests, all green under `go test ./... -race`. Plus fuzz harnesses for the two parsers chameleon owns:
+`make test` runs every module's tests under the race detector. There are also fuzz harnesses for the two parsers chameleon owns:
 
 ```sh
 go test ./interpolate/ -fuzz=FuzzApply -fuzztime=30s
@@ -1041,7 +1031,7 @@ chain/                  ChainSpec expansion + LoadSpec/ParseSpec runtime helpers
 cmd/chameleon/          CLI: explain (per-field provenance) / verify (@header.content_sha256) / check-schema (PXF bind-time rules over a .proto closure) / migrate (bulk layer edits) / hash / lint (go/analysis-style linter flagging *pxfv1.Secret.Value reads)
 cmd/protoc-gen-chameleon-go/   protoc plugin emitting typed Secret accessors
 defaults/               (pxf.default) post-merge pass
-examples/buf/           working buf.gen.yaml + sample schema
+examples/buf/           the quick start: schema, buf.gen.yaml, generated code, runnable main.go
 examples/simple/        chain.pxf + base/dev layers (no Go code)
 interpolate/            ${field.path} post-merge expansion
 internal/header/        @header preamble scanner + LayerHeader sanity checks

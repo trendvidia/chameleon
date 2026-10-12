@@ -27,10 +27,6 @@ coverage.*
 /dist/
 /build/
 
-# Generated code from buf in examples/ (the example exists to show
-# users how to invoke the plugin, not to ship the generated output).
-/examples/buf/gen/
-
 # vendor/ optional — only present if a downstream consumer runs
 # `go mod vendor` for hermetic builds. Not part of source.
 /vendor/

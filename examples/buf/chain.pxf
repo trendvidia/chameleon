@@ -1,0 +1,17 @@
+@type chameleon.v1.ChainSpec
+
+# The chain the quick start in the top-level README resolves: a base
+# layer, then one layer per environment in the ancestry (dev extends
+# prod, so env=dev loads base.pxf, env/prod.pxf, env/dev.pxf).
+
+version = "1.0.0"
+
+environments = [
+  { name = "prod" }
+  { name = "dev"  extends = "prod" }
+]
+
+layers = [
+  { id = "base" path = "base.pxf"       for_each = ONCE  required = true }
+  { id = "env"  path = "env/${env}.pxf" for_each = PER_ENV }
+]
