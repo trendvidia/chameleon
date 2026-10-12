@@ -10,7 +10,7 @@
 //
 //	import _ "github.com/trendvidia/chameleon/sops"    // only if layers are encrypted
 //
-//	spec, _ := loadChainSpec("chain.pxf")              // proto.Message
+//	spec, _ := chain.LoadSpec("chain.pxf")             // proto.Message
 //	r, _ := resolver.New[*AppConfig](
 //	    &AppConfig{},                                   // type witness
 //	    spec,

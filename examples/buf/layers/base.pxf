@@ -1,0 +1,8 @@
+# Schema: myapp.v1.AppConfig (proto/myapp/v1/config.proto).
+
+base_url = "https://example.com"
+
+# A plaintext secret, so the example runs without a key. Real
+# deployments keep secrets in a sops-encrypted layer; see "Working with
+# secrets" in the top-level README.
+db_password = "example-only-not-a-secret"
