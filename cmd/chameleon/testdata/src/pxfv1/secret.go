@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Package pxfv1 mirrors the canonical pxf.Secret well-known type's Go
 // binding (subset of fields) so analysistest can resolve the type by
 // structural match.
