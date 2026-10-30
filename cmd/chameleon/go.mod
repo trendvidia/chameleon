@@ -15,23 +15,21 @@
 // docs/RELEASING.md step 5 has the command and the pre-tag assertion.
 module github.com/trendvidia/chameleon/cmd/chameleon
 
-go 1.26.1
+go 1.26.2
 
 require (
 	filippo.io/age v1.3.1
 	github.com/stretchr/testify v1.12.1
-	github.com/trendvidia/chameleon v0.25.2
-	github.com/trendvidia/chameleon/sops v0.25.2
-	github.com/trendvidia/protocompile v0.34.0
-	github.com/trendvidia/protowire-go v1.8.1
+	github.com/trendvidia/chameleon v0.26.0
+	github.com/trendvidia/chameleon/sops v0.26.0
+	github.com/trendvidia/protocompile v0.36.1
+	github.com/trendvidia/protowire-go v1.12.1
 	github.com/trendvidia/sops/v4 v4.0.1
 	golang.org/x/tools v0.45.0
 	google.golang.org/protobuf v1.36.12
 )
 
 require (
-	buf.build/gen/go/bufbuild/protodescriptor/protocolbuffers/go v1.36.12-20250109164928-1da0de137947.1 // indirect
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20240920164238-5a7b106cbb87.1 // indirect
 	cel.dev/expr v0.25.1 // indirect
 	cloud.google.com/go v0.123.0 // indirect
 	cloud.google.com/go/auth v0.20.0 // indirect
@@ -130,8 +128,9 @@ require (
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
-	github.com/tidwall/btree v1.8.1 // indirect
+	github.com/tidwall/btree v1.8.2 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
+	github.com/trendvidia/protos v0.1.2 // indirect
 	github.com/urfave/cli v1.22.17 // indirect
 	go.mongodb.org/mongo-driver v1.17.9 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
@@ -149,7 +148,7 @@ require (
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
