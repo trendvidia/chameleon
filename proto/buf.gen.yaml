@@ -4,13 +4,20 @@
 #
 #   buf generate
 #
-# Produces:
-#   chameleon/v1/chain.pb.go
-#   chameleon/v1/layer.pb.go
-#   pxf/annotations.pb.go        (the extension type registry)
+# Produces chameleon/v1/*.pb.go.
+#
+# pxf/annotations.proto is compiled but not generated: its Go is
+# github.com/trendvidia/protos/pxf, which its go_package names and which
+# protocompile also links. Generating a second copy registers the file
+# twice and the binary panics at startup (chameleon#210).
 #
 # Prerequisites: protoc-gen-go on the PATH.
 version: v2
+
+inputs:
+  - directory: .
+    paths:
+      - chameleon
 
 plugins:
   - local: protoc-gen-go

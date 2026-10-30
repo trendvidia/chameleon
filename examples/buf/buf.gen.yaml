@@ -12,6 +12,15 @@
 
 version: v2
 
+# pxf/secret.proto is compiled but not generated: its Go is
+# github.com/trendvidia/protos/pxf, which its go_package names. A second
+# copy would register pxf/secret.proto twice and panic at startup
+# (chameleon#210).
+inputs:
+  - directory: proto
+    paths:
+      - proto/myapp
+
 plugins:
   - local: protoc-gen-go
     out: gen/go

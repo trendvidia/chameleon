@@ -10,7 +10,7 @@
 package myappv1
 
 import (
-	pxf "github.com/trendvidia/chameleon/examples/buf/gen/go/pxf"
+	pxf "github.com/trendvidia/protos/pxf"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
