@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet — changes live in [changelog.d/](changelog.d/) until release._
 
+## [0.26.0] — 2026-10-30
+
+Minor release. It makes chameleon safe to link with protocompile v0.36 and
+later, which register the shared pxf schemas from
+`github.com/trendvidia/protos`. Before this release, a program that linked
+both panicked at startup. Two things may need action when upgrading:
+the internal package `github.com/trendvidia/chameleon/proto/pxf` is gone, and the
+library now needs Go 1.26.2.
+
+### Changed
+
+- **chameleon uses `github.com/trendvidia/protos/pxf` for the pxf schemas
+  and no longer generates its own copy**
+  ([#210](https://github.com/trendvidia/chameleon/issues/210)). The package
+  `github.com/trendvidia/chameleon/proto/pxf` is gone, and so is the
+  example's `examples/buf/gen/go/pxf`. chameleon's bindings and the example's
+  `config.pb.go` now import `github.com/trendvidia/protos/pxf`, which is
+  where protocompile v0.36.0 and later register `pxf/annotations.proto`,
+  `pxf/bignum.proto` and `pxf/secret.proto` too. With both copies linked, a
+  program panicked at startup: `proto: file "pxf/annotations.proto" is
+  already registered`. The library module moves to protocompile v0.36.1,
+  protowire-go v1.12.1 and protos v0.1.2, and now needs Go 1.26.2, which
+  all three require.
+
+  The `.proto` sources stay in the repository because buf compiles them,
+  but they are now exact copies of the protos files, and a test fails if
+  they drift. That brings in `(pxf.key)` (1316), which chameleon's copy
+  of `pxf/annotations.proto` lacked.
+
+  **What to do.** If you imported `github.com/trendvidia/chameleon/proto/pxf`
+  (it was documented as internal), import `github.com/trendvidia/protos/pxf`
+  instead. The types and extensions have the same names. If you generate
+  code from a vendored `pxf/*.proto` whose `go_package` points into your
+  own module, point it at `github.com/trendvidia/protos/pxf` and delete the
+  generated copy. Otherwise a binary that also links protocompile v0.36.0
+  panics the same way.
+
+- **`protoc-gen-chameleon-go` carries the `.proto` file's leading comments
+  into the sidecar**, above its generated-code marker, as `protoc-gen-go`
+  does for the `.pb.go` beside it. A `.proto` that opens with a license
+  header now gives a `.chameleon.go` that opens with it too. A `.proto`
+  with no leading comments generates what it did before.
+
+  With that, every Go file in the repository carries its
+  `SPDX-License-Identifier: MIT` header: the analyzer fixtures under
+  `cmd/chameleon/testdata` and the example's generated sidecar were the
+  five without one.
+
 ## [0.25.2] — 2026-10-12
 
 Patch release — the first since the repository went public. No API change, no operator action required: a drop-in upgrade for every consumer. It ships the `LICENSE` file, which v0.25.1 lacked, so pkg.go.dev can show the documentation, along with a corrected README whose quick start compiles.
@@ -2284,7 +2332,8 @@ Documented in `README.md`:
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
 
-[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.25.2...HEAD
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/trendvidia/chameleon/compare/v0.25.2...v0.26.0
 [0.25.2]: https://github.com/trendvidia/chameleon/compare/v0.25.1...v0.25.2
 [0.25.1]: https://github.com/trendvidia/chameleon/compare/v0.25.0...v0.25.1
 [0.25.0]: https://github.com/trendvidia/chameleon/compare/v0.24.0...v0.25.0

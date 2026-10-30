@@ -28,7 +28,7 @@ require (
 	github.com/awnumar/memguard v0.22.5
 	github.com/stretchr/testify v1.12.1
 	github.com/trendvidia/chameleon v0.25.2
-	github.com/trendvidia/protowire-go v1.8.1
+	github.com/trendvidia/protowire-go v1.12.1
 	github.com/trendvidia/sops/v4 v4.0.1
 	google.golang.org/protobuf v1.36.12
 )
@@ -130,7 +130,7 @@ require (
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.6.0 // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
-	github.com/trendvidia/protos v0.1.1 // indirect
+	github.com/trendvidia/protos v0.1.2 // indirect
 	github.com/urfave/cli v1.22.17 // indirect
 	go.mongodb.org/mongo-driver v1.17.9 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
