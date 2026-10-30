@@ -12,7 +12,7 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
-	pxfpb "github.com/trendvidia/chameleon/proto/pxf"
+	pxfpb "github.com/trendvidia/protos/pxf"
 )
 
 // TestBindingsCarryRegisteredAnnotationNumbers guards against #179: the

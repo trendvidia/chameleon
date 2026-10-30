@@ -1,7 +1,3 @@
-buf.build/gen/go/bufbuild/protodescriptor/protocolbuffers/go v1.36.12-20250109164928-1da0de137947.1 h1:hPzyu9O/M/OguwU08/CntzemR43sEaBw0FIJxnFWVqc=
-buf.build/gen/go/bufbuild/protodescriptor/protocolbuffers/go v1.36.12-20250109164928-1da0de137947.1/go.mod h1:jMWijYwl5JMuBr0OqOy5wSWh2mkSIfkMlwNsSY1aL6w=
-buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20240920164238-5a7b106cbb87.1 h1:T4i18GUfv/l6hc205FzuEbYHBwwvRnZRGAvzQKEaq7E=
-buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20240920164238-5a7b106cbb87.1/go.mod h1:TCt1lluMFnctISJXvkIQ4x3ABrPuUKCWKyjKdkJNBpw=
 c2sp.org/CCTV/age v0.0.0-20251208015420-e9274a7bdbfd h1:ZLsPO6WdZ5zatV4UfVpr7oAwLGRZ+sebTUruuM4Ra3M=
 c2sp.org/CCTV/age v0.0.0-20251208015420-e9274a7bdbfd/go.mod h1:SrHC2C7r5GkDk8R+NFVzYy/sdj0Ypg9htaPXQq5Cqeo=
 cel.dev/expr v0.25.1 h1:1KrZg61W6TWSxuNZ37Xy49ps13NUovb66QLprthtwi4=
@@ -327,12 +323,14 @@ github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
 github.com/stretchr/testify v1.12.1/go.mod h1:MDEgiDPPsNp5cuIrHPPCyornHKgEVbtFUmoNlxoYthg=
-github.com/tidwall/btree v1.8.1 h1:27ehoXvm5AG/g+1VxLS1SD3vRhp/H7LuEfwNvddEdmA=
-github.com/tidwall/btree v1.8.1/go.mod h1:jBbTdUWhSZClZWoDg54VnvV7/54modSOzDN7VXftj1A=
+github.com/tidwall/btree v1.8.2 h1:mTY5iM4UTh2e80TG7RHDQQmnAY3xGNQA/DbU0olkhkA=
+github.com/tidwall/btree v1.8.2/go.mod h1:jBbTdUWhSZClZWoDg54VnvV7/54modSOzDN7VXftj1A=
 github.com/tjfoc/gmsm v1.4.1 h1:aMe1GlZb+0bLjn+cKTPEvvn9oUEBlJitaZiiBwsbgho=
 github.com/tjfoc/gmsm v1.4.1/go.mod h1:j4INPkHWMrhJb38G+J6W4Tw0AbuN8Thu3PbdVYhVcTE=
-github.com/trendvidia/protocompile v0.34.0 h1:iYNOvm1JN2LnaSYdHViIt1MPDGyi6Y873xVWQcyHNZM=
-github.com/trendvidia/protocompile v0.34.0/go.mod h1:QmmCc78tw+EN1egPdZvh/YFuA6/BiXJ2mSWxdOWW1nk=
+github.com/trendvidia/protocompile v0.36.0 h1:82X6eckBf4EOp6E2htwllW4hItfklCtYJ0DZ3A4III4=
+github.com/trendvidia/protocompile v0.36.0/go.mod h1:mM9NhgR4d88lqZredjLat468KTpHHowdlgOnea41oz4=
+github.com/trendvidia/protos v0.1.1 h1:Rcx2T+FiqEjFx7iJjCRqrPomzQB0JoV21ke4aoVm7V8=
+github.com/trendvidia/protos v0.1.1/go.mod h1:NPP4w6dOu7BkD8psH0cWJamHHiEpi8QfgP88vKkMXUI=
 github.com/trendvidia/protowire-go v1.8.1 h1:inFF7BLkPFhBUvDdpY/58UfXt2abLB3t1F/27ZLvvuI=
 github.com/trendvidia/protowire-go v1.8.1/go.mod h1:8Fda5+lHl1BkLpE1HTL/7j08kwDoyD8nKUDD4wWOSyQ=
 github.com/trendvidia/sops/v4 v4.0.1 h1:k4L6fCgoOYmXu/bL40rBJEn+ogDuEJm68TlVTAyms1M=
@@ -408,8 +406,8 @@ golang.org/x/sync v0.0.0-20180314180146-1d60e4601c6f/go.mod h1:RxMgew5VJxzue5/jJ
 golang.org/x/sync v0.0.0-20181108010431-42b317875d0f/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
 golang.org/x/sync v0.0.0-20190423024810-112230192c58/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
 golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4/go.mod h1:RxMgew5VJxzue5/jJTE5uejpjVlOe/izrB70Jof72aM=
-golang.org/x/sync v0.22.0 h1:SZjpbeLmrCk4xhRSZFNZW5gFUeCeFgjekvI/+gfScek=
-golang.org/x/sync v0.22.0/go.mod h1:9xrNwdLfx4jkKbNva9FpL6vEN7evnE43NNNJQ2LF3+0=
+golang.org/x/sync v0.24.0 h1:iqiDrGoDgyuvAKrhLQthUEzU/R378N78gXbBjxed7oA=
+golang.org/x/sync v0.24.0/go.mod h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=
 golang.org/x/sys v0.0.0-20180830151530-49385e6e1522/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
 golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a/go.mod h1:STP8DvDyc/dI5b8T5hshtkjS+E42TnysNCUPdjciGhY=
 golang.org/x/sys v0.0.0-20190412213103-97732733099d/go.mod h1:h1NjWce9XRLGQEsW7wpKNCjG9DtNlClVuFLEZdDNbEs=

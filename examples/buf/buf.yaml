@@ -14,7 +14,9 @@
 #   protoc-gen-chameleon-go     go install github.com/trendvidia/chameleon/cmd/protoc-gen-chameleon-go@latest
 #
 # pxf/secret.proto is vendored locally under proto/pxf/ to keep the
-# example self-contained. Production setups typically depend on the
+# example self-contained. It is a copy of the file in
+# github.com/trendvidia/protos and generates no Go here: the generated
+# config.pb.go imports github.com/trendvidia/protos/pxf. Production setups typically depend on the
 # protowire spec via BSR (`buf.build/trendvidia/protowire`) or a buf
 # workspace dep, so the import resolves the same way as any other
 # WKT — no vendoring required.

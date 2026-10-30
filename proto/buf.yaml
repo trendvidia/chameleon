@@ -2,9 +2,10 @@
 # bindings land in proto/chameleon/v1/*.pb.go (see proto/buf.gen.yaml).
 #
 # pxf/annotations.proto is vendored under proto/pxf/ rather than
-# pulled from BSR. The annotation extensions are also implemented in
-# Go inside protowire-go; the .proto definition is only needed at
-# codegen time for descriptor generation.
+# pulled from BSR. It is a byte-for-byte copy of the file in
+# github.com/trendvidia/protos, whose pxf package is its Go; buf compiles
+# it but generates nothing for it (see buf.gen.yaml).
+# TestVendoredPxfSourcesMatchProtos keeps the copy current.
 version: v2
 
 modules:
