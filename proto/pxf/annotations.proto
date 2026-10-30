@@ -7,11 +7,10 @@ package pxf;
 
 import "google/protobuf/descriptor.proto";
 
-option csharp_namespace = "Protowire.Protos.Pxf";
+option csharp_namespace = "Protowire.Pxf";
 option go_package = "github.com/trendvidia/protos/pxf;pxf";
 option java_multiple_files = true;
-option java_outer_classname = "AnnotationsProto";
-option java_package = "org.protowire.protos.pxf";
+option java_package = "org.protowire.proto.pxf";
 
 // Extension numbers live in protowire's block in the global extension
 // registry, 1314–1363, granted by protocolbuffers/protobuf#28919; the PXF
