@@ -5,9 +5,9 @@ go 1.26.2
 require (
 	github.com/awnumar/memguard v0.22.5
 	github.com/stretchr/testify v1.12.1
-	github.com/trendvidia/protocompile v0.36.0
-	github.com/trendvidia/protos v0.1.1
-	github.com/trendvidia/protowire-go v1.8.1
+	github.com/trendvidia/protocompile v0.36.1
+	github.com/trendvidia/protos v0.1.2
+	github.com/trendvidia/protowire-go v1.12.1
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/metric v1.43.0
 	go.opentelemetry.io/otel/sdk/metric v1.43.0
@@ -21,6 +21,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/petermattis/goid v0.0.0-20260113132338-7c7de50cc741 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tidwall/btree v1.8.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
