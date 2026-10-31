@@ -15,7 +15,6 @@ import (
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
 
-	"github.com/trendvidia/chameleon/defaults"
 	"github.com/trendvidia/chameleon/validate"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
@@ -40,7 +39,6 @@ message AppConfig {
   string base_url = 1 [(pxf.required) = true];
   string api_key = 2 [(pxf.required) = true];
   string optional_thing = 3;
-  string defaulted_required = 4 [(pxf.required) = true, (pxf.default) = "fallback"];
   Endpoint primary = 5 [(pxf.required) = true];
   Endpoint optional_endpoint = 6;
 }
@@ -88,29 +86,11 @@ func TestValidate_AllRequiredPresent(t *testing.T) {
 	msg, present := parseInput(t, desc, `
 base_url = "x"
 api_key = "k"
-defaulted_required = "y"
 primary {
   host = "h"
 }
 `)
 	require.NoError(t, validate.Validate(msg, present))
-}
-
-func TestValidate_DefaultSatisfiesRequired(t *testing.T) {
-	desc := compileApp(t)
-	// defaulted_required has both (pxf.required) and (pxf.default).
-	// No layer sets it. Defaults pass fills it and marks present.
-	// Validate must accept.
-	msg, present := parseInput(t, desc, `
-base_url = "x"
-api_key = "k"
-primary {
-  host = "h"
-}
-`)
-	require.NoError(t, defaults.Apply(msg, present))
-	require.NoError(t, validate.Validate(msg, present),
-		"a (pxf.default) on a (pxf.required) field satisfies the requirement")
 }
 
 // --- error paths ---
@@ -119,7 +99,6 @@ func TestValidate_MissingTopLevelRequired(t *testing.T) {
 	desc := compileApp(t)
 	msg, present := parseInput(t, desc, `
 api_key = "k"
-defaulted_required = "y"
 primary { host = "h" }
 `) // base_url missing
 
@@ -137,7 +116,6 @@ func TestValidate_MissingMultipleRequiredListed(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "api_key")
 	assert.Contains(t, err.Error(), "base_url")
-	assert.Contains(t, err.Error(), "defaulted_required")
 	assert.Contains(t, err.Error(), "primary")
 }
 
@@ -147,7 +125,6 @@ func TestValidate_NestedRequiredCheckedWhenParentLive(t *testing.T) {
 	msg, present := parseInput(t, desc, `
 base_url = "x"
 api_key = "k"
-defaulted_required = "y"
 primary {
   port = 80
 }
@@ -166,7 +143,6 @@ func TestValidate_NestedRequiredSkippedWhenParentAbsent(t *testing.T) {
 	msg, present := parseInput(t, desc, `
 base_url = "x"
 api_key = "k"
-defaulted_required = "y"
 primary { host = "h" }
 `)
 
@@ -181,7 +157,6 @@ func TestValidate_RequiredNestedMessageItself(t *testing.T) {
 	msg, present := parseInput(t, desc, `
 base_url = "x"
 api_key = "k"
-defaulted_required = "y"
 `)
 
 	err := validate.Validate(msg, present)

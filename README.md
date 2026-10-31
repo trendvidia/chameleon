@@ -95,6 +95,7 @@ merge.Merge         presence-aware overlay; WKTs treated as atomic
 defaults.Apply      (pxf.default) for fields no layer set
 interpolate.Apply   ${field.path} expansion with cycle detection
 validate.Validate   (pxf.required) check on the merged result
+                    (a field with both options never gets here: the schema is refused when it binds)
 parse.MoveInto      pxf.Secret values into memguard Enclaves
                     (scalar-shorthand: routed during decode via
                     pxf.OnSecretField; block-form: post-decode walk)
@@ -161,7 +162,7 @@ base_url = "mybigproject.com"
 
 What it catches: a `prod.pxf` file accidentally moved to `env/dev.pxf` (env mismatch), a plaintext file dropped into an encrypted slot (encrypted mismatch), the wrong layer file at the wrong path (id mismatch). What it doesn't carry: any resolution semantics. Layer content is still just the schema-typed body; the header is sanity-check metadata only. Files without `@header` parse exactly as before.
 
-> **Your schema is validated across its whole import graph, at `resolver.New`.** Constructing a Resolver checks your config message's descriptor — before any layer is opened, so a chain whose layers are all optional-and-absent is checked too ([#134](https://github.com/trendvidia/chameleon/issues/134)); a violation returns `resolver.ErrSchemaViolation`. Since protowire-go v1.4.0 the bind-time checks — PXF-reserved names, `(pxf.key)`, `(pxf.default)` and `(pxf.required)` placement — cover the descriptor's **transitive imports**, not just the file declaring the message ([protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71)). A `config.proto` that imports a shared `common.proto` now fails if `common.proto` carries a misplaced annotation *anywhere*, whether or not your config type refers to the offending message. Budget a repo-wide pass rather than a per-file one when upgrading. The cost is negative, not positive: validation is memoized per descriptor, and upstream measured decode 6–7% faster than the single-file walk it replaced.
+> **Your schema is validated across its whole import graph, at `resolver.New`.** Constructing a Resolver checks your config message's descriptor — before any layer is opened, so a chain whose layers are all optional-and-absent is checked too ([#134](https://github.com/trendvidia/chameleon/issues/134)); a violation returns `resolver.ErrSchemaViolation`. Since protowire-go v1.4.0 the bind-time checks — PXF-reserved names, `(pxf.key)`, `(pxf.default)` and `(pxf.required)` placement, plus chameleon's refusal of `(pxf.required)` with `(pxf.default)` on one field (either spelling; `(pxf.required) = false` beside a default is fine) — cover the descriptor's **transitive imports**, not just the file declaring the message ([protowire-go#71](https://github.com/trendvidia/protowire-go/issues/71)). A `config.proto` that imports a shared `common.proto` now fails if `common.proto` carries a misplaced annotation *anywhere*, whether or not your config type refers to the offending message. Budget a repo-wide pass rather than a per-file one when upgrading. The cost is negative, not positive: validation is memoized per descriptor, and upstream measured decode 6–7% faster than the single-file walk it replaced.
 >
 > One thing does **not** report it: `chameleon verify` only checks each layer's `@header.content_sha256` against the file body, and never takes a schema at all — so it returns `OK` for a schema that fails the first `resolver.New`. Constructing a Resolver once per schema is what covers you, and it needs no layers, no environment and no resolve.
 
@@ -384,7 +385,7 @@ Encrypted layers are skipped — sops already authenticates the ciphertext.
 
 ### `chameleon check-schema` CLI
 
-Checks a `.proto` against the PXF bind-time rules — PXF-reserved names, and `(pxf.key)` / `(pxf.default)` / `(pxf.required)` placement — across its **transitive import closure**. No chain, no layers, no environment: the rules depend on the descriptor alone, so one run answers for every environment at once.
+Checks a `.proto` against the PXF bind-time rules — PXF-reserved names, `(pxf.key)` / `(pxf.default)` / `(pxf.required)` placement, and `(pxf.required)` with `(pxf.default)` on one field — across its **transitive import closure**. No chain, no layers, no environment: the rules depend on the descriptor alone, so one run answers for every environment at once.
 
 ```sh
 chameleon check-schema --schema=app.proto
@@ -974,7 +975,7 @@ Worth knowing because the PXF parser's error message ("expected identifier, stri
   Two edges are worth knowing before you annotate a WKT field:
 
   - **A default on a `StringValue` is interpolated, like one on a plain `string`.** Defaults run before interpolation precisely so a default may itself be a template (`"api.${base_url}"`), and that now holds for the wrapper too ([#135](https://github.com/trendvidia/chameleon/issues/135)) — it previously reached your resolved config verbatim, with no error and no warning. Defaults on the other atomic WKTs are still not interpolated, which costs nothing: a template does not belong in a `Timestamp`, a `Duration` or a number, and a `pxf.Secret` must never be run through the template engine at all.
-  - **Bool literals must be exactly `"true"`.** protowire-go compares the literal against `"true"`, so `"True"` / `"1"` / `"yes"` yield `false` with no error — and the path still counts as satisfying `(pxf.required)`. Every other literal kind reports a parse failure.
+  - **Bool literals must be exactly `"true"` or `"false"`.** `"True"` / `"1"` / `"yes"` are a resolve-time error naming the field, like a bad literal of any other kind, and the field is left absent.
 
 - **`(pxf.default)` inside a `oneof` yields to the layer's choice.** Setting any oneof member clears its siblings, so a default is skipped whenever some layer already selected a different member of the same oneof — otherwise filling `timeout`'s default would silently discard an operator's explicit `file = "/tmp/x"`. An explicit clear counts as a choice: `file = null` also suppresses the sibling default, so "no backend" stays no backend rather than coming back as a `timeout`. Fields from proto3 `optional` (a synthetic single-field oneof) are unaffected and default normally.
 
@@ -1036,7 +1037,7 @@ examples/simple/        chain.pxf + base/dev layers (no Go code)
 interpolate/            ${field.path} post-merge expansion
 internal/header/        @header preamble scanner + LayerHeader sanity checks
 internal/pathfmt/       single source of truth for dotted-path format
-internal/upstream/      cross-repo contract with protowire-go (not built)
+internal/upstream/      cross-repo contract with protowire-go; bind-time rules it has not released yet
 merge/                  presence-aware proto-message overlay
 parse/                  Move(): pxf.Secret values -> memguard Enclaves
 proto/chameleon/v1/     ChainSpec / LayerHeader proto definitions

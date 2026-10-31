@@ -44,7 +44,7 @@
 //     rather than landing on the layer message at all.
 //  3. merge.Merge: overlay each layer onto the running destination.
 //  4. defaults.Apply: fill (pxf.default) values for fields no layer
-//     set, marking those paths present for step 6.
+//     set, marking those paths present.
 //  5. interpolate.Apply: expand ${field.path} against the merged
 //     state, with cycle detection.
 //  6. validate.Validate: (pxf.required) check on the merged result.
@@ -56,9 +56,10 @@
 // load-bearing. Defaults run BEFORE interpolation because a default
 // may itself be a template (api.${base_url}) that interpolation then
 // resolves against the merged state — trendvidia/chameleon#135.
-// Validation runs AFTER defaults so a default-filled required field
-// counts as satisfied, and BEFORE step 7 so no secret is extracted out
-// of a configuration that was never valid. Interpolation also precedes
+// Validation runs BEFORE step 7 so no secret is extracted out of a
+// configuration that was never valid. It no longer matters that it runs
+// after defaults: a default used to answer for (pxf.required) on the
+// same field, but [New] refuses that schema now (trendvidia/chameleon#216). Interpolation also precedes
 // step 7 because its walker skips pxf.Secret subtrees: a secret is
 // neither templated nor referenceable from another field's template.
 package resolver
@@ -79,6 +80,7 @@ import (
 	"github.com/trendvidia/chameleon/crypt"
 	"github.com/trendvidia/chameleon/defaults"
 	"github.com/trendvidia/chameleon/internal/header"
+	"github.com/trendvidia/chameleon/internal/upstream"
 	"github.com/trendvidia/chameleon/interpolate"
 	"github.com/trendvidia/chameleon/merge"
 	"github.com/trendvidia/chameleon/parse"
@@ -161,9 +163,9 @@ var ErrLayerTooLarge = errors.New("resolver: layer exceeds size limit")
 // ErrSchemaViolation is returned by [New] when the sample message's
 // descriptor closure carries a PXF annotation the format does not
 // admit — a (pxf.default) on a repeated field, on a message type no
-// literal denotes, a (pxf.required) on a oneof member (draft -01
-// §annotation-extensions), plus the PXF-reserved names and (pxf.key)
-// placements of §3.13. Those are the sections the violation strings
+// literal denotes, a (pxf.required) on a oneof member, (pxf.required)
+// and (pxf.default) on one field (draft -01 §annotation-extensions),
+// plus the PXF-reserved names and (pxf.key) placements of §3.13. Those are the sections the violation strings
 // cite; §schema-constraints ("Scope of Bind-Time Checks") is what
 // makes the scope the transitive import closure, so the file the
 // error names may be an imported one rather than the sample's own.
@@ -392,8 +394,10 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 	// Memoized per file closure upstream, so repeated New calls on the
 	// same descriptor cost a map lookup rather than a walk — up to
 	// upstream's 4096-descriptor cache bound, past which a program that
-	// compiles descriptors dynamically pays the walk on every call.
-	if vs := pxf.ValidateDescriptor(m.Descriptor()); len(vs) > 0 {
+	// compiles descriptors dynamically pays the walk on every call. The
+	// (pxf.required) with (pxf.default) walk in front of it is not
+	// memoized, until protowire-go carries that rule itself.
+	if vs := upstream.ValidateDescriptor(m.Descriptor()); len(vs) > 0 {
 		parts := make([]string, len(vs))
 		for i, v := range vs {
 			parts[i] = v.String()
@@ -789,9 +793,8 @@ func (r *Resolver[T]) Resolve(ctx context.Context, req Request) (res *Resolution
 		return nil, fmt.Errorf("resolver: interpolate: %w", err)
 	}
 
-	// Validate AFTER defaults so a default-filled required field
-	// counts as satisfied. Validate BEFORE Move so we don't extract
-	// secrets out of an invalid configuration.
+	// Validate BEFORE Move so we don't extract secrets out of an
+	// invalid configuration.
 	if err := validate.Validate(dst, presenceUnion); err != nil {
 		return nil, fmt.Errorf("resolver: %w", err)
 	}

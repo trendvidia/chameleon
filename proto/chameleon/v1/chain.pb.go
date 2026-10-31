@@ -88,7 +88,9 @@ func (LayerEntry_ForEach) EnumDescriptor() ([]byte, []int) {
 //     unless `required = true`.
 //  3. Loads each resolved file (decrypting via sops if `encrypted`) and
 //     merges them in declared order, low → high. Higher layers override.
-//  4. Applies pxf.default for fields still absent, then pxf.required.
+//  4. Applies pxf.default for fields still absent, then checks
+//     pxf.required. A schema setting both on one field never gets this
+//     far: it is refused when it binds.
 //  5. Runs a single string-interpolation pass over scalar fields.
 type ChainSpec struct {
 	state protoimpl.MessageState `protogen:"open.v1"`

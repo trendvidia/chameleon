@@ -73,9 +73,12 @@
 // pinned here as a rough edge until the fix arrived, and the pin now
 // asserts the error.
 //
-// Apply mutates `present` to mark default-applied paths as present.
-// This lets the validation pass treat "had a default" as satisfying
-// (pxf.required), which is the natural semantic.
+// Apply mutates `present` to mark default-applied paths as present, so
+// the presence union records every field that ended up with a value. It
+// does not make a default stand in for (pxf.required): a schema setting
+// both on one field is refused when it binds (draft -01
+// §annotation-extensions, "Required and Default"), so resolver.New
+// never lets one reach this pass.
 package defaults
 
 import (

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 TrendVidia, LLC.
 
-// Package upstream is not built-imported by chameleon. It exists as a
-// permanent record of the cross-repo contract between chameleon and
-// github.com/trendvidia/protowire-go: chameleon's PXF integration
+// Package upstream holds what stands between chameleon and
+// github.com/trendvidia/protowire-go. Its one piece of code, validate.go,
+// is a stopgap for a rule upstream has not released. The rest of the
+// package is not built-imported by chameleon. It exists as a permanent
+// record of the cross-repo contract between the two: chameleon's PXF integration
 // requires that protowire-go recognize pxf.Secret as a
 // well-known type. If the codec in protowire-go is ever refactored,
 // THESE INVARIANTS MUST BE PRESERVED — otherwise chameleon's secret
