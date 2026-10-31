@@ -14,15 +14,17 @@ import (
 	"time"
 
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 
 	"github.com/trendvidia/chameleon/crypt"
-	"github.com/trendvidia/chameleon/internal/upstream/upstreamtest"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
+	pxfpb "github.com/trendvidia/protos/pxf"
 )
 
 // TestBuild_EndToEnd is the bundler's full-pipeline smoke test: a
@@ -371,23 +373,54 @@ func readZipEntry(t *testing.T, zr *zip.Reader, name string) []byte {
 // chameleonv1 reflection paths only).
 var _ = proto.Marshal
 
+// pairSchema declares message M with one string field f carrying
+// (pxf.required) = required and (pxf.default) = "x". It is built by hand
+// because protocompile refuses the pair, so no compiled fixture can
+// carry it.
+func pairSchema(t *testing.T, required bool) protoreflect.FileDescriptor {
+	t.Helper()
+	opts := &descriptorpb.FieldOptions{}
+	proto.SetExtension(opts, pxfpb.E_Required, required)
+	proto.SetExtension(opts, pxfpb.E_Default, "x")
+	fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String("a.proto"),
+		Package: proto.String("pair.v1"),
+		Syntax:  proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("M"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:     proto.String("f"),
+				Number:   proto.Int32(1),
+				JsonName: proto.String("f"),
+				Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+				Options:  opts,
+			}},
+		}},
+	}, new(protoregistry.Files))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fd
+}
+
 // A bundle binds a schema without going through resolver.New, so it
 // refuses (pxf.required) with (pxf.default) itself, before reading a
 // layer. The empty layers FS is what shows that: nothing here could
 // fail a parse.
 func TestBuild_RefusesRequiredWithDefault(t *testing.T) {
-	build := func(raw ...[]byte) error {
-		fd := upstreamtest.File(t, "a.proto", []*descriptorpb.DescriptorProto{upstreamtest.Message("M", raw...)})
+	build := func(required bool) error {
+		fd := pairSchema(t, required)
 		return BuildOptions{
 			Manifest: &chameleonv1.BundleManifest{}, Module: "x", Schema: fd.Messages().Get(0),
 			ChainSpec: &chameleonv1.ChainSpec{}, LayersFS: fstest.MapFS{}, Output: &bytes.Buffer{},
 		}.validate()
 	}
-	err := build(upstreamtest.Required(true), upstreamtest.Default("x"))
+	err := build(true)
 	if err == nil || !strings.Contains(err.Error(), "(pxf.required) and (pxf.default) are exclusive on one field") {
 		t.Errorf("want the pair refused, got: %v", err)
 	}
-	if err := build(upstreamtest.Required(false), upstreamtest.Default("x")); err != nil {
+	if err := build(false); err != nil {
 		t.Errorf("(pxf.required) = false beside a default must stay accepted, got: %v", err)
 	}
 }

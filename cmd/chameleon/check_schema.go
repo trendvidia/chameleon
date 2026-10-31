@@ -20,7 +20,6 @@ import (
 	"github.com/trendvidia/protocompile/linker"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"github.com/trendvidia/chameleon/internal/upstream"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
@@ -1054,7 +1053,7 @@ func checkRoots(roots []schemaRoot, files linker.Files) schemaReport {
 	for i, r := range roots {
 		fd := files[i]
 		collectClosure(fd, fset)
-		for _, v := range upstream.ValidateFile(fd) {
+		for _, v := range pxf.ValidateFile(fd) {
 			idx, dup := seen[v]
 			if !dup {
 				seen[v] = len(rep.violations)

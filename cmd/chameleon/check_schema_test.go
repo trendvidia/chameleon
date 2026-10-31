@@ -1714,13 +1714,11 @@ message S { string x = 1; }
 	}
 }
 
-// check-schema answers the same question resolver.New does, so the pair
-// is a violation here too, and the default beside (pxf.required) = false
-// is not.
-//
-// This compiles a source, because this command only takes sources. It
-// goes when protocompile starts refusing the pair (protowire#453): this
-// then stops being a violation and becomes a compile error.
+// check-schema only takes sources, so the pair never reaches the
+// bind-time check here: protocompile refuses it first (protowire#453).
+// That makes it a compile error rather than a violation, naming the line
+// the field is on. The default beside (pxf.required) = false demands
+// nothing, and stays accepted.
 func TestCheckSchema_RequiredWithDefault(t *testing.T) {
 	check := func(t *testing.T, field string) (string, error) {
 		t.Helper()
@@ -1741,16 +1739,11 @@ message Config {
 	}
 
 	got, err := check(t, `string f = 1 [(pxf.required) = true, (pxf.default) = "x"];`)
-	if !errors.Is(err, errSchemaViolations) {
-		t.Fatalf("got %v, want errSchemaViolations; output: %s", err, got)
+	if err == nil || errors.Is(err, errSchemaViolations) {
+		t.Fatalf("got %v, want a compile error; output: %s", err, got)
 	}
-	for _, want := range []string{
-		`app.proto: field "app.v1.Config.f"`,
-		"(pxf.required) and (pxf.default) are exclusive on one field",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("output missing %q\ngot: %s", want, got)
-		}
+	if want := "app.proto:5:10: `required` and `default` on one field"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error missing %q\ngot: %v", want, err)
 	}
 
 	if got, err := check(t, `string f = 1 [(pxf.required) = false, (pxf.default) = "x"];`); err != nil {

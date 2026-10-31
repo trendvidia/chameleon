@@ -11,9 +11,9 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"github.com/trendvidia/chameleon/internal/upstream"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	pxfpb "github.com/trendvidia/protos/pxf"
+	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
 // TestBindingsCarryRegisteredAnnotationNumbers guards against #179: the
@@ -75,7 +75,7 @@ func TestShippedSchemasPassTheBindTimeChecks(t *testing.T) {
 		chameleonv1.File_chameleon_v1_bundle_manifest_proto,
 		chameleonv1.File_chameleon_v1_user_config_proto,
 	} {
-		if vs := upstream.ValidateFile(fd); len(vs) != 0 {
+		if vs := pxf.ValidateFile(fd); len(vs) != 0 {
 			t.Errorf("%s: %v", fd.Path(), vs)
 		}
 	}

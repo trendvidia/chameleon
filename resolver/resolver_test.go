@@ -16,15 +16,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/trendvidia/protocompile"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/chain"
-	"github.com/trendvidia/chameleon/internal/upstream/upstreamtest"
 	"github.com/trendvidia/chameleon/resolver"
 	"github.com/trendvidia/chameleon/secret"
 	"github.com/trendvidia/chameleon/source"
+	pxfpb "github.com/trendvidia/protos/pxf"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
@@ -2086,6 +2088,35 @@ func TestClobber_NoneWhenUpperPreservesMetadata(t *testing.T) {
 	assert.Empty(t, res.Trace.ClobberedMetadata, "upper layer preserved metadata; no clobber expected")
 }
 
+// pairSchema declares message M with one string field f carrying
+// (pxf.required) = required and (pxf.default) = "x". It is built by hand
+// because protocompile refuses the pair, so no compiled fixture can
+// carry it.
+func pairSchema(t *testing.T, required bool) protoreflect.FileDescriptor {
+	t.Helper()
+	opts := &descriptorpb.FieldOptions{}
+	proto.SetExtension(opts, pxfpb.E_Required, required)
+	proto.SetExtension(opts, pxfpb.E_Default, "x")
+	fd, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:    proto.String("pair.proto"),
+		Package: proto.String("pair.v1"),
+		Syntax:  proto.String("proto3"),
+		MessageType: []*descriptorpb.DescriptorProto{{
+			Name: proto.String("M"),
+			Field: []*descriptorpb.FieldDescriptorProto{{
+				Name:     proto.String("f"),
+				Number:   proto.Int32(1),
+				JsonName: proto.String("f"),
+				Label:    descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:     descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+				Options:  opts,
+			}},
+		}},
+	}, new(protoregistry.Files))
+	require.NoError(t, err)
+	return fd
+}
+
 // The refusal happens at construction, before any layer is read, so it
 // does not depend on some document omitting the field. The layer here
 // sets the field, which is the case that used to resolve clean.
@@ -2097,8 +2128,8 @@ version = "1.0.0"
 environments = [{ name = "prod" }]
 layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 `)
-	build := func(raw ...[]byte) (*recordingSource, error) {
-		fd := upstreamtest.File(t, "pair.proto", []*descriptorpb.DescriptorProto{upstreamtest.Message("M", raw...)})
+	build := func(required bool) (*recordingSource, error) {
+		fd := pairSchema(t, required)
 		rec := &recordingSource{inner: source.FS(fstest.MapFS{
 			"base.pxf": &fstest.MapFile{Data: []byte(`f = "set"`)},
 		})}
@@ -2107,7 +2138,7 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 		return rec, err
 	}
 
-	rec, err := build(upstreamtest.Required(true), upstreamtest.Default("x"))
+	rec, err := build(true)
 	require.ErrorIs(t, err, resolver.ErrSchemaViolation)
 	require.Equal(t, `resolver: schema violation:
   pair.proto: field "pair.v1.M.f": invalid (pxf.required): `+
@@ -2116,6 +2147,6 @@ layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
 		`(draft -01 §annotation-extensions)`, err.Error())
 	assert.Zero(t, rec.opens.Load(), "the schema is rejected before a layer is read")
 
-	_, err = build(upstreamtest.Required(false), upstreamtest.Default("x"))
+	_, err = build(false)
 	require.NoError(t, err)
 }

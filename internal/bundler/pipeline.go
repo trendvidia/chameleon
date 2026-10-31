@@ -27,7 +27,6 @@ import (
 	"github.com/trendvidia/chameleon/crypt"
 	"github.com/trendvidia/chameleon/internal/bundlelayout"
 	"github.com/trendvidia/chameleon/internal/secretcatalog"
-	"github.com/trendvidia/chameleon/internal/upstream"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 )
 
@@ -542,7 +541,7 @@ func (o BuildOptions) validate() error {
 	} else {
 		// A bundle parses layers without going through resolver.New, so
 		// it asks the schema question itself, before any layer is read.
-		for _, v := range upstream.ValidateDescriptor(o.Schema) {
+		for _, v := range pxf.ValidateDescriptor(o.Schema) {
 			errs = append(errs, errors.New(v.String()))
 		}
 	}
