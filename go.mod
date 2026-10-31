@@ -44,3 +44,5 @@ require (
 // requirements (trendvidia/chameleon#130). The sops fork moved with the
 // backend — see sops/go.mod. TestLibraryModuleRequiresNoKeyManagement
 // in linkage_test.go reads `go mod edit -json` and fails if it returns.
+
+require github.com/trendvidia/release-deps-proof v0.0.0-20260101000000-abcdefabcdef
