@@ -19,8 +19,8 @@ go 1.26.2
 require (
 	filippo.io/age v1.3.1
 	github.com/stretchr/testify v1.12.1
-	github.com/trendvidia/chameleon v0.26.0
-	github.com/trendvidia/chameleon/sops v0.26.0
+	github.com/trendvidia/chameleon v0.27.0
+	github.com/trendvidia/chameleon/sops v0.27.0
 	github.com/trendvidia/protocompile v0.37.0
 	github.com/trendvidia/protowire-go v1.13.0
 	github.com/trendvidia/sops/v4 v4.0.1
