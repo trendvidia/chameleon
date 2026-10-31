@@ -55,8 +55,7 @@
 //	chameleon check-schema --schema=config.proto [--message=app.v1.AppConfig]
 //	chameleon check-schema --schema=./proto --include=./proto
 //	    Check .proto files against the PXF bind-time rules — reserved
-//	    names, (pxf.key) / (pxf.default) / (pxf.required) placement,
-//	    (pxf.required) with (pxf.default) on one field —
+//	    names, (pxf.key) / (pxf.default) / (pxf.required) placement —
 //	    across their transitive import closure. The only --schema
 //	    subcommand that resolves nothing: no chain, no layers, no
 //	    environment. --schema is repeatable and also takes a directory,

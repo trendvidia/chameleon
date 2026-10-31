@@ -80,7 +80,6 @@ import (
 	"github.com/trendvidia/chameleon/crypt"
 	"github.com/trendvidia/chameleon/defaults"
 	"github.com/trendvidia/chameleon/internal/header"
-	"github.com/trendvidia/chameleon/internal/upstream"
 	"github.com/trendvidia/chameleon/interpolate"
 	"github.com/trendvidia/chameleon/merge"
 	"github.com/trendvidia/chameleon/parse"
@@ -394,10 +393,8 @@ func New[T proto.Message](sample T, spec proto.Message, opts ...Option) (*Resolv
 	// Memoized per file closure upstream, so repeated New calls on the
 	// same descriptor cost a map lookup rather than a walk — up to
 	// upstream's 4096-descriptor cache bound, past which a program that
-	// compiles descriptors dynamically pays the walk on every call. The
-	// (pxf.required) with (pxf.default) walk in front of it is not
-	// memoized, until protowire-go carries that rule itself.
-	if vs := upstream.ValidateDescriptor(m.Descriptor()); len(vs) > 0 {
+	// compiles descriptors dynamically pays the walk on every call.
+	if vs := pxf.ValidateDescriptor(m.Descriptor()); len(vs) > 0 {
 		parts := make([]string, len(vs))
 		for i, v := range vs {
 			parts[i] = v.String()
