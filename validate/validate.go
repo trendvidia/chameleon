@@ -7,8 +7,10 @@
 // (pxf.required) field is still absent in the presence union.
 //
 // "Absent" is checked against the same presence map that defaults
-// consults — so a default-filled required field validates as
-// satisfied (defaults pass marks the path present after applying).
+// consults. A required field cannot be default-filled: a schema setting
+// (pxf.required) and (pxf.default) on one field is refused when it
+// binds, at resolver.New, so no default can answer for a required field
+// here.
 //
 // Scope:
 //

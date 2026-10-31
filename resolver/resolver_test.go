@@ -17,9 +17,11 @@ import (
 	"github.com/trendvidia/protocompile"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/chain"
+	"github.com/trendvidia/chameleon/internal/upstream/upstreamtest"
 	"github.com/trendvidia/chameleon/resolver"
 	"github.com/trendvidia/chameleon/secret"
 	"github.com/trendvidia/chameleon/source"
@@ -2082,4 +2084,38 @@ func TestClobber_NoneWhenUpperPreservesMetadata(t *testing.T) {
 
 	require.NotNil(t, res.Trace)
 	assert.Empty(t, res.Trace.ClobberedMetadata, "upper layer preserved metadata; no clobber expected")
+}
+
+// The refusal happens at construction, before any layer is read, so it
+// does not depend on some document omitting the field. The layer here
+// sets the field, which is the case that used to resolve clean.
+// (pxf.required) = false demands nothing, so that schema still binds.
+func TestNew_RefusesRequiredWithDefault(t *testing.T) {
+	chainDesc, _ := compileAll(t)
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+environments = [{ name = "prod" }]
+layers = [{ id = "base" path = "base.pxf" for_each = ONCE required = true }]
+`)
+	build := func(raw ...[]byte) (*recordingSource, error) {
+		fd := upstreamtest.File(t, "pair.proto", []*descriptorpb.DescriptorProto{upstreamtest.Message("M", raw...)})
+		rec := &recordingSource{inner: source.FS(fstest.MapFS{
+			"base.pxf": &fstest.MapFile{Data: []byte(`f = "set"`)},
+		})}
+		_, err := resolver.New[*dynamicpb.Message](dynamicpb.NewMessage(fd.Messages().Get(0)), spec,
+			resolver.WithSource("default", rec))
+		return rec, err
+	}
+
+	rec, err := build(upstreamtest.Required(true), upstreamtest.Default("x"))
+	require.ErrorIs(t, err, resolver.ErrSchemaViolation)
+	require.Equal(t, `resolver: schema violation:
+  pair.proto: field "pair.v1.M.f": invalid (pxf.required): `+
+		`(pxf.required) and (pxf.default) are exclusive on one field: `+
+		`the first rejects a document where the field is absent, and the second treats it as supplied `+
+		`(draft -01 §annotation-extensions)`, err.Error())
+	assert.Zero(t, rec.opens.Load(), "the schema is rejected before a layer is read")
+
+	_, err = build(upstreamtest.Required(false), upstreamtest.Default("x"))
+	require.NoError(t, err)
 }

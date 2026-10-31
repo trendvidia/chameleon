@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/trendvidia/chameleon/internal/upstream"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	pxfpb "github.com/trendvidia/protos/pxf"
 )
@@ -62,5 +63,20 @@ func walkMessages(mds protoreflect.MessageDescriptors, fn func(protoreflect.Mess
 		md := mds.Get(i)
 		fn(md)
 		walkMessages(md.Messages(), fn)
+	}
+}
+
+// chameleon's own schemas obey the rule it refuses in others, so a pair
+// added to chain.proto fails here rather than in every LoadSpec.
+func TestShippedSchemasPassTheBindTimeChecks(t *testing.T) {
+	for _, fd := range []protoreflect.FileDescriptor{
+		chameleonv1.File_chameleon_v1_chain_proto,
+		chameleonv1.File_chameleon_v1_layer_proto,
+		chameleonv1.File_chameleon_v1_bundle_manifest_proto,
+		chameleonv1.File_chameleon_v1_user_config_proto,
+	} {
+		if vs := upstream.ValidateFile(fd); len(vs) != 0 {
+			t.Errorf("%s: %v", fd.Path(), vs)
+		}
 	}
 }

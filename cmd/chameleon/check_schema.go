@@ -20,6 +20,7 @@ import (
 	"github.com/trendvidia/protocompile/linker"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
+	"github.com/trendvidia/chameleon/internal/upstream"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
@@ -36,8 +37,9 @@ var errSchemaViolations = errors.New("schema is not PXF-conformant")
 // environment, because it is on its way to resolving something.
 //
 // The bind-time rules are a property of a file closure — reserved
-// names, (pxf.key) / (pxf.default) / (pxf.required) placement — so
-// they can be answered without any of that. resolver.New answers the
+// names, (pxf.key) / (pxf.default) / (pxf.required) placement, the
+// (pxf.required) with (pxf.default) pair — so they can be answered
+// without any of that. resolver.New answers the
 // same question for a program that constructs a Resolver
 // (chameleon#134); this answers it for a repo that only authors
 // schemas and hands them to someone else, which is where the
@@ -109,8 +111,8 @@ func checkSchemaCmd(out io.Writer, args []string) error {
 		fmt.Fprintln(fs.Output(), `chameleon check-schema — check .proto files against the PXF bind-time rules.
 
 Reports every violation in the schemas' transitive import closure:
-PXF-reserved names, and invalid (pxf.key) / (pxf.default) /
-(pxf.required) placement. No chain, no layers and no environment are
+PXF-reserved names, invalid (pxf.key) / (pxf.default) / (pxf.required)
+placement, and (pxf.required) with (pxf.default) on one field. No chain, no layers and no environment are
 needed — the rules depend on the descriptor alone, so one run covers
 every environment at once.
 
@@ -1052,7 +1054,7 @@ func checkRoots(roots []schemaRoot, files linker.Files) schemaReport {
 	for i, r := range roots {
 		fd := files[i]
 		collectClosure(fd, fset)
-		for _, v := range pxf.ValidateFile(fd) {
+		for _, v := range upstream.ValidateFile(fd) {
 			idx, dup := seen[v]
 			if !dup {
 				seen[v] = len(rep.violations)

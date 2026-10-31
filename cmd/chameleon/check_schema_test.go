@@ -1713,3 +1713,47 @@ message S { string x = 1; }
 		t.Errorf("output = %q, want %q", out.String(), want)
 	}
 }
+
+// check-schema answers the same question resolver.New does, so the pair
+// is a violation here too, and the default beside (pxf.required) = false
+// is not.
+//
+// This compiles a source, because this command only takes sources. It
+// goes when protocompile starts refusing the pair (protowire#453): this
+// then stops being a violation and becomes a compile error.
+func TestCheckSchema_RequiredWithDefault(t *testing.T) {
+	check := func(t *testing.T, field string) (string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		write(t, filepath.Join(dir, "pxf", "annotations.proto"), annotationsSrc)
+		schema := filepath.Join(dir, "app.proto")
+		write(t, schema, `
+syntax = "proto3";
+package app.v1;
+import "pxf/annotations.proto";
+message Config {
+  `+field+`
+}
+`)
+		var out bytes.Buffer
+		err := checkSchemaCmd(&out, []string{"--schema=" + schema, "--include=" + dir})
+		return out.String(), err
+	}
+
+	got, err := check(t, `string f = 1 [(pxf.required) = true, (pxf.default) = "x"];`)
+	if !errors.Is(err, errSchemaViolations) {
+		t.Fatalf("got %v, want errSchemaViolations; output: %s", err, got)
+	}
+	for _, want := range []string{
+		`app.proto: field "app.v1.Config.f"`,
+		"(pxf.required) and (pxf.default) are exclusive on one field",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q\ngot: %s", want, got)
+		}
+	}
+
+	if got, err := check(t, `string f = 1 [(pxf.required) = false, (pxf.default) = "x"];`); err != nil {
+		t.Errorf("(pxf.required) = false beside a default must stay accepted: %v; output: %s", err, got)
+	}
+}

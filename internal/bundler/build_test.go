@@ -15,11 +15,13 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 
 	"github.com/trendvidia/chameleon/crypt"
+	"github.com/trendvidia/chameleon/internal/upstream/upstreamtest"
 	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 )
 
@@ -368,3 +370,24 @@ func readZipEntry(t *testing.T, zr *zip.Reader, name string) []byte {
 // aren't all referenced (some tests use them through dynamicpb /
 // chameleonv1 reflection paths only).
 var _ = proto.Marshal
+
+// A bundle binds a schema without going through resolver.New, so it
+// refuses (pxf.required) with (pxf.default) itself, before reading a
+// layer. The empty layers FS is what shows that: nothing here could
+// fail a parse.
+func TestBuild_RefusesRequiredWithDefault(t *testing.T) {
+	build := func(raw ...[]byte) error {
+		fd := upstreamtest.File(t, "a.proto", []*descriptorpb.DescriptorProto{upstreamtest.Message("M", raw...)})
+		return BuildOptions{
+			Manifest: &chameleonv1.BundleManifest{}, Module: "x", Schema: fd.Messages().Get(0),
+			ChainSpec: &chameleonv1.ChainSpec{}, LayersFS: fstest.MapFS{}, Output: &bytes.Buffer{},
+		}.validate()
+	}
+	err := build(upstreamtest.Required(true), upstreamtest.Default("x"))
+	if err == nil || !strings.Contains(err.Error(), "(pxf.required) and (pxf.default) are exclusive on one field") {
+		t.Errorf("want the pair refused, got: %v", err)
+	}
+	if err := build(upstreamtest.Required(false), upstreamtest.Default("x")); err != nil {
+		t.Errorf("(pxf.required) = false beside a default must stay accepted, got: %v", err)
+	}
+}
