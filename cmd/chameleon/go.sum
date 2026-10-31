@@ -337,8 +337,8 @@ github.com/trendvidia/chameleon v0.27.0 h1:vT4FqRzIlHK64Gqv6OtVXmgXb776K7IoCiORU
 github.com/trendvidia/chameleon v0.27.0/go.mod h1:CcrGjAX1X4q2oJ16dLEQ9lcOnOdGVkh4BxRVD3aWaY8=
 github.com/trendvidia/chameleon/sops v0.27.0 h1:+AEVfjiwrqHB27/StJuSe49ZcfH/jlGSPqcYvWKT7k4=
 github.com/trendvidia/chameleon/sops v0.27.0/go.mod h1:vDaFdEFbJfVkNlwperDI/Q2YUf2ZiIPgOV4w5qP7Ieg=
-github.com/trendvidia/protocompile v0.37.0 h1:4TBfDo52j8sDuSry7kU1xF/t5cy7G6tzhMgFQ1wxds8=
-github.com/trendvidia/protocompile v0.37.0/go.mod h1:r/77ZKQWq3b5IzDMIcHEsLWXy9/m/VqmVfBNXw4n63E=
+github.com/trendvidia/protocompile v0.38.1 h1:re1MMH6toErAPYXKYOE9atomZOQLUPeeewR1s3H7I+w=
+github.com/trendvidia/protocompile v0.38.1/go.mod h1:WbN5LRddJxOCdAC9pi2yI5djQ1E6g2uTli/9DwrjZ6Y=
 github.com/trendvidia/protos v0.1.4 h1:uKa2KUCKDFmAHT0iIuypwoUv+k7dM/u1d1zUWPV00kA=
 github.com/trendvidia/protos v0.1.4/go.mod h1:NPP4w6dOu7BkD8psH0cWJamHHiEpi8QfgP88vKkMXUI=
 github.com/trendvidia/protowire-go v1.13.0 h1:Ody0G05rUqbZ0GuE4gmz+e5sNfYMSlSLEYmZ6xC/QLs=
