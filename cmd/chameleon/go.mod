@@ -7,12 +7,11 @@
 // the tag below it. The go.work at the repo root makes local
 // development and CI resolve against the working tree regardless.
 //
-// The two replace directives at the bottom of this file are
-// development-only and MUST be dropped before `cmd/chameleon/vX.Y.Z` is
-// tagged: `go install pkg@version` rejects a module whose go.mod carries
-// a replace, so tagging with them in place breaks every pinned and
-// @latest install of the CLI, and a pushed tag cannot be recalled.
-// docs/RELEASING.md step 5 has the command and the pre-tag assertion.
+// This file carries no replace directives and must not gain any:
+// `go install pkg@version` rejects a module whose go.mod has one, so a
+// tag cut with one in place breaks every pinned and @latest install of
+// the CLI, and a pushed tag cannot be recalled. docs/RELEASING.md step 5
+// has the pre-tag assertion.
 module github.com/trendvidia/chameleon/cmd/chameleon
 
 go 1.26.2
