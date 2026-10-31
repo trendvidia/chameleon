@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet — changes live in [changelog.d/](changelog.d/) until release._
 
+## [0.27.0] — 2026-10-31
+
+Minor release, because two things that used to pass now fail. The CLI refuses standard annotations placed where they could have no effect, and map nesting now counts toward the decoder's depth limit. `(pxf.required)` with `(pxf.default)` on one field is refused too, in the library and the CLI, and a schema that has both needs a decision about which one you meant. It moves to protowire-go v1.13.0, protocompile v0.37.0 and protos v0.1.4.
+
+### Changed
+
+- **`(pxf.required)` with `(pxf.default)` on one field is now refused when the schema binds** ([#216](https://github.com/trendvidia/chameleon/issues/216)). Read this if a schema of yours has both, in either spelling (`[(pxf.required) = true, (pxf.default) = "x"]`, `@required @default("x")`, or a mix). `resolver.New` and bundle building now fail on it with `(pxf.required) and (pxf.default) are exclusive on one field`. Every CLI command that takes `--schema` compiles the source first, so there it is a compile error at the field: `` `required` and `default` on one field ``. Draft -01 of the PXF spec forbids the pair ("Required and Default", [protowire#453](https://github.com/trendvidia/protowire/issues/453)).
+
+  **This changes what chameleon did.** chameleon ran its defaults pass first, so a default answered for the requirement and the field could never be missing. protowire-go checks required first, so the same schema failed there. One schema meant two things, and the requirement on it never fired here.
+
+  **What to do.** Decide which one you meant. If the field should fall back to a value, drop `(pxf.required)`: that keeps exactly what chameleon did. If an operator must set it, drop `(pxf.default)`. `(pxf.required) = false` beside a default demands nothing and stays accepted.
+
+- **protowire-go v1.13.0, protocompile v0.37.0 and protos v0.1.4** ([#219](https://github.com/trendvidia/chameleon/issues/219)). Read this if your schemas use the standard annotations, or your config nests maps deeply. Two things that used to pass now fail.
+
+  **Stricter schema compilation.** Every CLI command that takes `--schema` now refuses a standard annotation where it can have no effect, instead of compiling it and ignoring it. That covers `@sensitive` on a oneof, `@required` on a oneof member, `@default` on two members of one oneof or on a member of a `@required` oneof, and `@default` on a repeated, map, group or non-literal message field, or on anything that is not a field. Move or remove the annotation.
+
+  **Deep maps count toward the nesting limit.** A layer nesting maps past 50 levels, or a `google.protobuf.Struct` past about 33, now fails to decode. Such a document used to decode here while `pxf.Parse` rejected it.
+
+### Internal
+
+- A release now fails if a `go.mod` has a `replace` or an untagged version of a stack module (trendvidia/protowire#460).
+- `cmd/chameleon/go.mod` no longer describes `replace` directives it does not have ([#220](https://github.com/trendvidia/chameleon/issues/220)).
+
 ## [0.26.0] — 2026-10-30
 
 Minor release. It makes chameleon safe to link with protocompile v0.36 and
@@ -2332,7 +2355,8 @@ Documented in `README.md`:
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
 
-[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/trendvidia/chameleon/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/trendvidia/chameleon/compare/v0.25.2...v0.26.0
 [0.25.2]: https://github.com/trendvidia/chameleon/compare/v0.25.1...v0.25.2
 [0.25.1]: https://github.com/trendvidia/chameleon/compare/v0.25.0...v0.25.1
