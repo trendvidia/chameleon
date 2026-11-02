@@ -63,7 +63,15 @@ type Options struct {
 }
 
 // Merge overlays src onto dst using srcPresence to distinguish set,
-// null, and absent fields. Mutates dst; src is read-only.
+// null, and absent fields. It writes only to dst, but it does not copy:
+// dst takes over src's lists, maps and atomic well-known-type messages,
+// so a later write to one of those in dst also changes src. Treat src
+// as consumed once Merge returns. To apply one parsed layer to several
+// destinations, pass each Merge its own [proto.Clone].
+//
+// The sharing is deliberate. parse.MoveInto clears a pxf.Secret's
+// plaintext out of dst, and because src holds that same Secret, the
+// plaintext goes from src too. A copy would leave it readable there.
 //
 // Both messages must be of the same proto type. A type mismatch is a
 // programming error and returns an explicit error rather than panicking
