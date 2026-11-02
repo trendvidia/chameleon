@@ -11,7 +11,8 @@
 //   - Set scalars overwrite.
 //   - Set user-defined message fields merge deep, recursively.
 //   - Set repeated/map fields replace whole — no per-element appending,
-//     no per-key entry merging.
+//     no per-key entry merging. An empty one replaces with nothing, so
+//     `tags = []` empties whatever lower layers wrote.
 //   - Set well-known-type message fields (pxf.Secret, pxf.BigInt,
 //     google.protobuf.Timestamp, etc.) replace whole, NOT deep-merge.
 //     WKTs model atomic values: merging `Timestamp.seconds` from one
@@ -117,12 +118,15 @@ func mergeField(dst, src protoreflect.Message, fd protoreflect.FieldDescriptor, 
 
 	// IsSet from here on.
 	switch {
-	case fd.IsMap():
-		// Replace whole map. The source value here is already a fully
-		// constructed map — Set takes a copy.
-		dst.Set(fd, src.Get(fd))
-	case fd.IsList():
-		// Replace whole list, same reasoning.
+	case fd.IsMap() || fd.IsList():
+		// Replace whole. An empty container is a set value too, and
+		// replacing with nothing means clearing: Get on an empty list or
+		// map returns a read-only placeholder that Set panics on, and
+		// proto has no stored empty container to tell the two apart.
+		if !src.Has(fd) {
+			dst.Clear(fd)
+			return nil
+		}
 		dst.Set(fd, src.Get(fd))
 	case fd.Kind() == protoreflect.MessageKind:
 		if wkt.Atomic(fd.Message()) {
