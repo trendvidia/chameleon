@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/merge"
+	chameleonv1 "github.com/trendvidia/chameleon/proto/chameleon/v1"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
@@ -28,6 +29,7 @@ package merge_test.v1;
 message Endpoint {
   string url = 1;
   int32 port = 2;
+  repeated string aliases = 3;
 }
 
 message AppConfig {
@@ -205,6 +207,119 @@ func TestMerge_AbsentRepeatedFallsThrough(t *testing.T) {
 	require.NoError(t, merge.Merge(dst, over, overP))
 
 	assert.Equal(t, 2, get(t, dst, "tags").List().Len(), "base tags must survive when higher layer doesn't touch")
+}
+
+// An empty container is a set value: "replace whole" with nothing, which
+// is what `tags = []` says. It is also the one set value protoreflect
+// will not hand back in a form Set accepts — Get on an empty list or map
+// returns a read-only placeholder — so it gets its own cases, in both
+// message implementations: generated code panics on that placeholder and
+// dynamicpb has its own path, so one passing says nothing about the other.
+
+func TestMerge_EmptyContainerClearsLowerLayer(t *testing.T) {
+	cases := []struct {
+		name        string
+		base, empty string
+		field       string
+		size        func(proto.Message) int
+	}{
+		{
+			name:  "repeated scalar",
+			base:  `tags = ["a", "b"]`,
+			empty: `tags = []`,
+			field: "tags",
+			size:  func(m proto.Message) int { return get(t, m, "tags").List().Len() },
+		},
+		{
+			name:  "repeated message",
+			base:  `replicas = [{ url = "u" }]`,
+			empty: `replicas = []`,
+			field: "replicas",
+			size:  func(m proto.Message) int { return get(t, m, "replicas").List().Len() },
+		},
+		{
+			name:  "map of scalars",
+			base:  `labels = { "env": "prod" }`,
+			empty: `labels = {}`,
+			field: "labels",
+			size:  func(m proto.Message) int { return get(t, m, "labels").Map().Len() },
+		},
+		{
+			name:  "map of messages",
+			base:  `tenants = { "acme": { url = "u" } }`,
+			empty: `tenants = {}`,
+			field: "tenants",
+			size:  func(m proto.Message) int { return get(t, m, "tenants").Map().Len() },
+		},
+	}
+	desc := compileApp(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := newDst(t, desc)
+			base, baseP := parseLayer(t, desc, tc.base)
+			require.NoError(t, merge.Merge(dst, base, baseP))
+			require.NotZero(t, tc.size(dst), "control: the base layer must populate %s", tc.field)
+
+			over, overP := parseLayer(t, desc, tc.empty)
+			require.True(t, overP.IsSet(tc.field), "control: %s must parse as set, not absent or null", tc.field)
+			require.NoError(t, merge.Merge(dst, over, overP))
+			assert.Equal(t, 0, tc.size(dst), "an empty %s must replace the lower layer's", tc.field)
+		})
+	}
+}
+
+func TestMerge_EmptyContainerInNestedMessage(t *testing.T) {
+	desc := compileApp(t)
+	dst := newDst(t, desc)
+
+	base, baseP := parseLayer(t, desc, `primary { url = "u" aliases = ["a"] }`)
+	require.NoError(t, merge.Merge(dst, base, baseP))
+
+	over, overP := parseLayer(t, desc, `primary { aliases = [] }`)
+	require.NoError(t, merge.Merge(dst, over, overP))
+
+	primary := get(t, dst, "primary").Message()
+	d := primary.Descriptor()
+	assert.Equal(t, 0, primary.Get(d.Fields().ByName("aliases")).List().Len())
+	assert.Equal(t, "u", primary.Get(d.Fields().ByName("url")).String(), "the sibling must survive the deep merge")
+}
+
+func TestMerge_EmptyContainerInGeneratedMessage(t *testing.T) {
+	cases := []struct {
+		name   string
+		empty  string
+		base   func() *chameleonv1.ChainSpec
+		sizeOf func(*chameleonv1.ChainSpec) int
+	}{
+		{
+			name:  "repeated",
+			empty: `version = "1" environments = [] layers = []`,
+			base: func() *chameleonv1.ChainSpec {
+				return &chameleonv1.ChainSpec{Environments: []*chameleonv1.Environment{{Name: "prod"}}}
+			},
+			sizeOf: func(c *chameleonv1.ChainSpec) int { return len(c.GetEnvironments()) },
+		},
+		{
+			name:  "map",
+			empty: `version = "1" environments = [] layers = [] sources = {}`,
+			base: func() *chameleonv1.ChainSpec {
+				return &chameleonv1.ChainSpec{Sources: map[string]*chameleonv1.SourceRef{"s": {}}}
+			},
+			sizeOf: func(c *chameleonv1.ChainSpec) int { return len(c.GetSources()) },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dst := tc.base()
+			require.NotZero(t, tc.sizeOf(dst), "control: dst must start populated")
+
+			over := &chameleonv1.ChainSpec{}
+			overP, err := pxf.UnmarshalFull([]byte(tc.empty), over)
+			require.NoError(t, err)
+			require.NoError(t, merge.Merge(dst, over, overP))
+			assert.Zero(t, tc.sizeOf(dst))
+		})
+	}
 }
 
 func TestMerge_MapReplacesWhole(t *testing.T) {

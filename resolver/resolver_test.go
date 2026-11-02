@@ -196,6 +196,53 @@ feature_flags = ["fast_path", "new_dashboard"]
 	assert.Equal(t, "new_dashboard", flags.Get(1).String())
 }
 
+// An explicit empty list is a value like any other: it overrides what a
+// lower layer set, and resolves on its own when no lower layer set one.
+func TestResolve_EmptyListReplacesLowerLayer(t *testing.T) {
+	chainDesc, appDesc := compileAll(t)
+
+	spec := parseSpec(t, chainDesc, `
+version = "1.0.0"
+default_environment = "dev"
+environments = [
+  { name = "prod" }
+  { name = "dev" extends = "prod" }
+]
+layers = [
+  { id = "base" path = "base.pxf" for_each = ONCE required = true }
+  { id = "env"  path = "env/${env}.pxf" for_each = PER_ENV }
+]
+`)
+
+	cases := []struct {
+		name string
+		base string
+	}{
+		{"lower layer set the list", `feature_flags = ["fast_path"]`},
+		{"no lower layer set it", `base_url = "x"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := fstest.MapFS{
+				"base.pxf":    &fstest.MapFile{Data: []byte(tc.base)},
+				"env/dev.pxf": &fstest.MapFile{Data: []byte(`feature_flags = []`)},
+			}
+			r, err := resolver.New[*dynamicpb.Message](
+				dynamicpb.NewMessage(appDesc), spec,
+				resolver.WithSource("default", source.FS(fs)),
+			)
+			require.NoError(t, err)
+
+			res, err := r.Resolve(context.Background(), resolver.Request{Environment: "dev"})
+			require.NoError(t, err)
+			defer res.Destroy()
+
+			flags := res.Config.Get(res.Config.Descriptor().Fields().ByName("feature_flags")).List()
+			assert.Equal(t, 0, flags.Len())
+		})
+	}
+}
+
 func TestResolve_FallThroughWhenLeafIsSilent(t *testing.T) {
 	chainDesc, appDesc := compileAll(t)
 
