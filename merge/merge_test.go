@@ -322,6 +322,41 @@ func TestMerge_EmptyContainerInGeneratedMessage(t *testing.T) {
 	}
 }
 
+// Merge writes only to dst, and what it hands over is shared rather than
+// copied. Both halves are the documented contract.
+
+func TestMerge_DoesNotWriteSrc(t *testing.T) {
+	desc := compileApp(t)
+	dst := newDst(t, desc)
+	base, baseP := parseLayer(t, desc, `base_url = "b" primary { url = "u" } tags = ["old"]`)
+	require.NoError(t, merge.Merge(dst, base, baseP))
+
+	src, srcP := parseLayer(t, desc, `primary { port = 1 } tags = ["a"] labels = { "k": "v" }`)
+	before := proto.Clone(src)
+	require.NoError(t, merge.Merge(dst, src, srcP))
+	assert.True(t, proto.Equal(before, src), "Merge must not write src")
+}
+
+func TestMerge_DstSharesSrcStorage(t *testing.T) {
+	desc := compileApp(t)
+
+	t.Run("list", func(t *testing.T) {
+		dst := newDst(t, desc)
+		src, p := parseLayer(t, desc, `tags = ["a"]`)
+		require.NoError(t, merge.Merge(dst, src, p))
+		get(t, dst, "tags").List().Set(0, protoreflect.ValueOfString("changed"))
+		assert.Equal(t, "changed", get(t, src, "tags").List().Get(0).String())
+	})
+	t.Run("map", func(t *testing.T) {
+		dst := newDst(t, desc)
+		src, p := parseLayer(t, desc, `labels = { "k": "v" }`)
+		require.NoError(t, merge.Merge(dst, src, p))
+		key := protoreflect.ValueOfString("k").MapKey()
+		get(t, dst, "labels").Map().Set(key, protoreflect.ValueOfString("changed"))
+		assert.Equal(t, "changed", get(t, src, "labels").Map().Get(key).String())
+	})
+}
+
 func TestMerge_MapReplacesWhole(t *testing.T) {
 	desc := compileApp(t)
 	dst := newDst(t, desc)

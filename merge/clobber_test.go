@@ -15,6 +15,8 @@ import (
 	"google.golang.org/protobuf/types/dynamicpb"
 
 	"github.com/trendvidia/chameleon/merge"
+	"github.com/trendvidia/chameleon/parse"
+	"github.com/trendvidia/chameleon/secret"
 	"github.com/trendvidia/protowire-go/encoding/pxf"
 )
 
@@ -242,3 +244,26 @@ func TestCompileClobberApp(t *testing.T) {
 // reported as unused while still being part of this file for
 // documentation. Tests above use clobberProtoSrcWithPxf / Compile.
 var _ = clobberProtoSrc
+
+// TestMerge_MovedSecretLeavesSrcToo pins why Merge does not copy: without
+// the parser's secret hook the plaintext sits in the layer message, and
+// only sharing storage with dst gets it cleared there. If Merge starts
+// cloning, this fails, and src is left holding the secret.
+func TestMerge_MovedSecretLeavesSrcToo(t *testing.T) {
+	desc := compileClobberApp(t)
+	fd := desc.Fields().ByName("db_password")
+	value := fd.Message().Fields().ByName("value")
+	dst := dynamicpb.NewMessage(desc)
+
+	src, res := parseInto(t, desc, `db_password { value = "hunter2" }`)
+	srcR := src.ProtoReflect()
+	require.Equal(t, "hunter2", srcR.Get(fd).Message().Get(value).String(),
+		"control: without the hook the plaintext must reach the message")
+
+	require.NoError(t, merge.Merge(dst, src, res))
+	secrets := secret.NewMap()
+	require.NoError(t, parse.MoveInto(dst, secrets))
+	require.Equal(t, 1, secrets.Len(), "control: the secret must have moved")
+
+	assert.Empty(t, srcR.Get(fd).Message().Get(value).String())
+}
