@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet — changes live in [changelog.d/](changelog.d/) until release._
 
+## [0.27.1] — 2026-11-02
+
+### Changed
+
+- **protocompile v0.38.1** ([#226](https://github.com/trendvidia/chameleon/pull/226)). Nothing to do when upgrading. The release changes no compiler behavior, so schemas compile as they did under v0.37.0.
+
+- **`merge.Merge` now documents that `src` is consumed** ([#229](https://github.com/trendvidia/chameleon/issues/229)). The old doc called `src` read-only, which was only half true. `Merge` never writes to `src`, but `dst` takes over its lists, maps and atomic well-known-type messages, so later writes to `dst` also change `src`. Behavior is unchanged, and `Resolve` is unaffected because it parses each layer fresh.
+
+  **What to do.** If you call `merge.Merge` directly and apply one parsed layer to several destinations, pass each call its own `proto.Clone`.
+
+### Fixed
+
+- **An empty list or map in a layer no longer panics the resolver** ([#230](https://github.com/trendvidia/chameleon/pull/230)). A layer that set a repeated or map field to empty, such as `cors_origins = []` or `labels = {}`, crashed `Resolve` at any field depth. It now resolves, and the empty value replaces whatever lower layers set, like any other list or map.
+
+  **What to do.** Remove any workaround that leaves such a field out of a layer. A `(pxf.required)` field set to empty counts as set.
+
+### Security
+
+- **`sops` and the CLI no longer call dependency code with known vulnerabilities** ([#227](https://github.com/trendvidia/chameleon/issues/227)). Upgrade if you run either against a KMS backend. The fixes cover denial-of-service bugs in HTTP/2 and gRPC, an infinite loop in `golang.org/x/text`, a denial of service in SSH key parsing, and an OpenTelemetry exporter that could log endpoint URLs. `govulncheck` reported 10 of these before and reports none now. The library module called none of them.
+
+  `sops` and the CLI now use `golang.org/x/net` v0.62.0, `golang.org/x/text` v0.43.0, `golang.org/x/crypto` v0.58.0, `google.golang.org/grpc` v1.83.2, OpenTelemetry v1.45.0 and `go-jose` v4.1.6. The minimum Go version does not change.
+
 ## [0.27.0] — 2026-10-31
 
 Minor release, because two things that used to pass now fail. The CLI refuses standard annotations placed where they could have no effect, and map nesting now counts toward the decoder's depth limit. `(pxf.required)` with `(pxf.default)` on one field is refused too, in the library and the CLI, and a schema that has both needs a decision about which one you meant. It moves to protowire-go v1.13.0, protocompile v0.37.0 and protos v0.1.4.
@@ -2355,7 +2377,8 @@ Documented in `README.md`:
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
 
-[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.27.1...HEAD
+[0.27.1]: https://github.com/trendvidia/chameleon/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/trendvidia/chameleon/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/trendvidia/chameleon/compare/v0.25.2...v0.26.0
 [0.25.2]: https://github.com/trendvidia/chameleon/compare/v0.25.1...v0.25.2
