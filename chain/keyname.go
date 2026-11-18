@@ -26,7 +26,7 @@ func EffectiveKeyName(spec proto.Message, envName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	parents, order, err := readEnvironments(cs)
+	parents, _, err := readEnvironments(cs)
 	if err != nil {
 		return "", err
 	}
@@ -40,14 +40,27 @@ func EffectiveKeyName(spec proto.Message, envName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	byName := make(map[string]*chameleonv1.Environment, len(order))
+	keys := effectiveKeyNames(cs, ancestry)
+	return keys[len(keys)-1], nil
+}
+
+// effectiveKeyNames returns the effective key_name of every env in
+// ancestry (root first, leaf last, as ancestryChain returns it), by the
+// rule EffectiveKeyName documents: an env's own non-empty key_name, or
+// else its parent's effective one. An env no ancestor gives a key_name
+// gets "".
+func effectiveKeyNames(cs *chameleonv1.ChainSpec, ancestry []string) []string {
+	own := make(map[string]string, len(cs.GetEnvironments()))
 	for _, e := range cs.GetEnvironments() {
-		byName[e.GetName()] = e
+		own[e.GetName()] = e.GetKeyName()
 	}
-	for i := len(ancestry) - 1; i >= 0; i-- {
-		if e := byName[ancestry[i]]; e != nil && e.GetKeyName() != "" {
-			return e.GetKeyName(), nil
+	keys := make([]string, len(ancestry))
+	inherited := ""
+	for i, name := range ancestry {
+		if k := own[name]; k != "" {
+			inherited = k
 		}
+		keys[i] = inherited
 	}
-	return "", nil
+	return keys
 }

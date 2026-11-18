@@ -109,7 +109,7 @@ Per-stage docs live in each package's godoc.
 
 A `chameleon.v1.ChainSpec` declares:
 - **`environments`** — single-parent ancestry (`uat extends sandbox extends prod`).
-- **`layers`** — ordered list of layer entries. Each entry has a path template (`base.pxf`, `env/${env}.pxf`, `region/${ctx.region}.pxf`) and a strategy: `ONCE` (single materialization) or `PER_ENV` (one per ancestor, root-first).
+- **`layers`** — ordered list of layer entries. Each entry has a path template (`base.pxf`, `env/${env}.pxf`, `region/${ctx.region}.pxf`) and a strategy: `ONCE` (single materialization) or `PER_ENV` (one per ancestor, root-first; an encrypted `PER_ENV` entry takes only the ancestors that share the leaf's key, see [Naming the encryption key per environment](#naming-the-encryption-key-per-environment)).
 - **`context_keys`** — declared inputs the caller may supply. Validates against `allowed_values`, applies defaults, enforces `required`.
 - **`sources`** — logical names mapping to backing implementations (filesystem, encrypted bucket, etc.) referenced by `LayerEntry.source`.
 
@@ -519,6 +519,8 @@ layers = [
 
 **Never put per-env secrets in `base.pxf`.** `base.pxf` loads for every environment including `dev` — a dev runtime with decrypt creds for `base.pxf` would see prod secrets. Per-env secrets belong in per-env layers, full stop.
 
+**An encrypted `PER_ENV` layer stops at a key boundary.** The plaintext `env` layer above loads one file per ancestor, so `dev` inherits every setting `prod` and `sandbox` made. The encrypted `secrets` layer loads only the ancestors whose key is the leaf's: when environments name different keys (see [Naming the encryption key per environment](#naming-the-encryption-key-per-environment)), `dev` does not load `secrets/prod.pxf`, so a dev runtime needs only its own key. Secrets still inherit between environments that share a key, and a chain that names no key at all loads every ancestor's file, as plaintext layers do ([#236](https://github.com/trendvidia/chameleon/issues/236)).
+
 ### Encrypting layers
 
 Use the `sops` CLI directly:
@@ -546,6 +548,8 @@ environments = [
   { name = "dev"     extends  = "sandbox" }    # inherits "sandbox-key"
 ]
 ```
+
+The names also decide which secrets files an environment loads. An encrypted `PER_ENV` layer takes only the ancestors whose effective `key_name` equals the leaf's, so with the chain above `dev` loads `secrets/sandbox.pxf` and `secrets/dev.pxf`, and never `secrets/prod.pxf`. Plaintext layers still walk the whole ancestry. The boundary comes from the chain spec, not from which keys a process holds: a runtime missing a key it does need still fails the decrypt rather than silently resolving without that layer. An environment with no `key_name` anywhere above it has the empty key, which differs from any named one, so a keyed environment below it does not load its secrets either.
 
 Names are looked up against the configured age key source (`SOPS_AGE_KEY_FILE`, the env-var twin `SOPS_AGE_KEY` / `SOPS_AGE_KEY_CMD`, or the standardized default `$HOME/.config/sops/age/keys.pxf` — see [Runtime decryption](#runtime-decryption) for the full source list). A PXF multi-key file holds one labelled age identity per env:
 

@@ -11,6 +11,9 @@
 // Each LayerRef is one concrete file to load — a [LayerEntry] in the
 // spec may produce zero (template variable unresolved), one (default
 // `for_each = ONCE`), or many (`for_each = PER_ENV`, one per ancestor).
+// An encrypted PER_ENV entry takes only the ancestors whose effective
+// key_name matches the leaf's (see [EffectiveKeyName]), so a child
+// environment never loads a secrets file encrypted to another key.
 //
 // Validation performed:
 //
@@ -279,6 +282,7 @@ func expandLayers(cs *chameleonv1.ChainSpec, ancestry []string, ctx map[string]s
 	}
 
 	leaf := ancestry[len(ancestry)-1]
+	keys := effectiveKeyNames(cs, ancestry)
 	var refs []LayerRef
 
 	for i, entry := range layers {
@@ -301,6 +305,9 @@ func expandLayers(cs *chameleonv1.ChainSpec, ancestry []string, ctx map[string]s
 		envIter := []string{leaf}
 		if entry.GetForEach() == chameleonv1.LayerEntry_PER_ENV {
 			envIter = ancestry
+			if encrypted {
+				envIter = sameKeyAsLeaf(ancestry, keys)
+			}
 		}
 
 		for _, e := range envIter {
@@ -329,6 +336,26 @@ func expandLayers(cs *chameleonv1.ChainSpec, ancestry []string, ctx map[string]s
 		}
 	}
 	return refs, nil
+}
+
+// sameKeyAsLeaf returns the envs of ancestry (root first) whose
+// effective key_name equals the leaf's. It is how an encrypted PER_ENV
+// layer stops at a key boundary (#236): an ancestor encrypted to a
+// different key is one the leaf's runtime is not meant to read, so its
+// file is not part of the leaf's chain. The boundary comes from the
+// spec, never from which keys a process happens to hold, so a missing
+// key still fails the decrypt instead of quietly dropping a layer. A
+// chain that sets no key_name has every key equal to "", so nothing is
+// dropped and expansion is what it was before #236.
+func sameKeyAsLeaf(ancestry, keys []string) []string {
+	leafKey := keys[len(keys)-1]
+	out := make([]string, 0, len(ancestry))
+	for i, e := range ancestry {
+		if keys[i] == leafKey {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // substitute replaces `${name}` and `${ctx.x}` tokens against vars.
