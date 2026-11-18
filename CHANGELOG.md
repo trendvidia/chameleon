@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet — changes live in [changelog.d/](changelog.d/) until release._
 
+## [0.28.0] — 2026-11-18
+
+Minor release, because a chain can now load fewer files than before. An encrypted `PER_ENV` layer stops where the environment's `key_name` changes, so `dev` no longer decrypts `prod`'s secrets file. A chain that names no `key_name`, or one key for every environment, resolves as it did. The sops backend also stops crashing on an empty `SOPS_AGE_KEY_CMD`, and OpenTelemetry moves to v1.47.0 to clear a moderate advisory.
+
+### Changed
+
+- **An encrypted `PER_ENV` layer stops at a key boundary** ([#236](https://github.com/trendvidia/chameleon/issues/236)). Resolving an environment now loads an encrypted `PER_ENV` layer only for the ancestors whose effective `key_name` equals the leaf's. With the README's chain (`prod` on `prod-key`, `sandbox` on `sandbox-key`, `dev` inheriting it), `dev` loads `secrets/sandbox.pxf` and `secrets/dev.pxf` but not `secrets/prod.pxf`. Before, it also decrypted `secrets/prod.pxf`, so a dev runtime holding only its own key failed (`sops: decrypt: Error getting data key: 0 successful groups required, got 0`), and one that resolved had to hold prod's key. The README's recommended layout and its per-environment keys now work together.
+
+  What is unchanged: plaintext `PER_ENV` and every `ONCE` layer; a chain that names no `key_name` (every effective key is empty, so nothing is dropped); and environments that share an inherited key, which still inherit secrets. The boundary is read from the chain spec, not from the keys a process holds, so a missing key still fails loudly.
+
+  **Check your chain if** an environment named its own `key_name` and relied on a secret only an ancestor's encrypted `PER_ENV` file set: that secret now has to be set in a file the environment loads. An ancestor with no `key_name` above a keyed environment counts as a different key.
+
+### Fixed
+
+- **The README no longer says the modules are private** ([#235](https://github.com/trendvidia/chameleon/issues/235)). "Installing the plugin" told readers to set `GOPRIVATE`, a git rewrite or a `repo`-scoped token before `go install`. chameleon and the trendvidia/sops fork are public, and the public Go proxy serves them with none of that, so the paragraph is gone.
+
+- **A set-but-empty `SOPS_AGE_KEY_CMD` no longer crashes the sops backend** ([#238](https://github.com/trendvidia/chameleon/issues/238)). `chameleon/sops` and the CLI move from `github.com/trendvidia/sops/v4` v4.0.1 to v4.1.0. With v4.0.1, an environment carrying `SOPS_AGE_KEY_CMD=` made every decrypt panic (`slice bounds out of range` in `getOutputFromCmd`, [trendvidia/sops#38](https://github.com/trendvidia/sops/issues/38)). Now the empty command is an error for that one key source, and the others (`SOPS_AGE_KEY`, `SOPS_AGE_KEY_FILE`, the default key file) still get their turn.
+
+  v4.1.0 also changes the sops **CLI's** configuration file from `.sops.yaml` to `.sops.pxf`. chameleon's library and CLI never read that file, so nothing in chameleon behaves differently. If you run the trendvidia/sops CLI v4.1.0 or later to edit layers, convert your `.sops.yaml` with `sops config migrate`. The README now says `.sops.pxf`.
+
+### Security
+
+- **OpenTelemetry v1.47.0** ([#242](https://github.com/trendvidia/chameleon/issues/242)). All three modules move from v1.45.0 to v1.47.0, which fixes [GHSA-q7gw-24fr-5p69](https://github.com/advisories/GHSA-q7gw-24fr-5p69): a span or log attribute made of U+FFFD characters got past `AttributeValueLengthLimit`. chameleon links neither the trace SDK nor the log SDK, so it was not exposed through its own code. The bump clears the advisory from your dependency scanner. The library also gains `go.opentelemetry.io/otel/log` as an indirect requirement in its module graph; nothing links it. The minimum Go version does not change.
+
 ## [0.27.1] — 2026-11-02
 
 ### Changed
@@ -2377,7 +2401,8 @@ Documented in `README.md`:
 - Plaintext-in-heap window between PXF parse and `parse.Move` (Go string immutability).
 - Sops API has no `ctx.Context` hook for in-flight cancellation.
 
-[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.27.1...HEAD
+[Unreleased]: https://github.com/trendvidia/chameleon/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/trendvidia/chameleon/compare/v0.27.1...v0.28.0
 [0.27.1]: https://github.com/trendvidia/chameleon/compare/v0.27.0...v0.27.1
 [0.27.0]: https://github.com/trendvidia/chameleon/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/trendvidia/chameleon/compare/v0.25.2...v0.26.0
