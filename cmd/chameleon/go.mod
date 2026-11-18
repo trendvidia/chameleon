@@ -23,7 +23,7 @@ require (
 	github.com/trendvidia/chameleon/sops v0.27.1
 	github.com/trendvidia/protocompile v0.38.1
 	github.com/trendvidia/protowire-go v1.13.0
-	github.com/trendvidia/sops/v4 v4.0.1
+	github.com/trendvidia/sops/v4 v4.1.0
 	golang.org/x/tools v0.51.0
 	google.golang.org/protobuf v1.36.12
 )
