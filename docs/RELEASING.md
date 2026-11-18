@@ -76,18 +76,25 @@ third of the repo.
    deletes fragments instead of adding one. **Label it `skip-changelog`**
    or the changelog gate blocks it.
 
-3. **Tag the library.**
+3. **Tag the library**, on the merge commit of step 2's PR:
 
    ```
-   git tag v0.23.0 && git push origin v0.23.0
+   git tag -a v0.23.0 -m "chameleon v0.23.0" && git push origin v0.23.0
    ```
+
+   Every tag in this guide is annotated (`-a`), from v0.28.0 on. An
+   annotated tag records who cut it, when, and a message; `git describe`
+   without `--tags` only sees annotated tags; and `git push --follow-tags`
+   only pushes annotated ones. Check that a pushed tag is annotated with
+   `git ls-remote origin 'refs/tags/v0.23.0*'`: an annotated tag lists two
+   lines, the tag object and `v0.23.0^{}`, the commit it points to.
 
 4. **Point sops at it, then tag sops.** Edit `sops/go.mod` so
    `require github.com/trendvidia/chameleon` names the tag you just pushed,
    commit, then:
 
    ```
-   git tag sops/v0.23.0 && git push origin sops/v0.23.0
+   git tag -a sops/v0.23.0 -m "chameleon/sops v0.23.0" && git push origin sops/v0.23.0
    ```
 
 5. **Point the CLI at both, then tag the CLI.** Edit `cmd/chameleon/go.mod`
@@ -95,7 +102,7 @@ third of the repo.
    and 4, run `go mod tidy` there, commit, then:
 
    ```
-   git tag cmd/chameleon/v0.23.0 && git push origin cmd/chameleon/v0.23.0
+   git tag -a cmd/chameleon/v0.23.0 -m "chameleon CLI v0.23.0" && git push origin cmd/chameleon/v0.23.0
    ```
 
    The module carries no `replace` directives, and must not gain any: `go
@@ -131,6 +138,19 @@ third of the repo.
 
    A stale `require` surfaces here as a build against the wrong library
    version, and nowhere earlier.
+
+7. **Publish the GitHub release** on the library tag, with the version's
+   CHANGELOG section as its notes:
+
+   ```
+   git show v0.23.0:CHANGELOG.md \
+     | awk '/^## \[0.23.0\]/{f=1;next} /^## \[/{f=0} f' > /tmp/notes.md
+   gh release create v0.23.0 --verify-tag --title v0.23.0 --latest --notes-file /tmp/notes.md
+   ```
+
+   One release per version, on the root tag; the `sops/` and
+   `cmd/chameleon/` tags get none. `--verify-tag` refuses to create a tag
+   that is not already pushed, so a typo cannot mint a fourth one.
 
 ## What consumers see
 
