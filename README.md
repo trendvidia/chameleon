@@ -895,16 +895,7 @@ The included `protoc-gen-chameleon-go` plugin emits a sidecar `*.chameleon.go` p
 go install github.com/trendvidia/chameleon/cmd/protoc-gen-chameleon-go@latest
 ```
 
-`github.com/trendvidia/*` is currently a private module set, so `go install` only succeeds if `go` is configured to fetch it privately. Either:
-
-- Set `GOPRIVATE=github.com/trendvidia/*` and add a git rewrite that uses your credentials, e.g.
-  ```sh
-  go env -w GOPRIVATE=github.com/trendvidia/*
-  git config --global url."git@github.com:trendvidia/".insteadOf "https://github.com/trendvidia/"
-  ```
-- Or export a `GH_TOKEN` / `GITHUB_TOKEN` with `repo` scope before `go install`.
-
-Without one of those, `go install` fails with `403 Forbidden` against the proxy or a `terminal prompts disabled` git error. Same setup applies to consumers that `import` chameleon directly.
+The module is public, so this needs no `GOPRIVATE`, git rewrite or token: the public Go proxy serves it.
 
 ### Wiring into buf
 
