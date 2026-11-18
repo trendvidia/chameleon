@@ -34,6 +34,9 @@ const (
 	// Expand once per environment in the ancestry, root → leaf. ${env}
 	// takes each ancestor's name in turn. Use this for env/${env}.pxf
 	// so prod.pxf is loaded before dev.pxf when dev extends prod.
+	// An encrypted entry takes only the ancestors whose effective
+	// key_name equals the leaf's, so a child never loads a file
+	// encrypted to another environment's key (#236).
 	LayerEntry_PER_ENV LayerEntry_ForEach = 1
 )
 
@@ -207,7 +210,9 @@ type Environment struct {
 	// environment; if no ancestor sets it, the resolver falls back to the
 	// default recipient (DefaultRecipientFromKeyFile). The editor and
 	// encrypt path use this to select per-env recipients without
-	// chameleon needing to know how keys are stored on disk.
+	// chameleon needing to know how keys are stored on disk. It also
+	// bounds an encrypted PER_ENV layer: the leaf loads only the
+	// ancestors whose effective key_name equals its own.
 	KeyName       string `protobuf:"bytes,4,opt,name=key_name,json=keyName,proto3" json:"key_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
