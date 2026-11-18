@@ -533,7 +533,7 @@ sops -e -i --age "age1examplerecipient..." secrets/prod.pxf
 sops secrets/prod.pxf
 ```
 
-For team setups, list multiple recipients (one per operator's age key or KMS principal) so anyone authorized can edit. A `.sops.yaml` in the repo root centralises the recipient list per path pattern; check it in alongside the encrypted files so `sops <file>` finds the right keys without flags.
+For team setups, list multiple recipients (one per operator's age key or KMS principal) so anyone authorized can edit. A `.sops.pxf` in the repo root centralises the recipient list per path pattern; check it in alongside the encrypted files so `sops <file>` finds the right keys without flags. The [trendvidia/sops](https://github.com/trendvidia/sops) CLI reads only `.sops.pxf` from v4.1.0 on, and warns about and ignores a `.sops.yaml`; `sops config migrate` converts an existing one.
 
 PXF's sops format is recognized by `.pxf` extension on sops versions shipping protowire support; older sops may need `--input-type protowire --output-type protowire`.
 
@@ -733,7 +733,7 @@ The `BundleManifest` declares per-module allow/deny over secret-bearing field pa
 - **Don't read `cfg.Field.Value` on a `pxf.Secret` field.** It's been cleared. Use the codegen accessor or `Secrets.Get(path)`.
 - **Don't reuse a `LockedBuffer` after `Destroy()`.** Each Open + Destroy is one cycle. Need it again? Open it again — the accessors are idempotent.
 - **Don't pin the same age / KMS key across all environments.** Per-env recipients let you revoke a single env's access cleanly (e.g. remove a leaked dev key without touching prod).
-- **Don't commit `.sops.yaml` recipients without auditing them.** Anyone whose key is in the recipient list can decrypt the layer locally even without prod access. Quarterly audit + rotation hygiene applies.
+- **Don't commit `.sops.pxf` recipients without auditing them.** Anyone whose key is in the recipient list can decrypt the layer locally even without prod access. Quarterly audit + rotation hygiene applies.
 
 ## Custom decryption (programmatic key injection)
 
