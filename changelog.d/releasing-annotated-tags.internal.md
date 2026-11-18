@@ -1,0 +1,1 @@
+- `docs/RELEASING.md` now cuts annotated tags (`git tag -a`), as v0.28.0 was, and adds the missing last step: publishing the GitHub release on the library tag with the version's CHANGELOG section as its notes.
